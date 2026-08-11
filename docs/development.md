@@ -29,8 +29,7 @@ no daemon is required for `go test ./...`.
 ```bash
 gofmt -w .
 go vet ./...
-# optional, versions match CI when possible
-staticcheck ./...
+# optional, version matches CI; includes staticcheck and gofmt checks
 golangci-lint run
 ```
 

@@ -5,24 +5,31 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  GO_VERSION: "1.24.x"
-  GOLANGCI_LINT_VERSION: v1.64.8
+  GO_VERSION: "1.24.2"
+  GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -45,39 +52,56 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+      - name: go test (integration, skips without Docker)
+        run: go test -race -tags integration ./...
+
       - name: go mod tidy check
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
 
-      - name: staticcheck
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
-          staticcheck ./...
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1.1.0
+        with:
+          go-version-input: ${{ env.GO_VERSION }}
+          go-package: ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m
 
   build:
-    name: Build
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 10
     strategy:
       matrix:
         goos: [linux]
         goarch: [amd64, arm64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: Derive version
+        id: version
+        run: |
+          ver=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+          if [ -z "$ver" ]; then
+            ver=$(sed -n 's/^var Version = "\([^"]*\)".*/\1/p' internal/version/version.go)
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Build
         env:
@@ -86,6 +110,20 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p bin
-          go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=0.1.0" \
+          go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=${{ steps.version.outputs.version }}" \
             -o "bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/tailarr
           ls -la bin/
+
+      - name: Smoke test (amd64 only)
+        if: matrix.goarch == 'amd64'
+        run: |
+          bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }} version
+          bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }} upgrade --help >/dev/null
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: tailarr-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          retention-days: 14
