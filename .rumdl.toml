@@ -1,0 +1,11 @@
+# rumdl configuration file
+
+# PR templates intentionally start with `## Summary` (no level-1 heading).
+# README uses <details>/<summary> for the collapsible section.
+[per-file-ignores]
+".github/PULL_REQUEST_TEMPLATE.md" = ["MD041"]
+"README.md" = ["MD033"]
+
+[global]
+# README badge lines and CHANGELOG entries run longer than the 80-column default.
+line-length = 160
