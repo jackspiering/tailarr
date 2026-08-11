@@ -15,4 +15,4 @@ labels: enhancement
 
 ## Related
 
-<!-- Links to ScaleTail issues, related docs/parity.md items, etc. -->
+<!-- Links to ScaleTail issues, related feature areas, etc. -->

@@ -60,7 +60,6 @@ func NewRoot() *cobra.Command {
 		flagDeploy    string
 		flagLog       string
 		flagAuth      string
-		flagRef       string
 		flagNoRefresh bool
 		flagYes       bool
 	)
@@ -96,9 +95,6 @@ func NewRoot() *cobra.Command {
 			if flagAuth != "" {
 				cfg.AuthkeysPath = flagAuth
 			}
-			if flagRef != "" {
-				cfg.RepoRef = flagRef
-			}
 			if flagNoRefresh {
 				cfg.NoRefresh = true
 			}
@@ -121,7 +117,6 @@ func NewRoot() *cobra.Command {
 	pf.StringVar(&flagDeploy, "deploy-path", "", "deployment root")
 	pf.StringVar(&flagLog, "log-path", "", "log file path")
 	pf.StringVar(&flagAuth, "authkeys-path", "", "auth keys file path")
-	pf.StringVar(&flagRef, "repo-ref", "", "pin ScaleTail to a branch, tag, or commit")
 	pf.BoolVar(&flagNoRefresh, "no-refresh", false, "skip ScaleTail clone/pull for list/deploy/repair")
 	pf.BoolVar(&flagYes, "yes", false, "auto-confirm default-yes prompts")
 	root.SetVersionTemplate(fmt.Sprintf("%s {{.Version}}\n", version.Name))

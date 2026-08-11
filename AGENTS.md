@@ -31,7 +31,6 @@ live in this tree unless they are added as explicit reference material.
 | `internal/logging` | Redacted file logging |
 | `internal/version` | SemVer string (ldflags-friendly) |
 | `testdata/` | Fixtures for unit tests |
-| `docs/` | Development and parity notes |
 | `.github/` | CI and templates |
 
 Module path: `github.com/jackspiering/tailarr`.
@@ -45,7 +44,7 @@ Module path: `github.com/jackspiering/tailarr`.
 - Prefer safe filesystem ops: atomic writes, refuse symlink write escapes,
   validate service names, back up before destructive replace/repair.
 - ScaleTail git clone is trusted input; still harden git protocol flags where
-  practical and support ref pinning.
+  practical.
 - Plain ASCII in Markdown (no curly quotes, em dashes, decorative unicode).
 - Do not add a web UI or encrypt auth keys at rest unless the owner asks.
 - Do not create GitHub releases/tags unless the owner asks.

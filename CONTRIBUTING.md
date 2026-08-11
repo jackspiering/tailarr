@@ -46,7 +46,7 @@ Optional: `golangci-lint run` (version pinned in CI, includes staticcheck and go
 
 ## Project layout
 
-See [AGENTS.md](AGENTS.md) and [docs/development.md](docs/development.md).
+See [AGENTS.md](AGENTS.md).
 
 ## License
 

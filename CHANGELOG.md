@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install script prefers replacing the first `tailarr` on `PATH` when that
   directory is writable (e.g. `~/.local/bin` ahead of `/usr/local/bin`).
 
+### Removed
+
+- `--repo-ref` / `TAILARR_REPO_REF`: ScaleTail ref pinning removed; the
+  catalog clone always tracks the repository default branch.
+- TUI `j`/`k` navigation keys; use arrow keys or number shortcuts.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added

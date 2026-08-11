@@ -410,9 +410,6 @@ func editConfigInteractive(rt *Runtime) error {
 	if rt.Cfg.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", rt.Cfg.AuthkeysPath); err != nil {
 		return err
 	}
-	if rt.Cfg.RepoRef, err = ui.Line("TAILARR_REPO_REF", rt.Cfg.RepoRef); err != nil {
-		return err
-	}
 	return config.Save(rt.Cfg)
 }
 
@@ -607,7 +604,7 @@ func maybeRefresh(rt *Runtime) error {
 		}
 		defer func() { _ = lock.Release() }()
 	}
-	if err := scaletail.Refresh(rt.Cfg.RepoURL, rt.Cfg.RepoPath, rt.Cfg.RepoRef, rt.Cfg.NoRefresh); err != nil {
+	if err := scaletail.Refresh(rt.Cfg.RepoURL, rt.Cfg.RepoPath, rt.Cfg.NoRefresh); err != nil {
 		return exitf(exitcode.NotFound, "%w", err)
 	}
 	return nil

@@ -209,11 +209,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m.goBack(), nil
-		case "up", "k":
+		case "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "down", "j":
+		case "down":
 			max := len(m.items) - 1
 			if m.screen == screenMultiSelect {
 				max = len(m.opts) + len(m.items) - 1
@@ -573,9 +573,6 @@ func editConfigInteractive(cfg *config.Config, ui *prompt.Std) string {
 	if cfg.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", cfg.AuthkeysPath); err != nil {
 		return err.Error()
 	}
-	if cfg.RepoRef, err = ui.Line("TAILARR_REPO_REF", cfg.RepoRef); err != nil {
-		return err.Error()
-	}
 	if err := config.Save(*cfg); err != nil {
 		return "Error saving: " + err.Error()
 	}
@@ -793,7 +790,7 @@ func (m model) View() string {
 			b += styleOrPlain(itemStyle, cursor+line) + "\n"
 		}
 	}
-	b += "\n" + styleOrPlain(dimStyle, "arrows/jk move  enter select  space toggle  a all  q/esc back") + "\n"
+	b += "\n" + styleOrPlain(dimStyle, "arrows move  enter select  space toggle  a all  q/esc back") + "\n"
 	if m.status != "" {
 		b += "\n" + styleOrPlain(border, strings.Repeat("-", 48)) + "\n"
 		b += m.status
