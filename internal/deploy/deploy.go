@@ -11,25 +11,39 @@ import (
 	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/atomic"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
+	"github.com/jackspiering/tailarr/internal/version"
 )
 
 // Manager coordinates deploy/update/stop/restart/remove/repair.
 type Manager struct {
 	Cfg *config.Config
 	Log *logging.Logger
+	// UI is optional interactive prompts. When nil, deploy is non-interactive.
+	UI prompt.UI
 }
 
 // DeployOpts controls optional deploy behavior.
 type DeployOpts struct {
 	// Force replaces an existing managed deployment (with backup).
+	// When false and UI is set, the operator is asked before replace.
 	Force bool
 	// AuthKeyName selects a named key from the auth key store when TS_AUTHKEY is empty.
 	// The secret itself is never accepted here or via flags.
 	AuthKeyName string
+	// Interactive prompts for empty/placeholder env values when UI is set.
+	// Default true when UI is non-nil unless set false via SkipInteractive.
+	SkipInteractive bool
+	// ReusableAuthKey is an already-resolved TS_AUTHKEY for batch deploys.
+	ReusableAuthKey string
+	// Volumes on remove.
+	Volumes bool
+	// SkipConfirm skips destructive confirmation prompts (CLI --force path).
+	SkipConfirm bool
 }
 
 // TailarrComposeLabel is applied via override so status can detect managed stacks.
@@ -85,21 +99,28 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 
 	var backupPath string
 	if st, err := os.Lstat(dest); err == nil {
-		if !opts.Force {
-			return fmt.Errorf("%w: %s (use --force to replace)", ErrAlreadyDeployed, service)
-		}
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
 		}
 		if found, err := paths.ContainsSymlinks(dest); err == nil && found != "" {
 			return fmt.Errorf("%w: deployment contains unsupported symlink: %s", ErrSymlink, found)
 		}
-		// Only force-replace Tailarr-managed deployments (or those with compose + we take over carefully).
 		if !IsManaged(dest) {
-			return fmt.Errorf("%w: refusing --force on unmanaged path %s (no Tailarr marker)", ErrNotManaged, service)
+			return fmt.Errorf("%w: refusing to replace unmanaged path %s (no Tailarr marker)", ErrNotManaged, service)
 		}
-		// Best-effort compose down before replace; failure is non-fatal if we still backup,
-		// but we surface it in logs. Containers may linger until backup path is cleaned.
+		if !opts.Force {
+			if m.UI == nil || opts.SkipConfirm {
+				return fmt.Errorf("%w: %s (use --force to replace)", ErrAlreadyDeployed, service)
+			}
+			ok, cerr := m.UI.Confirm(fmt.Sprintf("Deployment already exists for %s. Replace it?", service), true)
+			if cerr != nil {
+				return cerr
+			}
+			if !ok {
+				return fmt.Errorf("%w: deployment canceled", prompt.Canceled)
+			}
+		}
+		// Best-effort compose down before replace.
 		proj := composeProjectArgs(m.Cfg.DeployPath, service)
 		downArgs := append(append([]string{}, proj...), "down", "--remove-orphans")
 		if err := Compose(dest, downArgs...); err != nil {
@@ -142,7 +163,7 @@ func (m *Manager) finishDeploy(service, templateDir, dest, backupPath string, op
 	if err := m.mergeAndWriteEnv(service, templateDir, dest, backupPath, opts); err != nil {
 		return err
 	}
-	if err := writeOverride(dest); err != nil {
+	if err := writeOverride(service, dest); err != nil {
 		return err
 	}
 
@@ -151,6 +172,9 @@ func (m *Manager) finishDeploy(service, templateDir, dest, backupPath string, op
 		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
 	if err := Compose(dest, upArgs...); err != nil {
 		return err
+	}
+	if backupPath != "" {
+		m.log("backup retained for rollback: %s", backupPath)
 	}
 	return nil
 }
@@ -205,9 +229,20 @@ func (m *Manager) mergeAndWriteEnv(service, templateDir, dest, backupPath string
 
 	merged := scaletail.MergeEnv(templateMap, localMap, keys)
 
-	// Resolve empty TS_AUTHKEY from named store entry when requested or only one key.
-	if strings.TrimSpace(merged["TS_AUTHKEY"]) == "" {
+	if opts.ReusableAuthKey != "" && scaletail.IsPlaceholder(merged["TS_AUTHKEY"]) {
+		merged["TS_AUTHKEY"] = opts.ReusableAuthKey
+	}
+
+	// Resolve empty TS_AUTHKEY from named store entry when requested.
+	if scaletail.IsPlaceholder(merged["TS_AUTHKEY"]) {
 		if err := m.applyAuthKeyFromStore(merged, opts.AuthKeyName); err != nil {
+			return err
+		}
+	}
+
+	// Interactive fill for remaining placeholders when a UI is available.
+	if m.UI != nil && !opts.SkipInteractive {
+		if err := m.promptMissingEnv(merged, keys); err != nil {
 			return err
 		}
 	}
@@ -217,11 +252,85 @@ func (m *Manager) mergeAndWriteEnv(service, templateDir, dest, backupPath string
 	}
 	// Fail closed when template declares TS_AUTHKEY but it is still empty.
 	if _, declared := templateMap["TS_AUTHKEY"]; declared {
-		if strings.TrimSpace(merged["TS_AUTHKEY"]) == "" {
+		if scaletail.IsPlaceholder(merged["TS_AUTHKEY"]) {
 			return ErrEmptyAuthkey
 		}
 	}
 	return scaletail.WriteEnvFile(localEnv, merged, keys)
+}
+
+func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error {
+	for _, key := range scaletail.PlaceholderKeys(merged, keys) {
+		if key == "TS_AUTHKEY" {
+			if !scaletail.IsPlaceholder(merged[key]) {
+				continue
+			}
+			// Offer stored keys first when present.
+			if store, err := authkeys.Load(m.Cfg.AuthkeysPath); err == nil && len(store.Order) > 0 {
+				m.UI.Printf("Stored auth keys: %s\n", strings.Join(store.Order, ", "))
+				name, err := m.UI.Line("Auth key name (empty to paste a new key)", "")
+				if err != nil {
+					return err
+				}
+				if name != "" {
+					val, ok := store.Keys[name]
+					if !ok {
+						return fmt.Errorf("auth key %q not found in store", name)
+					}
+					merged[key] = val
+					continue
+				}
+			}
+			val, err := m.UI.Secret("TS_AUTHKEY")
+			if err != nil {
+				return err
+			}
+			if !names.ValidTSAuthkey(val) {
+				return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+			}
+			merged[key] = val
+			if ok, _ := m.UI.Confirm("Store this key for future use?", true); ok {
+				storeName, err := m.UI.Line("Stored key name", "default")
+				if err != nil {
+					return err
+				}
+				if storeName != "" {
+					s, err := authkeys.Load(m.Cfg.AuthkeysPath)
+					if err != nil {
+						return err
+					}
+					if err := s.Put(storeName, val); err != nil {
+						return err
+					}
+					if err := s.Save(); err != nil {
+						return err
+					}
+					m.UI.Printf("Stored auth key %s\n", storeName)
+				}
+			}
+			continue
+		}
+
+		def, _ := scaletail.DefaultForKey(key)
+		var val string
+		var err error
+		if scaletail.LooksSecret(key) {
+			val, err = m.UI.Secret(key)
+			if err != nil {
+				return err
+			}
+			if val == "" {
+				val = def
+			}
+		} else {
+			val, err = m.UI.Line(key, def)
+			if err != nil {
+				return err
+			}
+		}
+		merged[key] = val
+	}
+	return nil
 }
 
 func (m *Manager) applyAuthKeyFromStore(merged scaletail.EnvMap, authKeyName string) error {
@@ -240,15 +349,31 @@ func (m *Manager) applyAuthKeyFromStore(merged scaletail.EnvMap, authKeyName str
 		merged["TS_AUTHKEY"] = val
 		return nil
 	}
-	// Non-interactive default: do not auto-pick when multiple keys exist.
 	return nil
 }
 
-func writeOverride(dest string) error {
-	body := `# Generated by Tailarr - do not edit by hand
-# Managed: ` + TailarrComposeLabel + `
-`
-	return atomic.WriteFileString(filepath.Join(dest, overrideFilename), body, 0o644)
+func writeOverride(service, dest string) error {
+	services, err := ComposeServiceNames(dest)
+	if err != nil {
+		// Fall back to a marker-only file so IsManaged still works.
+		body := "# Generated by Tailarr - do not edit by hand\n# Managed: " + TailarrComposeLabel + "\n"
+		return atomic.WriteFileString(filepath.Join(dest, overrideFilename), body, 0o644)
+	}
+	var b strings.Builder
+	b.WriteString("# Generated by Tailarr. Do not edit by hand.\n")
+	b.WriteString("services:\n")
+	if len(services) == 0 {
+		body := "# Generated by Tailarr - do not edit by hand\n# Managed: " + TailarrComposeLabel + "\n"
+		return atomic.WriteFileString(filepath.Join(dest, overrideFilename), body, 0o644)
+	}
+	for _, svc := range services {
+		fmt.Fprintf(&b, "  %s:\n", svc)
+		b.WriteString("    labels:\n")
+		b.WriteString("      tailarr.managed: \"true\"\n")
+		fmt.Fprintf(&b, "      tailarr.service: %q\n", service)
+		fmt.Fprintf(&b, "      tailarr.version: %q\n", version.Version)
+	}
+	return atomic.WriteFileString(filepath.Join(dest, overrideFilename), b.String(), 0o644)
 }
 
 func copyTemplate(src, dst string) error {
@@ -343,7 +468,7 @@ func (m *Manager) Repair(service string) error {
 			return err
 		}
 	}
-	if err := writeOverride(dest); err != nil {
+	if err := writeOverride(service, dest); err != nil {
 		return err
 	}
 	proj := composeProjectArgs(m.Cfg.DeployPath, service)
@@ -403,6 +528,11 @@ func (m *Manager) Restart(service string) error {
 // Remove tears down a deployment. When volumes is true, passes -v.
 // Fails closed: directory is only deleted after compose down succeeds.
 func (m *Manager) Remove(service string, volumes bool) error {
+	return m.RemoveWith(service, DeployOpts{Volumes: volumes})
+}
+
+// RemoveWith is Remove with interactive options.
+func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 	if err := names.ValidateServiceName(service); err != nil {
 		return err
 	}
@@ -424,12 +554,22 @@ func (m *Manager) Remove(service string, volumes bool) error {
 		return err
 	}
 
+	if m.UI != nil && !opts.SkipConfirm {
+		ok, cerr := m.UI.Confirm(fmt.Sprintf("Remove %s and delete %s?", service, dest), true)
+		if cerr != nil {
+			return cerr
+		}
+		if !ok {
+			return fmt.Errorf("%w: remove canceled", prompt.Canceled)
+		}
+	}
+
 	if _, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy); err != nil {
 		return err
 	}
 	proj := composeProjectArgs(m.Cfg.DeployPath, service)
 	args := append(append([]string{}, proj...), "down", "--remove-orphans")
-	if volumes {
+	if opts.Volumes {
 		args = append(args, "--volumes")
 	}
 	if err := Compose(dest, args...); err != nil {
@@ -438,8 +578,44 @@ func (m *Manager) Remove(service string, volumes bool) error {
 	if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
 		return err
 	}
+
+	// Offer to delete retained backups (they may contain .env secrets).
+	if m.UI != nil && !opts.SkipInteractive {
+		if backups, _ := listServiceBackups(m.Cfg.DeployPath, service); len(backups) > 0 {
+			m.UI.Printf("%d backup(s) for %s remain under .tailarr_backups and may contain secrets.\n", len(backups), service)
+			if ok, _ := m.UI.Confirm("Delete these backups as well?", false); ok {
+				root := filepath.Join(m.Cfg.DeployPath, config.BackupDirName)
+				for _, b := range backups {
+					_ = safeRemoveTree(b, root)
+				}
+				m.log("removed %d backups for %s", len(backups), service)
+			}
+		}
+	}
+
 	m.log("removed service %s", service)
 	return nil
+}
+
+func listServiceBackups(deployPath, service string) ([]string, error) {
+	root := filepath.Join(deployPath, config.BackupDirName)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	prefix := service + "-"
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		if paths.IsSymlink(p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func (m *Manager) withManagedServiceDir(service string, fn func(dir string) error) error {
@@ -527,5 +703,6 @@ func IsManaged(dir string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), "com.tailarr.managed")
+	s := string(data)
+	return strings.Contains(s, "com.tailarr.managed") || strings.Contains(s, "tailarr.managed")
 }

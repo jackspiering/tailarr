@@ -141,7 +141,65 @@ func MissingRequired(merged EnvMap, keys []string) []string {
 	return miss
 }
 
+// IsPlaceholder reports whether a value is empty or a comment-style placeholder.
+func IsPlaceholder(value string) bool {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return true
+	}
+	return strings.HasPrefix(v, "//") || strings.HasPrefix(v, "#")
+}
+
+// DefaultForKey returns a common default for known env keys.
+func DefaultForKey(key string) (string, bool) {
+	switch key {
+	case "PUID":
+		return "1000", true
+	case "PGID":
+		return "1000", true
+	case "DNS_SERVER":
+		return "9.9.9.9", true
+	case "TZ":
+		return "Etc/UTC", true
+	default:
+		return "", false
+	}
+}
+
+// LooksSecret reports whether an env key typically holds a secret.
+func LooksSecret(key string) bool {
+	k := strings.ToUpper(key)
+	for _, p := range []string{"PASSWORD", "SECRET", "TOKEN", "AUTHKEY", "PRIVATE", "API_KEY", "APIKEY"} {
+		if strings.Contains(k, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// PlaceholderKeys returns keys in order whose values are placeholders.
+func PlaceholderKeys(merged EnvMap, keys []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if IsPlaceholder(merged[k]) {
+			out = append(out, k)
+			seen[k] = true
+		}
+	}
+	for k, v := range merged {
+		if seen[k] {
+			continue
+		}
+		if IsPlaceholder(v) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // ValidateMergedTSAuthkey ensures TS_AUTHKEY if present is well-formed.
+// Empty values are allowed here; callers may require a non-empty key separately.
 func ValidateMergedTSAuthkey(merged EnvMap) error {
 	v, ok := merged["TS_AUTHKEY"]
 	if !ok {

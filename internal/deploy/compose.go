@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -14,6 +15,79 @@ var composeFn = defaultCompose
 // Compose runs `docker compose` in dir with the given args.
 func Compose(dir string, args ...string) error {
 	return composeFn(dir, args...)
+}
+
+// ComposeServiceNames returns Compose service names for a deployment directory.
+// Prefers `docker compose config --services`; falls back to a simple YAML scan.
+func ComposeServiceNames(dir string) ([]string, error) {
+	base := "compose.yaml"
+	if p, ok := findComposeBase(dir); ok {
+		base = p
+	}
+	if DockerOK() && ComposeOK() {
+		cmd := exec.Command("docker", "compose", "-f", base, "config", "--services")
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err == nil {
+			var names []string
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					names = append(names, line)
+				}
+			}
+			if len(names) > 0 {
+				return names, nil
+			}
+		}
+	}
+	return scanComposeServiceNames(filepath.Join(dir, base))
+}
+
+func findComposeBase(dir string) (string, bool) {
+	for _, name := range []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"} {
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func scanComposeServiceNames(composePath string) ([]string, error) {
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	inServices := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trim := strings.TrimRight(line, " \t\r")
+		if strings.TrimSpace(trim) == "services:" {
+			inServices = true
+			continue
+		}
+		if inServices {
+			// Top-level key ends services block.
+			if len(trim) > 0 && trim[0] != ' ' && trim[0] != '\t' && !strings.HasPrefix(strings.TrimSpace(trim), "#") {
+				break
+			}
+			// 2 or 4 space indent service name
+			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "    ") {
+				s := strings.TrimSpace(line)
+				if strings.HasPrefix(s, "#") {
+					continue
+				}
+				if strings.HasSuffix(s, ":") && !strings.Contains(s, " ") {
+					name := strings.TrimSuffix(s, ":")
+					if name != "" && name != "services" {
+						names = append(names, name)
+					}
+				}
+			}
+		}
+	}
+	return names, nil
 }
 
 func defaultCompose(dir string, args ...string) error {

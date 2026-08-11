@@ -47,6 +47,25 @@ func TestParseAndMergeEnv(t *testing.T) {
 	}
 }
 
+func TestPlaceholderAndDefaults(t *testing.T) {
+	if !IsPlaceholder("") || !IsPlaceholder("// comment") || !IsPlaceholder("# x") {
+		t.Fatal("expected placeholders")
+	}
+	if IsPlaceholder("value") {
+		t.Fatal("value is not placeholder")
+	}
+	if v, ok := DefaultForKey("PUID"); !ok || v != "1000" {
+		t.Fatal(v, ok)
+	}
+	if LooksSecret("DB_PASSWORD") != true {
+		t.Fatal("expected secret")
+	}
+	keys := PlaceholderKeys(EnvMap{"A": "", "B": "x", "C": "//"}, []string{"A", "B", "C"})
+	if len(keys) != 2 {
+		t.Fatalf("%v", keys)
+	}
+}
+
 func TestWriteEnvFileMode(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")

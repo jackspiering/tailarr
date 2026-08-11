@@ -115,7 +115,7 @@ func TestCopyTemplateAndOverride(t *testing.T) {
 	if err := copyTemplate(svcTpl, dest); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOverride(dest); err != nil {
+	if err := writeOverride("svc", dest); err != nil {
 		t.Fatal(err)
 	}
 	if !IsManaged(dest) {
@@ -205,7 +205,7 @@ func TestRemoveFailsClosedOnComposeError(t *testing.T) {
 	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOverride(dest); err != nil {
+	if err := writeOverride("svc", dest); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,7 +256,7 @@ func TestForceDeployPreservesEnvSecrets(t *testing.T) {
 	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOverride(dest); err != nil {
+	if err := writeOverride("svc", dest); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=tskey-auth-SECRET\nHOSTNAME=local\n"), 0o600); err != nil {
@@ -311,7 +311,7 @@ func TestForceDeployRestoresOnComposeUpFailure(t *testing.T) {
 	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOverride(dest); err != nil {
+	if err := writeOverride("svc", dest); err != nil {
 		t.Fatal(err)
 	}
 	marker := "ORIGINAL-DEPLOYMENT"
@@ -384,6 +384,39 @@ func TestDeployUsesNamedAuthkey(t *testing.T) {
 	}
 	if !strings.Contains(string(env), "TS_AUTHKEY=tskey-auth-FROMSTORE") {
 		t.Fatalf("store key not applied: %s", env)
+	}
+}
+
+func TestScanComposeServiceNames(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "compose.yaml")
+	body := "services:\n  web:\n    image: x\n  api:\n    image: y\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names, err := scanComposeServiceNames(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("%v", names)
+	}
+}
+
+func TestWriteOverrideLabels(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("demo", dir); err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(dir) {
+		t.Fatal("not managed")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, overrideFilename))
+	if !strings.Contains(string(data), "tailarr.managed") {
+		t.Fatalf("%s", data)
 	}
 }
 
