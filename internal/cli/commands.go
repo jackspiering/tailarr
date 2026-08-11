@@ -541,7 +541,7 @@ func mapDeployErr(err error) error {
 		return nil
 	}
 	switch {
-	case errors.Is(err, prompt.Canceled):
+	case errors.Is(err, prompt.ErrCanceled):
 		return &ExitError{Code: exitcode.Canceled, Err: err}
 	case errors.Is(err, deploy.ErrAlreadyDeployed):
 		return &ExitError{Code: exitcode.Usage, Err: err}

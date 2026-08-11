@@ -117,7 +117,7 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 				return cerr
 			}
 			if !ok {
-				return fmt.Errorf("%w: deployment canceled", prompt.Canceled)
+				return fmt.Errorf("%w: deployment canceled", prompt.ErrCanceled)
 			}
 		}
 		// Best-effort compose down before replace.
@@ -560,7 +560,7 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 			return cerr
 		}
 		if !ok {
-			return fmt.Errorf("%w: remove canceled", prompt.Canceled)
+			return fmt.Errorf("%w: remove canceled", prompt.ErrCanceled)
 		}
 	}
 

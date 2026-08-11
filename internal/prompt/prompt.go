@@ -137,5 +137,5 @@ func stdinIsTTY() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// Canceled is returned when the operator declines a required confirmation.
-var Canceled = fmt.Errorf("canceled")
+// ErrCanceled is returned when the operator declines a required confirmation.
+var ErrCanceled = fmt.Errorf("canceled")
