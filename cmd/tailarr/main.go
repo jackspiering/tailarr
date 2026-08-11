@@ -1,12 +1,35 @@
-// Command tailarr is the Tailarr CLI and TUI entrypoint.
+// Command tailarr is the Tailarr interactive TUI entrypoint.
 package main
 
 import (
+	"fmt"
 	"os"
 
-	"github.com/jackspiering/tailarr/internal/cli"
+	"github.com/jackspiering/tailarr/internal/config"
+	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/ui"
 )
 
 func main() {
-	os.Exit(cli.Execute())
+	cfg := config.Default()
+	if err := config.Load(&cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: load config:", err)
+		os.Exit(1)
+	}
+
+	if !ui.IsInteractive() {
+		fmt.Fprintln(os.Stderr, "Tailarr is interactive; run inside a terminal.")
+		os.Exit(1)
+	}
+
+	if err := ui.FirstRunSetup(&cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+
+	log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	if err := ui.Run(cfg, log); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
 }

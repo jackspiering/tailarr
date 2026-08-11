@@ -3,7 +3,6 @@ package doctor
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,27 +162,4 @@ func probeWritable(dir string) error {
 		return err
 	}
 	return nil
-}
-
-// Write prints human-readable results to w.
-func Write(w io.Writer, r Result) {
-	for _, c := range r.Checks {
-		mark := ".."
-		switch c.Level {
-		case OK:
-			mark = "ok"
-		case Warn:
-			mark = "!!"
-		case Fail:
-			mark = "XX"
-		case Info:
-			mark = "--"
-		}
-		_, _ = fmt.Fprintf(w, "[%s] %-12s %s\n", mark, c.Name, c.Message)
-	}
-	if r.Healthy() {
-		_, _ = fmt.Fprintln(w, "\nDoctor: no hard failures.")
-	} else {
-		_, _ = fmt.Fprintln(w, "\nDoctor: one or more checks failed.")
-	}
 }

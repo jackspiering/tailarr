@@ -6,8 +6,8 @@ Read this before changing the repository. For humans and AI coding agents.
 
 Tailarr is a Go application that deploys Docker Compose services from the
 [ScaleTail](https://github.com/tailscale-dev/ScaleTail) template repository.
-With no arguments it opens a Bubble Tea TUI. With a subcommand it runs the CLI.
-Both paths share `internal/` packages.
+It is a TUI-only program: the binary opens a Bubble Tea TUI and has no
+subcommands. All logic lives in `internal/` packages.
 
 There is no daemon and no cloud control plane. Operators run the binary next
 to Docker.
@@ -19,9 +19,8 @@ live in this tree unless they are added as explicit reference material.
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/tailarr` | `main` |
-| `internal/cli` | Cobra command wiring |
-| `internal/ui` | Bubble Tea models |
+| `cmd/tailarr` | `main` (TUI entrypoint) |
+| `internal/ui` | Bubble Tea models, first-run setup |
 | `internal/config` | Plain-text config load/save |
 | `internal/authkeys` | Named TS_AUTHKEY store (mode 600) |
 | `internal/scaletail` | Catalog discovery, git refresh, env merge |
@@ -38,7 +37,7 @@ Module path: `github.com/jackspiering/tailarr`.
 ## Non-negotiable rules
 
 - Never log secrets. Redact before writing logs.
-- Never accept secrets through CLI flags; prompts or files only.
+- Never accept secrets through CLI flags or TUI flags; prompts or files only.
 - Config is plain `KEY=VALUE`. Parse with a scanner; never `source`/`eval`
   user-controlled files (and do not shell out to interpret them).
 - Prefer safe filesystem ops: atomic writes, refuse symlink write escapes,
@@ -78,12 +77,12 @@ Unit tests must pass without Docker. Optional integration tests may use
 go test ./...
 go vet ./...
 go build -o bin/tailarr ./cmd/tailarr
-./bin/tailarr version
-./bin/tailarr doctor
+./bin/tailarr
 rumdl check .
 ```
 
-## Exit codes
+## Exit behavior
 
-See `internal/exitcode`: 64 usage, 65 not found, 66 canceled, 67 unsafe,
-69 Docker, 70 health, 77 permission/lock.
+The binary is interactive-only: when stdin/stdout is not a terminal it prints
+"Tailarr is interactive; run inside a terminal." and exits 1. No sysexits exit
+codes exist; there are no subcommands to signal.

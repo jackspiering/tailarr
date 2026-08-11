@@ -48,7 +48,7 @@ func (s *Std) Confirm(question string, defaultYes bool) (bool, error) {
 		return true, nil
 	}
 	if !stdinIsTTY() {
-		return false, fmt.Errorf("stdin is not a terminal; pass --yes to confirm: %s", question)
+		return false, fmt.Errorf("stdin is not a terminal: %s", question)
 	}
 	s.Printf("%s %s: ", question, suffix)
 	line, err := s.readLine()

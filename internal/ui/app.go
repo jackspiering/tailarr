@@ -119,6 +119,32 @@ func Run(cfg config.Config, log *logging.Logger) error {
 	return err
 }
 
+// FirstRunSetup creates a default config file on first run. It is a no-op when
+// the config file already exists. Prompts run before the TUI takes over the
+// terminal.
+func FirstRunSetup(cfg *config.Config) error {
+	// If config file already exists, nothing to do.
+	if _, err := os.Stat(cfg.ConfigPath); err == nil {
+		return nil
+	}
+	uiPrompt := prompt.NewStd(cfg.AssumeYes)
+	uiPrompt.Printf("No config found at %s.\n", cfg.ConfigPath)
+	ok, err := uiPrompt.Confirm("Create one now using the current defaults?", true)
+	if err != nil || !ok {
+		return nil
+	}
+	if edit, _ := uiPrompt.Confirm("Edit defaults before saving?", true); edit {
+		uiPrompt.Printf("%s\n", editConfigInteractive(cfg, uiPrompt))
+		return nil
+	}
+	if err := config.Save(*cfg); err != nil {
+		uiPrompt.Printf("Could not save config: %v\n", err)
+		return nil
+	}
+	uiPrompt.Printf("Saved config: %s\n", cfg.ConfigPath)
+	return nil
+}
+
 func mainMenuItems() []menuItem {
 	return []menuItem{
 		{id: "status", label: "Status", desc: "Health, counts, and deployment status"},
@@ -143,6 +169,7 @@ func statusMenuItems() []menuItem {
 func servicesMenuItems() []menuItem {
 	return []menuItem{
 		{id: "search", label: "Search available services", desc: "Find available ScaleTail templates"},
+		{id: "refresh", label: "Refresh catalog", desc: "Clone or pull the ScaleTail templates"},
 		{id: "deploy", label: "Deploy services", desc: "Create or replace deployments"},
 		{id: "remove", label: "Remove services", desc: "Stop and remove deployments"},
 		{id: "update", label: "Check for container updates", desc: "Pull images and recreate services"},
@@ -408,6 +435,24 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 		}
 		m.status = b.String()
 		return m, nil
+	case "refresh":
+		lock, err := deploy.AcquireLock(deploy.RepoLockPath(m.cfg.RepoPath), deploy.DefaultLockTimeout)
+		if err != nil {
+			m.status = styleOrPlain(errStyle, "repo lock: "+err.Error())
+			return m, nil
+		}
+		defer func() { _ = lock.Release() }()
+		msg, err := scaletail.Refresh(m.cfg.RepoURL, m.cfg.RepoPath, m.cfg.NoRefresh)
+		if err != nil {
+			m.status = styleOrPlain(errStyle, err.Error())
+			return m, nil
+		}
+		if msg == "" {
+			m.status = "Catalog is up to date."
+		} else {
+			m.status = "Catalog refreshed.\n" + msg
+		}
+		return m, nil
 	case "deploy":
 		return m.beginMulti(multiDeploy)
 	case "remove":
@@ -451,6 +496,13 @@ func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
 }
 
 func runAuthkeyAction(cfg config.Config, ui *prompt.Std, action string) string {
+	// Serialize read-modify-write with a lock next to the store.
+	lock, err := deploy.AcquireLock(cfg.AuthkeysPath+".lock", deploy.DefaultLockTimeout)
+	if err != nil {
+		return "Error: authkeys lock: " + err.Error()
+	}
+	defer func() { _ = lock.Release() }()
+
 	s, err := authkeys.Load(cfg.AuthkeysPath)
 	if err != nil {
 		return "Error: " + err.Error()

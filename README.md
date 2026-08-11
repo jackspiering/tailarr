@@ -32,26 +32,36 @@ The script detects OS/arch, downloads the matching release asset, verifies
 
 Then:
 
-```bash   
-tailarr doctor
-tailarr
+```bash
+tailarr    # interactive TUI (requires a TTY)
+```
+
+If you see a Python-style `usage: tailarr [-h]` / a "Packet Wizard" TUI instead,
+another older `tailarr` is earlier on your `PATH` (often
+`~/.local/bin/tailarr` ahead of `/usr/local/bin/tailarr`). Check with
+`type -a tailarr`.
+
+The installer prefers to **replace the first `tailarr` on PATH** when that
+directory is writable, so a re-run of the one-liner upgrades the binary you
+actually invoke. You can also:
+
+```bash
+# use the Go binary explicitly
+/usr/local/bin/tailarr
+
+# or retire a legacy user install
+mv ~/.local/bin/tailarr ~/.local/bin/tailarr.legacy
+hash -r
 ```
 
 ### Upgrade an existing install
 
-When installed from a release binary, Tailarr can upgrade itself:
-
-```bash
-tailarr upgrade           # check for a newer release, verify SHA256, replace the binary
-tailarr upgrade --check   # only report whether an upgrade is available
-tailarr upgrade --yes     # confirm automatically (for scripts)
-```
-
-`--force` reinstalls even when already on the latest release. Point
-`TAILARR_UPGRADE_REPO` (or `--repo`) at a fork when needed. The check compares
-SemVer; the running binary is replaced atomically only after the release
-asset's SHA256 matches the published `SHA256SUMS`. Installs from `go install`
-are not upgraded in place; rebuild instead.
+When installed from a release binary, Tailarr can upgrade itself from the
+**Maintenance** menu (**Upgrade Tailarr**): it checks for a newer release,
+verifies the SHA256, and replaces the running binary. The check compares
+SemVer; the binary is replaced atomically only after the release asset's
+SHA256 matches the published `SHA256SUMS`. Installs from `go install` are not
+upgraded in place; rebuild instead.
 
 ### Manual binary
 
@@ -61,7 +71,7 @@ Download a release asset for your OS/arch from
 ```bash
 chmod +x tailarr-linux-amd64   # example
 sudo mv tailarr-linux-amd64 /usr/local/bin/tailarr
-tailarr doctor
+tailarr
 ```
 
 ### go install
@@ -77,8 +87,7 @@ git clone https://github.com/jackspiering/tailarr.git
 cd tailarr
 go test ./...
 go build -o bin/tailarr ./cmd/tailarr
-./bin/tailarr version
-./bin/tailarr doctor
+./bin/tailarr
 ```
 
 On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
@@ -92,7 +101,7 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 | Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed, confirmations, backups) |
 | Auth keys | Named `TS_AUTHKEY` store (add/rename/replace/remove, mode `600`, redacted listings) |
 | Status | Overview, managed/other counts, container health, running ScaleTail-style names |
-| Deploy env | Interactive prompts for empty/placeholder env values; `--authkey <name>` for stores |
+| Deploy env | Interactive prompts for empty/placeholder env values; reusable stored keys for multi-service deploys |
 | Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, ownership-aware locks |
 | Doctor | Dependencies, paths, Docker/Compose reachability (safe write probe) |
 | UI | Hierarchical Bubble Tea menus (Status / Services / Keys / Config / Maintenance); multi-select batch ops |
@@ -105,67 +114,20 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 tailarr
 ```
 
+Tailarr is a TUI-only application: run it inside a terminal. It exits with an
+error otherwise.
+
 Main menu: **Status**, **Services**, **Tailscale Authentication Keys**,
 **Configuration**, **Maintenance**. Arrow keys move, Enter selects,
 `q` or Esc backs out / quits. Number keys jump to items. Multi-select deploy
 and lifecycle actions use space to toggle, `a` for all, then Run.
 
+- **Services > Search available services** lists the ScaleTail catalog.
+- **Services > Refresh catalog** clones or pulls the ScaleTail templates.
+- **Maintenance > Run doctor checks** verifies the host, paths, and Docker.
+- **Maintenance > Upgrade Tailarr** self-upgrades a release binary.
+
 First interactive run can create and optionally edit the config file.
-
-### CLI
-
-```bash
-tailarr list
-tailarr deploy {SERVICE}
-tailarr update {SERVICE}
-tailarr stop {SERVICE}
-tailarr restart {SERVICE}
-tailarr remove {SERVICE}
-tailarr repair {SERVICE}
-tailarr deployed
-tailarr running
-tailarr doctor
-tailarr config
-tailarr authkeys list
-tailarr logs
-tailarr version
-```
-
-| Command | Purpose |
-| --- | --- |
-| `list` | Available ScaleTail services |
-| `deployed` | Local deployments |
-| `running` | Running Compose project names (best effort) |
-| `deploy <service>` | Deploy (`--force` replaces managed; `--authkey <name>` fills empty `TS_AUTHKEY`) |
-| `repair <service>` | Refresh templates; keep local `.env` when possible |
-| `update` / `stop` / `restart` / `remove` | Lifecycle on **managed** deploys only (`remove` fails closed if compose down fails; `--volumes` drops volumes) |
-| `authkeys` | List/add/rename/remove stored keys (values never on flags) |
-| `logs` | Print log file path |
-| `config` | Interactive edit (TTY), or `config show` / `config write` |
-| `doctor` | Host and path checks |
-| `version` | Print version |
-
-Global options (before the command):
-
-```bash
-tailarr --no-refresh list
-tailarr --deploy-path /srv/stacks deployed
-tailarr --yes remove {SERVICE}
-```
-
-| Option | Meaning |
-| --- | --- |
-| `--config <path>` | Config file path |
-| `--repo-url <url>` | ScaleTail git URL |
-| `--repo-path <path>` | Local ScaleTail clone |
-| `--deploy-path <path>` | Deployment root |
-| `--log-path <path>` | Log file |
-| `--authkeys-path <path>` | Auth keys file |
-| `--no-refresh` | Skip ScaleTail clone/pull for list/deploy/repair |
-| `--yes` | Auto-confirm default-yes prompts (when prompts exist) |
-
-Secrets are never accepted on CLI flags. Enter them at prompts or pipe a file
-to stdin for `authkeys add`.
 
 ## Configuration
 
@@ -193,9 +155,9 @@ or evaluates the file. Conventional default paths:
 | `TAILARR_LOG_PATH` | Log file |
 | `TAILARR_AUTHKEYS_PATH` | Auth keys file |
 | `TAILARR_LOG_MAX_BYTES` | Log rotation size (default `5242880`) |
-| `TAILARR_ASSUME_YES` | `1` = same as `--yes` |
+| `TAILARR_ASSUME_YES` | `1` = auto-confirm default-yes prompts |
 
-Precedence: defaults, then config file, then environment, then CLI flags.
+Precedence: defaults, then config file, then environment.
 
 Safety notes:
 

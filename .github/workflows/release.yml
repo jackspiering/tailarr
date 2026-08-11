@@ -43,7 +43,15 @@ jobs:
 
       - name: Verify built binaries
         run: |
-          dist/tailarr-linux-amd64 version | grep -F "tailarr ${GITHUB_REF_NAME#v}"
+          # TUI-only binary refuses non-TTY runs; that refusal is the identity probe.
+          out=$(dist/tailarr-linux-amd64 </dev/null 2>&1 || true)
+          case "$out" in
+          *"Tailarr is interactive"*) ;;
+          *) echo "unexpected output: $out"; exit 1 ;;
+          esac
+          # Buildinfo records the exact commit; confirm it matches the tagged revision.
+          rev=$(git rev-parse HEAD)
+          go version -m dist/tailarr-linux-amd64 | grep -F "vcs.revision=${rev}"
           file dist/tailarr-linux-arm64
 
       - name: Create release

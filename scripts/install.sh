@@ -90,12 +90,13 @@ resolve_version() {
 }
 
 # is_go_tailarr reports whether path looks like this project's Go binary.
+# The TUI-only binary refuses to run without a TTY; that refusal is the probe.
 is_go_tailarr() {
 	path=$1
 	[ -x "$path" ] || return 1
-	out=$("$path" version 2>/dev/null || true)
+	out=$("$path" </dev/null 2>&1 || true)
 	case "$out" in
-	"${BINARY_NAME} "*) return 0 ;;
+	*"Tailarr is interactive"*) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -195,18 +196,15 @@ main() {
 	installed="${install_dir}/${BINARY_NAME}"
 	info "Installed: ${installed}"
 
-	# Version smoke check on the file we just wrote (full path).
-	installed_ver=""
-	if installed_ver=$("${installed}" version 2>/dev/null); then
-		info "Version: ${installed_ver}"
-	else
-		err "installed binary does not respond to 'version' (not the expected Go Tailarr): ${installed}"
-	fi
-	# Go Tailarr prints "tailarr X.Y.Z". Reject obvious foreign CLIs.
-	case "${installed_ver}" in
-	"${BINARY_NAME} "*) ;;
+	# Identity smoke check on the file we just wrote (full path). The TUI-only
+	# binary refuses non-TTY runs; expect exactly that refusal.
+	installed_out=$("${installed}" </dev/null 2>&1 || true)
+	case "${installed_out}" in
+	*"Tailarr is interactive"*)
+		info "Verified: ${installed} (TUI-only Tailarr)"
+		;;
 	*)
-		err "unexpected version output from ${installed}: ${installed_ver}"
+		err "unexpected output from ${installed}: ${installed_out}"
 		;;
 	esac
 
@@ -222,19 +220,17 @@ main() {
 
 	# Detect a different tailarr earlier on PATH (common with legacy installs).
 	# Shells may also cache a previous location (bash: hash -r).
-	warn_path_shadow "${installed}" "${installed_ver}"
+	warn_path_shadow "${installed}"
 
 	info ""
 	info "Next steps:"
-	info "  ${installed} doctor"
-	info "  ${installed}              # TUI when stdout is a TTY"
-	info "  ${installed} --help"
+	info "  ${installed}              # interactive TUI (run inside a terminal)"
 	if command -v "${BINARY_NAME}" >/dev/null 2>&1; then
 		resolved=$(command -v "${BINARY_NAME}" 2>/dev/null || true)
 		if [ -n "${resolved}" ] && same_file "${resolved}" "${installed}"; then
 			info ""
 			info "Or, if ${install_dir} is first on your PATH:"
-			info "  tailarr doctor"
+			info "  tailarr"
 		fi
 	fi
 }
@@ -259,7 +255,6 @@ same_file() {
 
 warn_path_shadow() {
 	installed=$1
-	installed_ver=$2
 
 	# Clear bash command hash so we do not report a stale cached path.
 	# hash is a bash builtin; ignore failures under plain sh/dash.
@@ -275,26 +270,25 @@ warn_path_shadow() {
 
 	if same_file "${resolved}" "${installed}"; then
 		# Confirm PATH entry is also the Go binary (not a wrapper that shells out elsewhere).
-		path_ver=$("${resolved}" version 2>/dev/null || true)
-		if [ "${path_ver}" = "${installed_ver}" ]; then
-			return
-		fi
+		path_out=$("${resolved}" </dev/null 2>&1 || true)
+		case "${path_out}" in
+		*"Tailarr is interactive"*) return ;;
+		esac
 	fi
 
 	info ""
 	info "WARNING: another program named '${BINARY_NAME}' is first on your PATH."
 	info "  PATH resolves to: ${resolved}"
-	info "  Go Tailarr is at: ${installed} (${installed_ver})"
-	if path_ver=$("${resolved}" version 2>/dev/null); then
-		info "  PATH binary version: ${path_ver}"
-	elif path_help=$("${resolved}" --help 2>&1 | head -n 1); then
-		info "  PATH binary help: ${path_help}"
+	info "  Go Tailarr is at: ${installed}"
+	path_out=$("${resolved}" </dev/null 2>&1 | head -n 1 || true)
+	if [ -n "${path_out}" ]; then
+		info "  PATH binary output: ${path_out}"
 	fi
 	info ""
 	info "The Go install succeeded, but running bare 'tailarr' may invoke a legacy tool."
 	info "Fix (pick one):"
 	info "  1. Run the Go binary by full path:"
-	info "       ${installed} doctor"
+	info "       ${installed}"
 	install_dir=$(dirname "${installed}")
 	info "  2. Put ${install_dir} earlier on PATH than the directory of ${resolved}"
 	info "  3. Rename or remove the other binary if you no longer need it:"

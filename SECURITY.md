@@ -23,8 +23,8 @@ Include:
 
 ## Operator guidance
 
-- Never put Tailscale auth keys or other secrets on CLI flags. Use
-  `authkeys add <name>` (prompt/stdin) and `deploy --authkey <name>`.
+- Never put Tailscale auth keys or other secrets on flags or prompts that echo
+  input. Enter them at hidden prompts (TUI/terminal) or from a file.
 - Never put credentials in `TAILARR_REPO_URL` (https userinfo is rejected).
 - Keep `authkeys.conf`, config, and deployment `.env` files mode `600`.
 - Treat the ScaleTail git clone as trusted input: Compose files and images

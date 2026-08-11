@@ -6,6 +6,3 @@ package version
 
 // Version is the current Tailarr release (SemVer MAJOR.MINOR.PATCH).
 var Version = "0.2.0"
-
-// Name is the binary product name.
-const Name = "tailarr"
