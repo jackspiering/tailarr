@@ -22,11 +22,8 @@ func gitHardened(extra ...string) []string {
 
 // Refresh clones or updates the ScaleTail repository.
 // When noRefresh is true, only validates the local tree if present.
-func Refresh(repoURL, repoPath, repoRef string, noRefresh bool) error {
+func Refresh(repoURL, repoPath string, noRefresh bool) error {
 	if err := names.ValidateRepoURL(repoURL); err != nil {
-		return err
-	}
-	if err := names.ValidateRepoRef(repoRef); err != nil {
 		return err
 	}
 	if paths.IsSymlink(repoPath) {
@@ -54,9 +51,6 @@ func Refresh(repoURL, repoPath, repoRef string, noRefresh bool) error {
 	}
 
 	if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
-		if repoRef != "" {
-			return checkoutRef(repoPath, repoRef)
-		}
 		// Unpinned: ensure we are on a branch before pull (detached HEAD breaks pull).
 		if err := ensureOnBranch(repoPath); err != nil {
 			return err
@@ -79,69 +73,16 @@ func Refresh(repoURL, repoPath, repoRef string, noRefresh bool) error {
 		return fmt.Errorf("%s exists but is not a git repository", repoPath)
 	}
 
-	return cloneRepo(repoURL, repoPath, repoRef)
+	return cloneRepo(repoURL, repoPath)
 }
 
-func cloneRepo(repoURL, repoPath, repoRef string) error {
-	// Commit SHAs cannot be passed to git clone --branch.
-	if repoRef != "" && names.IsCommitSHA(repoRef) {
-		args := gitHardened("clone", "--no-checkout", repoURL, repoPath)
-		cmd := exec.Command("git", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("ScaleTail git clone failed: %w", err)
-		}
-		return checkoutRef(repoPath, repoRef)
-	}
-
-	args := gitHardened("clone", "--depth", "1")
-	if repoRef != "" {
-		args = append(args, "--branch", repoRef)
-	}
-	args = append(args, repoURL, repoPath)
+func cloneRepo(repoURL, repoPath string) error {
+	args := gitHardened("clone", "--depth", "1", repoURL, repoPath)
 	cmd := exec.Command("git", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("ScaleTail git clone failed: %w", err)
-	}
-	return nil
-}
-
-func checkoutRef(repoPath, ref string) error {
-	// For SHAs, fetch the object; for branches/tags, fetch that ref.
-	var fetch *exec.Cmd
-	if names.IsCommitSHA(ref) {
-		// Unshallow-friendly: fetch the commit (may need full history on shallow clones).
-		fetch = exec.Command("git", gitHardened("-C", repoPath, "fetch", "--prune", "origin", ref)...)
-	} else {
-		fetch = exec.Command("git", gitHardened("-C", repoPath, "fetch", "--prune", "origin", ref)...)
-	}
-	fetch.Stdout = os.Stdout
-	fetch.Stderr = os.Stderr
-	if err := fetch.Run(); err != nil {
-		// Fallback: fetch all and try checkout by name/sha.
-		fetchAll := exec.Command("git", gitHardened("-C", repoPath, "fetch", "--prune", "origin")...)
-		fetchAll.Stdout = os.Stdout
-		fetchAll.Stderr = os.Stderr
-		if err2 := fetchAll.Run(); err2 != nil {
-			return fmt.Errorf("could not fetch pinned ScaleTail ref: %s: %w", ref, err)
-		}
-	}
-
-	// Prefer FETCH_HEAD when fetch of specific ref succeeded; else checkout ref directly.
-	co := exec.Command("git", gitHardened("-C", repoPath, "checkout", "--detach", ref)...)
-	co.Stdout = os.Stdout
-	co.Stderr = os.Stderr
-	if err := co.Run(); err != nil {
-		// Try FETCH_HEAD as last resort.
-		co2 := exec.Command("git", gitHardened("-C", repoPath, "checkout", "--detach", "FETCH_HEAD")...)
-		co2.Stdout = os.Stdout
-		co2.Stderr = os.Stderr
-		if err2 := co2.Run(); err2 != nil {
-			return fmt.Errorf("could not check out pinned ScaleTail ref: %s: %w", ref, err)
-		}
 	}
 	return nil
 }
@@ -166,7 +107,7 @@ func ensureOnBranch(repoPath string) error {
 		}
 	}
 	if branch == "" {
-		return fmt.Errorf("ScaleTail repo is detached and no default branch could be determined; set --repo-ref")
+		return fmt.Errorf("ScaleTail repo is detached and no default branch could be determined")
 	}
 	co := exec.Command("git", gitHardened("-C", repoPath, "checkout", "-B", branch, "origin/"+branch)...)
 	co.Stdout = os.Stdout

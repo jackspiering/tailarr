@@ -87,9 +87,6 @@ func Run(cfg config.Config) Result {
 		r.add(Warn, "catalog", "ScaleTail services directory not found (run list/deploy to clone)")
 	}
 
-	if cfg.RepoRef != "" {
-		r.add(Info, "repo-ref", "pinned ScaleTail ref: "+cfg.RepoRef)
-	}
 	// Redact credentials if a misconfigured URL slipped through.
 	safeURL := names.RedactRepoURL(cfg.RepoURL)
 	r.add(Info, "paths", fmt.Sprintf("config=%s repo=%s deploy=%s url=%s",

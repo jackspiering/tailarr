@@ -15,7 +15,6 @@ TAILARR_REPO_PATH=/tmp/st
 TAILARR_DEPLOY_PATH=/tmp/deploy
 TAILARR_LOG_PATH=/tmp/log
 TAILARR_AUTHKEYS_PATH=/tmp/keys
-TAILARR_REPO_REF=v1.0.0
 TAILARR_LOG_MAX_BYTES=12345
 UNKNOWN=ignore
 `
@@ -26,7 +25,7 @@ UNKNOWN=ignore
 	// Clear env that might override.
 	for _, k := range []string{
 		"TAILARR_REPO_URL", "TAILARR_REPO_PATH", "TAILARR_DEPLOY_PATH",
-		"TAILARR_LOG_PATH", "TAILARR_AUTHKEYS_PATH", "TAILARR_REPO_REF",
+		"TAILARR_LOG_PATH", "TAILARR_AUTHKEYS_PATH",
 		"TAILARR_LOG_MAX_BYTES", "TAILARR_ASSUME_YES",
 	} {
 		t.Setenv(k, "")
@@ -42,9 +41,6 @@ UNKNOWN=ignore
 	}
 	if cfg.RepoPath != "/tmp/st" {
 		t.Fatalf("RepoPath: %s", cfg.RepoPath)
-	}
-	if cfg.RepoRef != "v1.0.0" {
-		t.Fatalf("RepoRef: %s", cfg.RepoRef)
 	}
 	if cfg.LogMaxBytes != 12345 {
 		t.Fatalf("LogMaxBytes: %d", cfg.LogMaxBytes)

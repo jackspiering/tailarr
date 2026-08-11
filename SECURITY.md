@@ -29,7 +29,6 @@ Include:
 - Keep `authkeys.conf`, config, and deployment `.env` files mode `600`.
 - Treat the ScaleTail git clone as trusted input: Compose files and images
   run on your host.
-- Prefer pinned `TAILARR_REPO_REF` values in production (branch, tag, or commit).
 - Review backups under `.tailarr_backups` (they may contain secrets).
 - Only Tailarr-managed deployments (with `.tailarr.compose.yaml` marker) are
   updated/stopped/removed.

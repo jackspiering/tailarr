@@ -35,7 +35,6 @@ type Config struct {
 	DeployPath   string
 	LogPath      string
 	AuthkeysPath string
-	RepoRef      string
 	LogMaxBytes  int64
 	NoRefresh    bool
 	AssumeYes    bool
@@ -50,7 +49,6 @@ func Default() Config {
 		DeployPath:   DefaultDeployPath,
 		LogPath:      DefaultLogPath,
 		AuthkeysPath: DefaultAuthkeysPath,
-		RepoRef:      "",
 		LogMaxBytes:  DefaultLogMaxBytes,
 	}
 }
@@ -110,8 +108,6 @@ func loadFile(cfg *Config, path string) error {
 			cfg.LogPath = value
 		case "TAILARR_AUTHKEYS_PATH":
 			cfg.AuthkeysPath = value
-		case "TAILARR_REPO_REF":
-			cfg.RepoRef = value
 		case "TAILARR_LOG_MAX_BYTES":
 			n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 			if err == nil && n > 0 {
@@ -137,9 +133,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("TAILARR_AUTHKEYS_PATH"); v != "" {
 		cfg.AuthkeysPath = v
-	}
-	if v := os.Getenv("TAILARR_REPO_REF"); v != "" {
-		cfg.RepoRef = v
 	}
 	if v := os.Getenv("TAILARR_LOG_MAX_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
@@ -174,7 +167,6 @@ func format(cfg Config) string {
 	fmt.Fprintf(&b, "TAILARR_DEPLOY_PATH=%s\n", cfg.DeployPath)
 	fmt.Fprintf(&b, "TAILARR_LOG_PATH=%s\n", cfg.LogPath)
 	fmt.Fprintf(&b, "TAILARR_AUTHKEYS_PATH=%s\n", cfg.AuthkeysPath)
-	fmt.Fprintf(&b, "TAILARR_REPO_REF=%s\n", cfg.RepoRef)
 	fmt.Fprintf(&b, "TAILARR_LOG_MAX_BYTES=%d\n", cfg.LogMaxBytes)
 	return b.String()
 }

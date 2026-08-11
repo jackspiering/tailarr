@@ -125,7 +125,7 @@ tailarr
 ```
 
 Main menu: **Status**, **Services**, **Tailscale Authentication Keys**,
-**Configuration**, **Maintenance**. Arrow keys / `j` `k` move, Enter selects,
+**Configuration**, **Maintenance**. Arrow keys move, Enter selects,
 `q` or Esc backs out / quits. Number keys jump to items. Multi-select deploy
 and lifecycle actions use space to toggle, `a` for all, then Run.
 
@@ -169,7 +169,6 @@ Global options (before the command):
 ```bash
 tailarr --no-refresh list
 tailarr --deploy-path /srv/stacks deployed
-tailarr --repo-ref v1.2.3 list
 tailarr --yes remove {SERVICE}
 ```
 
@@ -181,7 +180,6 @@ tailarr --yes remove {SERVICE}
 | `--deploy-path <path>` | Deployment root |
 | `--log-path <path>` | Log file |
 | `--authkeys-path <path>` | Auth keys file |
-| `--repo-ref <ref>` | Pin ScaleTail to a branch, tag, or commit |
 | `--no-refresh` | Skip ScaleTail clone/pull for list/deploy/repair |
 | `--yes` | Auto-confirm default-yes prompts (when prompts exist) |
 
@@ -213,7 +211,6 @@ or evaluates the file. Conventional default paths:
 | `TAILARR_DEPLOY_PATH` | Deployment root |
 | `TAILARR_LOG_PATH` | Log file |
 | `TAILARR_AUTHKEYS_PATH` | Auth keys file |
-| `TAILARR_REPO_REF` | Pinned ScaleTail ref |
 | `TAILARR_LOG_MAX_BYTES` | Log rotation size (default `5242880`) |
 | `TAILARR_ASSUME_YES` | `1` = same as `--yes` |
 
@@ -232,9 +229,7 @@ Safety notes:
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and
-[docs/development.md](docs/development.md). Feature checklist:
-[docs/parity.md](docs/parity.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
 
 ```bash
 go test ./...

@@ -81,38 +81,9 @@ func TestRedactRepoURL(t *testing.T) {
 	}
 }
 
-func TestIsCommitSHA(t *testing.T) {
-	t.Parallel()
-	if !IsCommitSHA("abcdef1") {
-		t.Fatal("short sha")
-	}
-	if !IsCommitSHA("0123456789abcdef0123456789abcdef01234567") {
-		t.Fatal("full sha")
-	}
-	if IsCommitSHA("main") || IsCommitSHA("v1.0.0") || IsCommitSHA("abc") {
-		t.Fatal("non-sha accepted")
-	}
-}
-
 func TestValidTSAuthkeyRejectsNewline(t *testing.T) {
 	t.Parallel()
 	if ValidTSAuthkey("tskey-auth-x\ninjected=1") {
 		t.Fatal("newline should fail")
-	}
-}
-
-func TestValidateRepoRef(t *testing.T) {
-	t.Parallel()
-	if err := ValidateRepoRef("v1.2.3"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateRepoRef("main"); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateRepoRef("-rf"); err == nil {
-		t.Error("flag-like ref should fail")
-	}
-	if err := ValidateRepoRef("has space"); err == nil {
-		t.Error("whitespace ref should fail")
 	}
 }

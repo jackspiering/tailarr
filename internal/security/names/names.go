@@ -131,27 +131,3 @@ func RedactRepoURL(raw string) string {
 	}
 	return raw
 }
-
-// ValidateRepoRef rejects refs that look like flags or contain whitespace.
-func ValidateRepoRef(ref string) error {
-	if ref == "" {
-		return nil
-	}
-	if strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, " \t\n\r") {
-		return fmt.Errorf("invalid ScaleTail repository ref: %s", ref)
-	}
-	return nil
-}
-
-// IsCommitSHA reports whether ref looks like a full or abbreviated git SHA.
-func IsCommitSHA(ref string) bool {
-	if len(ref) < 7 || len(ref) > 40 {
-		return false
-	}
-	for _, c := range ref {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
-}
