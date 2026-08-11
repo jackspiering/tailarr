@@ -7,7 +7,9 @@
 #
 # Environment:
 #   TAILARR_VERSION  Release tag (e.g. v0.1.0). Default: latest via GitHub API, else v0.1.0
-#   INSTALL_DIR      Install directory. Default: /usr/local/bin if writable, else ~/.local/bin
+#   INSTALL_DIR      Install directory. Default: directory of the first `tailarr` on
+#                    PATH if writable (replaces legacy installs), else /usr/local/bin
+#                    if writable, else ~/.local/bin
 #   GITHUB_REPO      owner/repo (default: jackspiering/tailarr)
 #
 # Requires: curl or wget; sha256sum or shasum.
@@ -87,11 +89,42 @@ resolve_version() {
 	printf '%s\n' "$DEFAULT_VERSION"
 }
 
+# is_go_tailarr reports whether path looks like this project's Go binary.
+is_go_tailarr() {
+	path=$1
+	[ -x "$path" ] || return 1
+	out=$("$path" version 2>/dev/null || true)
+	case "$out" in
+	"${BINARY_NAME} "*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 resolve_install_dir() {
 	if [ -n "${INSTALL_DIR:-}" ]; then
 		printf '%s\n' "$INSTALL_DIR"
 		return
 	fi
+
+	# Prefer replacing whatever `tailarr` would run today. That fixes the common
+	# case where a legacy tool lives in ~/.local/bin ahead of /usr/local/bin.
+	hash -r 2>/dev/null || true
+	existing=$(command -v "${BINARY_NAME}" 2>/dev/null || true)
+	if [ -n "$existing" ]; then
+		existing_dir=$(dirname "$existing")
+		if [ -w "$existing_dir" ] || { [ ! -e "$existing" ] && [ -w "$existing_dir" ]; }; then
+			if [ -w "$existing" ] || [ -w "$existing_dir" ]; then
+				if ! is_go_tailarr "$existing"; then
+					info "Found existing non-Go '${BINARY_NAME}' at ${existing}; replacing it" >&2
+				else
+					info "Upgrading existing Go Tailarr at ${existing}" >&2
+				fi
+				printf '%s\n' "$existing_dir"
+				return
+			fi
+		fi
+	fi
+
 	if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
 		printf '/usr/local/bin\n'
 		return

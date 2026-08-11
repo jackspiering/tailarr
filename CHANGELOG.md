@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Install script warns when another `tailarr` is earlier on `PATH` (legacy
   installs) and prints next steps using the full path to the Go binary.
+- Install script prefers replacing the first `tailarr` on `PATH` when that
+  directory is writable (e.g. `~/.local/bin` ahead of `/usr/local/bin`).
 
 ### Changed
 
