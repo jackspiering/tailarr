@@ -11,21 +11,53 @@ Compose services from a terminal TUI or scriptable CLI.
 No daemon. No cloud control plane. You run Tailarr next to Docker on a host
 you already control.
 
-> This repository is a **Go rewrite** of the Bash Tailarr tool. Install the
-> release binary (or build from source). The host still needs Git, Docker, and
-> Compose v2; Go is only required to build from source.
+Install a release binary (or build from source). The host still needs Git,
+Docker, and Compose v2; Go is only required to build from source.
 
 ## Quick start
 
-### Binary (recommended)
+### One-liner (recommended)
 
 ```bash
-# Download a release asset for your OS/arch from:
-#   https://github.com/jackspiering/tailarr/releases
-chmod +x tailarr
-sudo mv tailarr /usr/local/bin/   # or keep it anywhere on PATH
+curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+```
+
+Pinned release script (preferred for production):
+
+```bash
+curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.1.0/install.sh | sh
+```
+
+Options:
+
+```bash
+# Pin the binary version (default: latest GitHub release)
+TAILARR_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+
+# Install without root (default falls back here if /usr/local/bin is not writable)
+INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+```
+
+The script detects OS/arch, downloads the matching release asset, verifies
+`SHA256SUMS`, and installs `tailarr` to `/usr/local/bin` when writable, else
+`~/.local/bin`.
+
+Then:
+
+```bash
 tailarr doctor
 tailarr            # interactive TUI when stdout is a TTY
+```
+
+### Manual binary
+
+Download a release asset for your OS/arch from
+[Releases](https://github.com/jackspiering/tailarr/releases), then:
+
+```bash
+chmod +x tailarr-linux-amd64   # example
+sudo mv tailarr-linux-amd64 /usr/local/bin/tailarr
+tailarr doctor
 ```
 
 ### go install
@@ -134,7 +166,7 @@ to stdin for `authkeys add`.
 <summary>Paths, environment variables, permissions</summary>
 
 Config is plain text (`KEY=VALUE`). The parser reads lines; it never shells
-or evaluates the file. Defaults match the Bash Tailarr spirit:
+or evaluates the file. Conventional default paths:
 
 | Path | Default |
 | --- | --- |
@@ -173,8 +205,8 @@ Safety notes:
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and
-[docs/development.md](docs/development.md). Feature parity with the Bash tool
-is tracked in [docs/parity.md](docs/parity.md).
+[docs/development.md](docs/development.md). Feature checklist:
+[docs/parity.md](docs/parity.md).
 
 ```bash
 go test ./...
@@ -190,7 +222,5 @@ MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Jack Spiering.
 ## Thanks
 
 - [ScaleTail](https://github.com/tailscale-dev/ScaleTail) for Compose templates
-- The original Bash [Tailarr](https://github.com/2Tiny2Scale/Tailarr) for the
-  operator workflow this rewrite follows
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) and
   [Cobra](https://github.com/spf13/cobra)

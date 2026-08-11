@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- One-liner install script (`scripts/install.sh`) with OS/arch detection and
+  SHA256 verification of release assets.
+
+### Changed
+
+- Docs no longer link to the private legacy Bash prototype repository.
+
 ## [0.1.0] - 2026-08-11
 
 First public Go release of Tailarr (`github.com/jackspiering/tailarr`).

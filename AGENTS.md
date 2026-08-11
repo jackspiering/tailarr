@@ -12,8 +12,8 @@ Both paths share `internal/` packages.
 There is no daemon and no cloud control plane. Operators run the binary next
 to Docker.
 
-This is a from-scratch Go rewrite. Do not assume Bash sources from
-`2Tiny2Scale/Tailarr` live in this tree unless added as reference material.
+This is a from-scratch Go application. Do not assume legacy Bash sources
+live in this tree unless they are added as explicit reference material.
 
 ## Layout
 
