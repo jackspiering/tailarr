@@ -134,6 +134,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newDeployCmd(rt))
 	root.AddCommand(newRepairCmd(rt))
 	root.AddCommand(newUpdateCmd(rt))
+	root.AddCommand(newUpgradeCmd(rt))
 	root.AddCommand(newStopCmd(rt))
 	root.AddCommand(newRestartCmd(rt))
 	root.AddCommand(newRemoveCmd(rt))

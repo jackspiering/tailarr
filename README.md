@@ -40,7 +40,7 @@ INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jack
 
 The script detects OS/arch, downloads the matching release asset, verifies
 `SHA256SUMS`, and installs `tailarr` to `/usr/local/bin` when writable, else
-`~/.local/bin`.
+`~/.local/bin`. Re-running it also upgrades an existing install.
 
 Then:
 
@@ -48,6 +48,22 @@ Then:
 tailarr doctor
 tailarr            # interactive TUI when stdout is a TTY
 ```
+
+### Upgrade an existing install
+
+When installed from a release binary, Tailarr can upgrade itself:
+
+```bash
+tailarr upgrade           # check for a newer release, verify SHA256, replace the binary
+tailarr upgrade --check   # only report whether an upgrade is available
+tailarr upgrade --yes     # confirm automatically (for scripts)
+```
+
+`--force` reinstalls even when already on the latest release. Point
+`TAILARR_UPGRADE_REPO` (or `--repo`) at a fork when needed. The check compares
+SemVer; the running binary is replaced atomically only after the release
+asset's SHA256 matches the published `SHA256SUMS`. Installs from `go install`
+are not upgraded in place; rebuild instead.
 
 ### Manual binary
 

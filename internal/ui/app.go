@@ -16,6 +16,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/logging"
 	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
+	"github.com/jackspiering/tailarr/internal/upgrade"
 	"github.com/jackspiering/tailarr/internal/version"
 )
 
@@ -174,6 +175,7 @@ func maintenanceMenuItems() []menuItem {
 	return []menuItem{
 		{id: "doctor", label: "Run doctor checks", desc: "Host, path, Docker, and health checks"},
 		{id: "repair", label: "Repair a service", desc: "Refresh files while preserving local data"},
+		{id: "upgrade", label: "Upgrade Tailarr", desc: "Replace this binary with the latest release"},
 		{id: "back", label: "Back", desc: "Return to main menu"},
 	}
 }
@@ -192,6 +194,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = []menuItem{{id: "back", label: "Back", desc: "Return"}}
 		m.cursor = 0
 		return m, nil
+	case upgradeDoneMsg:
+		// The binary was replaced; leave the TUI so the new version takes over.
+		m.quitting = true
+		return m, tea.Quit
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
@@ -246,6 +252,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 type resultMsg struct{ text string }
+
+// upgradeDoneMsg signals that the running binary was replaced and the TUI
+// should exit so the new version takes over.
+type upgradeDoneMsg struct{}
 
 func (m model) goBack() model {
 	m.screen = screenMain
@@ -586,8 +596,46 @@ func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "repair":
 		return m.beginMulti(multiRepair)
+	case "upgrade":
+		// Leave the alt screen: the running binary may be replaced, and
+		// prompts/download progress need the normal terminal.
+		cfg := m.cfg
+		log := m.log
+		return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+			text, replaced := runUpgradeAction(cfg, log)
+			if replaced {
+				// Binary replaced: print the result, then quit.
+				_, _ = fmt.Fprintln(os.Stdout, text)
+				return upgradeDoneMsg{}
+			}
+			return resultMsg{text: text}
+		}, tea.EnterAltScreen)
 	}
 	return m, nil
+}
+
+func runUpgradeAction(cfg config.Config, log *logging.Logger) (string, bool) {
+	ui := prompt.NewStd(cfg.AssumeYes)
+	opts := upgrade.Options{Current: version.Version, Out: os.Stdout}
+	latest, err := upgrade.Latest(opts)
+	if err != nil {
+		return "Error: " + err.Error(), false
+	}
+	if upgrade.Compare(version.Version, latest) >= 0 {
+		return fmt.Sprintf("Already up to date (%s)", version.Version), false
+	}
+	ok, err := ui.Confirm(fmt.Sprintf("Upgrade Tailarr %s to %s?", version.Version, latest), true)
+	if err != nil || !ok {
+		return "Canceled.", false
+	}
+	tag, err := upgrade.Upgrade(opts)
+	if err != nil {
+		return "Error: " + err.Error(), false
+	}
+	if log != nil {
+		log.Event("tailarr upgraded to " + tag)
+	}
+	return fmt.Sprintf("Upgraded Tailarr to %s", tag), true
 }
 
 func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {

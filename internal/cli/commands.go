@@ -20,6 +20,8 @@ import (
 	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/names"
+	"github.com/jackspiering/tailarr/internal/upgrade"
+	"github.com/jackspiering/tailarr/internal/version"
 )
 
 func newDoctorCmd(rt *Runtime) *cobra.Command {
@@ -192,6 +194,81 @@ func newUpdateCmd(rt *Runtime) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newUpgradeCmd(rt *Runtime) *cobra.Command {
+	var check bool
+	var force bool
+	var repo string
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade the Tailarr binary to the latest release",
+		Long: "Download the latest Tailarr release from GitHub, verify its SHA256 " +
+			"checksum, and atomically replace the running binary. Runs the built-in " +
+			"self-update; the scripted installer also works.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if repo == "" {
+				repo = os.Getenv("TAILARR_UPGRADE_REPO")
+			}
+			opts := upgrade.Options{Repo: repo, Current: version.Version, Force: force, Out: rt.Out}
+			if check {
+				latest, err := upgrade.Latest(opts)
+				if err != nil {
+					return err
+				}
+				if upgrade.Compare(version.Version, latest) >= 0 {
+					_, _ = fmt.Fprintf(rt.Out, "Tailarr is up to date (%s)\n", version.Version)
+				} else {
+					_, _ = fmt.Fprintf(rt.Out, "Tailarr %s is installed; latest is %s\n", version.Version, latest)
+				}
+				return nil
+			}
+			// Fail closed outside a terminal: replacing the binary needs an
+			// explicit --yes.
+			if !isStdinTTY() && !rt.Cfg.AssumeYes {
+				return exitf(exitcode.Usage, "stdin is not a terminal; pass --yes to confirm upgrade")
+			}
+			if isStdinTTY() && !rt.Cfg.AssumeYes && !force {
+				ui := prompt.NewStd(false)
+				ok, err := ui.Confirm("Check for and install the latest Tailarr release?", true)
+				if err != nil || !ok {
+					return exitf(exitcode.Canceled, "upgrade canceled")
+				}
+			}
+			tag, err := upgrade.Upgrade(opts)
+			if err != nil {
+				if errors.Is(err, upgrade.ErrUpToDate) {
+					_, _ = fmt.Fprintf(rt.Out, "Already up to date (%s)\n", version.Version)
+					return nil
+				}
+				return mapUpgradeErr(err)
+			}
+			if rt.Log != nil {
+				rt.Log.Event("tailarr upgraded to " + tag)
+			}
+			_, _ = fmt.Fprintf(rt.Out, "Upgraded Tailarr to %s\n", tag)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&check, "check", false, "only report whether an upgrade is available")
+	cmd.Flags().BoolVar(&force, "force", false, "reinstall even when already at the latest version")
+	cmd.Flags().StringVar(&repo, "repo", "", "GitHub owner/repo to upgrade from (env TAILARR_UPGRADE_REPO)")
+	return cmd
+}
+
+func mapUpgradeErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "permission"), strings.Contains(msg, "not writable"),
+		strings.Contains(msg, "create temp"), strings.Contains(msg, "install binary"):
+		return &ExitError{Code: exitcode.Perm, Err: err}
+	case strings.Contains(msg, "unsupported"):
+		return &ExitError{Code: exitcode.Unsafe, Err: err}
+	}
+	return err
 }
 
 func newStopCmd(rt *Runtime) *cobra.Command {
