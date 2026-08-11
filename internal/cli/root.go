@@ -165,11 +165,11 @@ func runDefault(rt *Runtime) error {
 		return ui.Run(rt.Cfg, rt.Log)
 	}
 	// Non-TTY: short help instead of TUI.
-	fmt.Fprintln(rt.Out, "Tailarr "+version.Version)
-	fmt.Fprintln(rt.Out, "Interactive TUI requires a TTY. Use a subcommand, for example:")
-	fmt.Fprintln(rt.Out, "  tailarr list")
-	fmt.Fprintln(rt.Out, "  tailarr doctor")
-	fmt.Fprintln(rt.Out, "  tailarr --help")
+	_, _ = fmt.Fprintln(rt.Out, "Tailarr "+version.Version)
+	_, _ = fmt.Fprintln(rt.Out, "Interactive TUI requires a TTY. Use a subcommand, for example:")
+	_, _ = fmt.Fprintln(rt.Out, "  tailarr list")
+	_, _ = fmt.Fprintln(rt.Out, "  tailarr doctor")
+	_, _ = fmt.Fprintln(rt.Out, "  tailarr --help")
 	return nil
 }
 
@@ -178,7 +178,7 @@ func newVersionCmd(rt *Runtime) *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(rt.Out, "%s %s\n", version.Name, version.Version)
+			_, _ = fmt.Fprintf(rt.Out, "%s %s\n", version.Name, version.Version)
 			return nil
 		},
 	}

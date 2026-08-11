@@ -137,10 +137,50 @@ func ContainsSymlinks(root string) (string, error) {
 	return found, nil
 }
 
-// EnsureDir creates path if missing; refuses symlinks and non-directories.
+// RefuseSymlinkAncestry walks path and every existing ancestor; returns an
+// error if any component is a symlink. Missing leaf path is OK (creation
+// target); missing intermediate parents are also OK until the first existing
+// ancestor is checked.
+func RefuseSymlinkAncestry(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	// Walk from abs up to root; check each existing component with Lstat.
+	cur := abs
+	for {
+		info, err := os.Lstat(cur)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("path component must not be a symlink: %s", cur)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	return nil
+}
+
+// EnsureDir creates path if missing; refuses symlinks (including ancestors)
+// and non-directories.
 func EnsureDir(path, label string) error {
 	if IsSymlink(path) {
 		return fmt.Errorf("%s must not be a symlink: %s", label, path)
+	}
+	// Refuse symlinked parents that would redirect MkdirAll.
+	parent := filepath.Dir(path)
+	if parent != path {
+		if err := RefuseSymlinkAncestry(parent); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
 	}
 	info, err := os.Lstat(path)
 	if err == nil {

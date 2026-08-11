@@ -8,8 +8,8 @@ const (
 	Usage = 64
 	// NotFound is a missing path or service (EX_NOTFOUND).
 	NotFound = 65
-	// Cancelled is user cancellation.
-	Cancelled = 66
+	// Canceled is user cancellation (US spelling for misspell/locale).
+	Canceled = 66
 	// Unsafe is a path or symlink safety violation.
 	Unsafe = 67
 	// Docker is Docker/Compose unavailable.

@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/deploy"
+	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
@@ -88,7 +90,10 @@ func Run(cfg config.Config) Result {
 	if cfg.RepoRef != "" {
 		r.add(Info, "repo-ref", "pinned ScaleTail ref: "+cfg.RepoRef)
 	}
-	r.add(Info, "paths", fmt.Sprintf("config=%s repo=%s deploy=%s", cfg.ConfigPath, cfg.RepoPath, cfg.DeployPath))
+	// Redact credentials if a misconfigured URL slipped through.
+	safeURL := names.RedactRepoURL(cfg.RepoURL)
+	r.add(Info, "paths", fmt.Sprintf("config=%s repo=%s deploy=%s url=%s",
+		cfg.ConfigPath, cfg.RepoPath, cfg.DeployPath, safeURL))
 	return r
 }
 
@@ -130,16 +135,37 @@ func (r *Result) checkPath(label, path string, wantWrite bool) {
 		r.add(Fail, label, "exists but is not a directory: "+path)
 		return
 	}
-	// Probe access without privilege escalation.
+	// Probe write access with O_EXCL unique file; never follow/overwrite via symlink.
 	if wantWrite {
-		probe := filepath.Join(path, ".tailarr-doctor-write-probe")
-		if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		if err := probeWritable(path); err != nil {
 			r.add(Warn, label, "not writable by this user: "+path)
 			return
 		}
-		_ = os.Remove(probe)
 	}
 	r.add(OK, label, path)
+}
+
+// probeWritable creates an exclusive probe file and removes it.
+// Refuses to write if a probe path already exists (including as a symlink).
+func probeWritable(dir string) error {
+	name := fmt.Sprintf(".tailarr-doctor-write-probe-%d-%d", os.Getpid(), time.Now().UnixNano())
+	probe := filepath.Join(dir, name)
+	// Lstat: if anything is already there (symlink or file), do not touch it.
+	if _, err := os.Lstat(probe); err == nil {
+		return fmt.Errorf("probe path already exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, _ = f.Write([]byte("ok"))
+	_ = f.Close()
+	if err := os.Remove(probe); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Write prints human-readable results to w.
@@ -156,11 +182,11 @@ func Write(w io.Writer, r Result) {
 		case Info:
 			mark = "--"
 		}
-		fmt.Fprintf(w, "[%s] %-12s %s\n", mark, c.Name, c.Message)
+		_, _ = fmt.Fprintf(w, "[%s] %-12s %s\n", mark, c.Name, c.Message)
 	}
 	if r.Healthy() {
-		fmt.Fprintln(w, "\nDoctor: no hard failures.")
+		_, _ = fmt.Fprintln(w, "\nDoctor: no hard failures.")
 	} else {
-		fmt.Fprintln(w, "\nDoctor: one or more checks failed.")
+		_, _ = fmt.Fprintln(w, "\nDoctor: one or more checks failed.")
 	}
 }

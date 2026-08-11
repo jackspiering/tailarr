@@ -31,7 +31,7 @@ func TestListAvailableTestdata(t *testing.T) {
 		t.Fatal("incomplete services should be skipped")
 	}
 	if names["skip-symlink"] {
-		// empty dir without compose - skipped
+		t.Fatal("skip-symlink fixture should not appear in catalog")
 	}
 }
 

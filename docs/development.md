@@ -17,8 +17,12 @@ go build -ldflags "-X github.com/jackspiering/tailarr/internal/version.Version=0
 
 ```bash
 go test ./...
+go test -race ./...
 go test -count=1 ./internal/security/...
 ```
+
+Lifecycle unit tests fake Docker Compose via an internal `composeFn` hook;
+no daemon is required for `go test ./...`.
 
 ## Lint (local)
 

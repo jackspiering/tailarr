@@ -4,18 +4,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
 // Lock is a simple exclusive file lock using O_CREATE|O_EXCL.
 // Not as strong as flock across all platforms, but works for single-host ops
-// without CGO. Stale locks older than Timeout may be removed.
+// without CGO. Ownership is bound to a PID+token so Release only removes our
+// own lock, and stale cleanup only removes locks whose owner process is gone.
 type Lock struct {
-	path string
-	file *os.File
+	path  string
+	file  *os.File
+	pid   int
+	token string
 }
 
 // DefaultLockTimeout is how long to wait for a lock.
@@ -30,26 +36,38 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	if err := paths.EnsureDir(dir, "lock directory"); err != nil {
 		return nil, err
 	}
-	if paths.IsSymlink(dir) || paths.IsSymlink(path) {
-		return nil, fmt.Errorf("lock path must not be a symlink: %s", path)
+	if err := paths.RefuseSymlinkAncestry(dir); err != nil {
+		return nil, fmt.Errorf("lock directory: %w", err)
+	}
+	if paths.IsSymlink(path) {
+		return nil, fmt.Errorf("%w: lock path: %s", ErrSymlink, path)
 	}
 
 	deadline := time.Now().Add(timeout)
+	pid := os.Getpid()
+	token := fmt.Sprintf("%d-%d", pid, time.Now().UnixNano())
+
 	for {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-			return &Lock{path: path, file: f}, nil
+			if _, werr := fmt.Fprintf(f, "%d\n%s\n", pid, token); werr != nil {
+				_ = f.Close()
+				_ = os.Remove(path)
+				return nil, fmt.Errorf("write lock: %w", werr)
+			}
+			if serr := f.Sync(); serr != nil {
+				_ = f.Close()
+				_ = os.Remove(path)
+				return nil, fmt.Errorf("sync lock: %w", serr)
+			}
+			return &Lock{path: path, file: f, pid: pid, token: token}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("open lock: %w", err)
 		}
-		// Stale lock: if older than 2x timeout, remove.
-		if info, statErr := os.Stat(path); statErr == nil {
-			if time.Since(info.ModTime()) > 2*timeout {
-				_ = os.Remove(path)
-				continue
-			}
+		// Stale lock: only remove if owner process is dead and lock is old.
+		if tryRemoveStaleLock(path, 2*timeout) {
+			continue
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("another Tailarr process holds the lock: %s", path)
@@ -58,24 +76,87 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	}
 }
 
-// Release removes the lock file.
+// tryRemoveStaleLock removes path if it is older than maxAge and the recorded
+// owner PID is not running. Returns true if the lock was removed.
+func tryRemoveStaleLock(path string, maxAge time.Duration) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if time.Since(info.ModTime()) <= maxAge {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 1 {
+		return false
+	}
+	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || ownerPID <= 0 {
+		// Unparseable lock content after maxAge: remove as corrupt stale.
+		_ = os.Remove(path)
+		return true
+	}
+	if processAlive(ownerPID) {
+		return false
+	}
+	_ = os.Remove(path)
+	return true
+}
+
+// processAlive reports whether pid appears to be a running process (best effort).
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix, Signal(0) checks existence without killing (see process_unix.go).
+	return processAliveSignal(p)
+}
+
+// Release removes the lock file only if we still own it.
 func (l *Lock) Release() error {
 	if l == nil {
 		return nil
 	}
 	if l.file != nil {
 		_ = l.file.Close()
+		l.file = nil
+	}
+	data, err := os.ReadFile(l.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		// Not our format; leave it alone to avoid stealing another process's lock.
+		return nil
+	}
+	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || ownerPID != l.pid {
+		return nil
+	}
+	if strings.TrimSpace(lines[1]) != l.token {
+		return nil
 	}
 	return os.Remove(l.path)
 }
 
-// ServiceLockPath returns the lock file for a service under deploy parent.
+// ServiceLockPath returns the lock file under deployPath/.tailarr_locks.
 func ServiceLockPath(deployPath, service string) (string, error) {
 	if err := names.ValidateServiceName(service); err != nil {
 		return "", err
 	}
-	parent := filepath.Dir(deployPath)
-	return filepath.Join(parent, ".tailarr_locks", service+".lock"), nil
+	return filepath.Join(deployPath, config.LockDirName, service+".lock"), nil
 }
 
 // RepoLockPath returns the lock file next to the repo path.

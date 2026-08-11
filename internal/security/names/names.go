@@ -3,6 +3,7 @@ package names
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -63,24 +64,72 @@ func ValidTSAuthkey(value string) bool {
 	if value == "" {
 		return false
 	}
+	if strings.ContainsAny(value, "\r\n") {
+		return false
+	}
 	if strings.HasPrefix(value, "//") || strings.HasPrefix(value, "#") {
 		return false
 	}
 	return strings.HasPrefix(value, "tskey-auth-")
 }
 
-// ValidateRepoURL accepts https://, ssh://, or git@ host URLs.
-func ValidateRepoURL(url string) error {
+// ValidateRepoURL accepts https://, ssh://, or git@ host URLs without
+// embedded credentials (userinfo). Operators should use SSH agent or a
+// credential helper instead of putting tokens in the URL.
+func ValidateRepoURL(raw string) error {
 	switch {
-	case strings.HasPrefix(url, "https://"):
+	case strings.HasPrefix(raw, "https://"):
+		u, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("invalid ScaleTail repository URL: %w", err)
+		}
+		if u.User != nil {
+			return fmt.Errorf("repository URL must not contain credentials; use SSH agent or a credential helper")
+		}
+		if u.Host == "" {
+			return fmt.Errorf("invalid ScaleTail repository URL: missing host")
+		}
 		return nil
-	case strings.HasPrefix(url, "ssh://"):
+	case strings.HasPrefix(raw, "ssh://"):
+		u, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("invalid ScaleTail repository URL: %w", err)
+		}
+		// ssh://user@host/path is common and not a secret; reject password userinfo.
+		if u.User != nil {
+			if _, hasPass := u.User.Password(); hasPass {
+				return fmt.Errorf("repository URL must not contain a password; use SSH agent or a credential helper")
+			}
+		}
+		if u.Host == "" {
+			return fmt.Errorf("invalid ScaleTail repository URL: missing host")
+		}
 		return nil
-	case strings.HasPrefix(url, "git@"):
+	case strings.HasPrefix(raw, "git@"):
+		// git@host:path form — no password embedded in standard SCP-like syntax.
+		if strings.Contains(raw, "://") {
+			return fmt.Errorf("unsupported ScaleTail repository URL: %s", raw)
+		}
 		return nil
 	default:
-		return fmt.Errorf("unsupported ScaleTail repository URL (expected https://, ssh://, or git@): %s", url)
+		return fmt.Errorf("unsupported ScaleTail repository URL (expected https://, ssh://, or git@): %s", raw)
 	}
+}
+
+// RedactRepoURL strips userinfo from a URL for display/logs. Non-URL forms
+// (git@...) are returned unchanged.
+func RedactRepoURL(raw string) string {
+	if strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "ssh://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return raw
+		}
+		if u.User != nil {
+			u.User = nil
+			return u.String()
+		}
+	}
+	return raw
 }
 
 // ValidateRepoRef rejects refs that look like flags or contain whitespace.
@@ -92,4 +141,17 @@ func ValidateRepoRef(ref string) error {
 		return fmt.Errorf("invalid ScaleTail repository ref: %s", ref)
 	}
 	return nil
+}
+
+// IsCommitSHA reports whether ref looks like a full or abbreviated git SHA.
+func IsCommitSHA(ref string) bool {
+	if len(ref) < 7 || len(ref) > 40 {
+		return false
+	}
+	for _, c := range ref {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }

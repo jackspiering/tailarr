@@ -1,6 +1,9 @@
 package names
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidServiceName(t *testing.T) {
 	t.Parallel()
@@ -58,6 +61,43 @@ func TestValidateRepoURL(t *testing.T) {
 	}
 	if err := ValidateRepoURL("http://example.com/repo"); err == nil {
 		t.Error("http:// should be rejected")
+	}
+	if err := ValidateRepoURL("https://user:token@github.com/org/repo.git"); err == nil {
+		t.Error("https userinfo should be rejected")
+	}
+	if err := ValidateRepoURL("ssh://git:password@github.com/org/repo.git"); err == nil {
+		t.Error("ssh password userinfo should be rejected")
+	}
+}
+
+func TestRedactRepoURL(t *testing.T) {
+	t.Parallel()
+	got := RedactRepoURL("https://user:token@github.com/org/repo.git")
+	if strings.Contains(got, "token") || strings.Contains(got, "user:") {
+		t.Fatalf("credentials not redacted: %s", got)
+	}
+	if got != "https://github.com/org/repo.git" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestIsCommitSHA(t *testing.T) {
+	t.Parallel()
+	if !IsCommitSHA("abcdef1") {
+		t.Fatal("short sha")
+	}
+	if !IsCommitSHA("0123456789abcdef0123456789abcdef01234567") {
+		t.Fatal("full sha")
+	}
+	if IsCommitSHA("main") || IsCommitSHA("v1.0.0") || IsCommitSHA("abc") {
+		t.Fatal("non-sha accepted")
+	}
+}
+
+func TestValidTSAuthkeyRejectsNewline(t *testing.T) {
+	t.Parallel()
+	if ValidTSAuthkey("tskey-auth-x\ninjected=1") {
+		t.Fatal("newline should fail")
 	}
 }
 

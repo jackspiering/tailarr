@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
@@ -45,11 +49,11 @@ func newListCmd(rt *Runtime) *cobra.Command {
 				return exitf(exitcode.NotFound, "%w", err)
 			}
 			if len(svcs) == 0 {
-				fmt.Fprintln(rt.Out, "No valid ScaleTail services found.")
+				_, _ = fmt.Fprintln(rt.Out, "No valid ScaleTail services found.")
 				return nil
 			}
 			for _, s := range svcs {
-				fmt.Fprintln(rt.Out, s.Name)
+				_, _ = fmt.Fprintln(rt.Out, s.Name)
 			}
 			return nil
 		},
@@ -66,7 +70,7 @@ func newDeployedCmd(rt *Runtime) *cobra.Command {
 				return exitf(exitcode.NotFound, "%w", err)
 			}
 			if len(svcs) == 0 {
-				fmt.Fprintln(rt.Out, "No deployed services found.")
+				_, _ = fmt.Fprintln(rt.Out, "No deployed services found.")
 				return nil
 			}
 			for _, s := range svcs {
@@ -74,7 +78,7 @@ func newDeployedCmd(rt *Runtime) *cobra.Command {
 				if deploy.IsManaged(s.Dir) {
 					tag = "managed"
 				}
-				fmt.Fprintf(rt.Out, "%s\t%s\n", s.Name, tag)
+				_, _ = fmt.Fprintf(rt.Out, "%s\t%s\n", s.Name, tag)
 			}
 			return nil
 		},
@@ -105,7 +109,7 @@ func newRunningCmd(rt *Runtime) *cobra.Command {
 					continue
 				}
 				seen[line] = true
-				fmt.Fprintln(rt.Out, line)
+				_, _ = fmt.Fprintln(rt.Out, line)
 			}
 			return nil
 		},
@@ -118,6 +122,7 @@ func mgr(rt *Runtime) *deploy.Manager {
 
 func newDeployCmd(rt *Runtime) *cobra.Command {
 	var force bool
+	var authKeyName string
 	cmd := &cobra.Command{
 		Use:   "deploy <service>",
 		Short: "Deploy a ScaleTail service",
@@ -126,14 +131,17 @@ func newDeployCmd(rt *Runtime) *cobra.Command {
 			if err := maybeRefresh(rt); err != nil {
 				return err
 			}
-			if err := mgr(rt).Deploy(args[0], force); err != nil {
+			opts := deploy.DeployOpts{Force: force, AuthKeyName: authKeyName}
+			if err := mgr(rt).DeployWith(args[0], opts); err != nil {
 				return mapDeployErr(err)
 			}
-			fmt.Fprintf(rt.Out, "Deployed %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Deployed %s\n", args[0])
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "replace an existing deployment")
+	cmd.Flags().BoolVar(&force, "force", false, "replace an existing managed deployment")
+	// Named key only - never the secret value.
+	cmd.Flags().StringVar(&authKeyName, "authkey", "", "name of stored auth key to use when TS_AUTHKEY is empty")
 	return cmd
 }
 
@@ -149,7 +157,7 @@ func newRepairCmd(rt *Runtime) *cobra.Command {
 			if err := mgr(rt).Repair(args[0]); err != nil {
 				return mapDeployErr(err)
 			}
-			fmt.Fprintf(rt.Out, "Repaired %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Repaired %s\n", args[0])
 			return nil
 		},
 	}
@@ -164,7 +172,7 @@ func newUpdateCmd(rt *Runtime) *cobra.Command {
 			if err := mgr(rt).Update(args[0]); err != nil {
 				return mapDeployErr(err)
 			}
-			fmt.Fprintf(rt.Out, "Updated %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Updated %s\n", args[0])
 			return nil
 		},
 	}
@@ -179,7 +187,7 @@ func newStopCmd(rt *Runtime) *cobra.Command {
 			if err := mgr(rt).Stop(args[0]); err != nil {
 				return mapDeployErr(err)
 			}
-			fmt.Fprintf(rt.Out, "Stopped %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Stopped %s\n", args[0])
 			return nil
 		},
 	}
@@ -194,7 +202,7 @@ func newRestartCmd(rt *Runtime) *cobra.Command {
 			if err := mgr(rt).Restart(args[0]); err != nil {
 				return mapDeployErr(err)
 			}
-			fmt.Fprintf(rt.Out, "Restarted %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Restarted %s\n", args[0])
 			return nil
 		},
 	}
@@ -204,13 +212,13 @@ func newRemoveCmd(rt *Runtime) *cobra.Command {
 	var volumes bool
 	cmd := &cobra.Command{
 		Use:   "remove <service>",
-		Short: "Remove a deployed service",
+		Short: "Remove a managed deployment (fails closed if compose down fails)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := mgr(rt).Remove(args[0], volumes); err != nil {
 				return mapDeployErr(err)
 			}
-			fmt.Fprintf(rt.Out, "Removed %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Removed %s\n", args[0])
 			return nil
 		},
 	}
@@ -223,7 +231,7 @@ func newLogsCmd(rt *Runtime) *cobra.Command {
 		Use:   "logs",
 		Short: "Print the Tailarr log file path",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(rt.Out, rt.Cfg.LogPath)
+			_, _ = fmt.Fprintln(rt.Out, rt.Cfg.LogPath)
 			return nil
 		},
 	}
@@ -238,7 +246,7 @@ func newConfigCmd(rt *Runtime) *cobra.Command {
 		Use:   "show",
 		Short: "Print effective configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprint(rt.Out, rt.Cfg.String())
+			_, _ = fmt.Fprint(rt.Out, rt.Cfg.String())
 			return nil
 		},
 	})
@@ -249,13 +257,13 @@ func newConfigCmd(rt *Runtime) *cobra.Command {
 			if err := config.Save(rt.Cfg); err != nil {
 				return exitf(exitcode.Perm, "%w", err)
 			}
-			fmt.Fprintf(rt.Out, "Wrote %s\n", rt.Cfg.ConfigPath)
+			_, _ = fmt.Fprintf(rt.Out, "Wrote %s\n", rt.Cfg.ConfigPath)
 			return nil
 		},
 	})
 	// Default: show
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		fmt.Fprint(rt.Out, rt.Cfg.String())
+		_, _ = fmt.Fprint(rt.Out, rt.Cfg.String())
 		return nil
 	}
 	return cmd
@@ -276,11 +284,11 @@ func newAuthkeysCmd(rt *Runtime) *cobra.Command {
 			}
 			lines := s.RedactedList()
 			if len(lines) == 0 {
-				fmt.Fprintln(rt.Out, "No stored auth keys.")
+				_, _ = fmt.Fprintln(rt.Out, "No stored auth keys.")
 				return nil
 			}
 			for _, line := range lines {
-				fmt.Fprintln(rt.Out, line)
+				_, _ = fmt.Fprintln(rt.Out, line)
 			}
 			return nil
 		},
@@ -296,8 +304,16 @@ func newAuthkeysCmd(rt *Runtime) *cobra.Command {
 			}
 			value, err := readSecret("TS_AUTHKEY")
 			if err != nil {
-				return exitf(exitcode.Cancelled, "%w", err)
+				return exitf(exitcode.Canceled, "%w", err)
 			}
+			// Serialize read-modify-write with a lock next to the store.
+			lockPath := rt.Cfg.AuthkeysPath + ".lock"
+			lock, err := deploy.AcquireLock(lockPath, deploy.DefaultLockTimeout)
+			if err != nil {
+				return exitf(exitcode.Perm, "authkeys lock: %w", err)
+			}
+			defer func() { _ = lock.Release() }()
+
 			s, err := authkeys.Load(rt.Cfg.AuthkeysPath)
 			if err != nil {
 				return exitf(exitcode.Perm, "%w", err)
@@ -311,7 +327,7 @@ func newAuthkeysCmd(rt *Runtime) *cobra.Command {
 			if rt.Log != nil {
 				rt.Log.Event("stored auth key updated: " + name + "=TS_AUTHKEY=[redacted]")
 			}
-			fmt.Fprintf(rt.Out, "Stored auth key %s\n", name)
+			_, _ = fmt.Fprintf(rt.Out, "Stored auth key %s\n", name)
 			return nil
 		},
 	})
@@ -320,6 +336,13 @@ func newAuthkeysCmd(rt *Runtime) *cobra.Command {
 		Short: "Remove a stored key",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			lockPath := rt.Cfg.AuthkeysPath + ".lock"
+			lock, err := deploy.AcquireLock(lockPath, deploy.DefaultLockTimeout)
+			if err != nil {
+				return exitf(exitcode.Perm, "authkeys lock: %w", err)
+			}
+			defer func() { _ = lock.Release() }()
+
 			s, err := authkeys.Load(rt.Cfg.AuthkeysPath)
 			if err != nil {
 				return exitf(exitcode.Perm, "%w", err)
@@ -330,30 +353,77 @@ func newAuthkeysCmd(rt *Runtime) *cobra.Command {
 			if err := s.Save(); err != nil {
 				return exitf(exitcode.Perm, "%w", err)
 			}
-			fmt.Fprintf(rt.Out, "Removed auth key %s\n", args[0])
+			_, _ = fmt.Fprintf(rt.Out, "Removed auth key %s\n", args[0])
 			return nil
 		},
 	})
 	return cmd
 }
 
+// maxSecretBytes caps non-interactive secret reads to prevent huge pipes.
+const maxSecretBytes = 4096
+
 func readSecret(label string) (string, error) {
-	// Prefer full stdin when not a terminal (scripted file redirect).
-	stat, _ := os.Stdin.Stat()
-	if stat != nil && (stat.Mode()&os.ModeCharDevice) == 0 {
-		data, err := os.ReadFile("/dev/stdin")
+	stat, err := os.Stdin.Stat()
+	if err == nil && (stat.Mode()&os.ModeCharDevice) == 0 {
+		// Non-interactive: single line, bounded size.
+		r := io.LimitReader(os.Stdin, maxSecretBytes+1)
+		data, err := io.ReadAll(r)
 		if err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(data)), nil
+		if len(data) > maxSecretBytes {
+			return "", fmt.Errorf("auth key input exceeds %d bytes", maxSecretBytes)
+		}
+		// First line only; reject if more content after first newline (injection).
+		line, rest, found := strings.Cut(string(data), "\n")
+		line = strings.TrimRight(line, "\r")
+		line = strings.TrimSpace(line)
+		if found {
+			if strings.TrimSpace(rest) != "" {
+				return "", fmt.Errorf("auth key must be a single line")
+			}
+		}
+		if line == "" {
+			return "", fmt.Errorf("empty auth key")
+		}
+		if strings.ContainsAny(line, "\r\n") {
+			return "", fmt.Errorf("auth key must be a single line")
+		}
+		return line, nil
 	}
-	fmt.Fprintf(os.Stderr, "%s: ", label)
-	var line string
-	_, err := fmt.Fscanln(os.Stdin, &line)
+
+	// Interactive: disable echo.
+	_, _ = fmt.Fprintf(os.Stderr, "%s: ", label)
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		// Fallback without echo control: still only one line, bounded.
+		sc := bufio.NewScanner(io.LimitReader(os.Stdin, maxSecretBytes))
+		if !sc.Scan() {
+			if err := sc.Err(); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("empty auth key")
+		}
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			return "", fmt.Errorf("empty auth key")
+		}
+		return line, nil
+	}
+	raw, err := term.ReadPassword(fd)
+	_, _ = fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(line), nil
+	line := strings.TrimSpace(string(raw))
+	if line == "" {
+		return "", fmt.Errorf("empty auth key")
+	}
+	if strings.ContainsAny(line, "\r\n") {
+		return "", fmt.Errorf("auth key must be a single line")
+	}
+	return line, nil
 }
 
 func maybeRefresh(rt *Runtime) error {
@@ -361,11 +431,9 @@ func maybeRefresh(rt *Runtime) error {
 	if !rt.Cfg.NoRefresh {
 		lock, err := deploy.AcquireLock(lockPath, deploy.DefaultLockTimeout)
 		if err != nil {
-			// If lock parent not writable, still try refresh without lock in doctor-less path
-			// Prefer fail safe.
 			return exitf(exitcode.Perm, "repo lock: %w", err)
 		}
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 	if err := scaletail.Refresh(rt.Cfg.RepoURL, rt.Cfg.RepoPath, rt.Cfg.RepoRef, rt.Cfg.NoRefresh); err != nil {
 		return exitf(exitcode.NotFound, "%w", err)
@@ -377,13 +445,28 @@ func mapDeployErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	switch {
+	case errors.Is(err, deploy.ErrAlreadyDeployed):
+		return &ExitError{Code: exitcode.Usage, Err: err}
+	case errors.Is(err, deploy.ErrNotDeployed), errors.Is(err, deploy.ErrNoCompose):
+		return &ExitError{Code: exitcode.NotFound, Err: err}
+	case errors.Is(err, deploy.ErrNotManaged):
+		return &ExitError{Code: exitcode.Unsafe, Err: err}
+	case errors.Is(err, deploy.ErrSymlink):
+		return &ExitError{Code: exitcode.Unsafe, Err: err}
+	case errors.Is(err, deploy.ErrComposeFailed):
+		return &ExitError{Code: exitcode.Docker, Err: err}
+	case errors.Is(err, deploy.ErrEmptyAuthkey):
+		return &ExitError{Code: exitcode.Usage, Err: err}
+	}
+
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "invalid service name"), strings.Contains(msg, "service name is required"):
 		return &ExitError{Code: exitcode.Usage, Err: err}
 	case strings.Contains(msg, "not found"), strings.Contains(msg, "not deployed"), strings.Contains(msg, "not a git"):
 		return &ExitError{Code: exitcode.NotFound, Err: err}
-	case strings.Contains(msg, "symlink"), strings.Contains(msg, "escaped"), strings.Contains(msg, "Unsafe"):
+	case strings.Contains(msg, "symlink"), strings.Contains(msg, "escaped"), strings.Contains(msg, "Unsafe"), strings.Contains(msg, "unmanaged"):
 		return &ExitError{Code: exitcode.Unsafe, Err: err}
 	case strings.Contains(msg, "docker"):
 		return &ExitError{Code: exitcode.Docker, Err: err}

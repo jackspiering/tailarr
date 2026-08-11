@@ -17,13 +17,18 @@ are implemented with tests and/or working CLI paths in this tree.
 - [x] Per-service locks (file locks) + repo lock for git refresh
 - [x] Backups under `.tailarr_backups` (move/copy) + restore data dirs helper
 - [x] Deploy/repair/update/stop/restart/remove skeleton wired to Docker Compose
-- [x] ScaleTail clone/pull + optional ref pin + protocol hardening (`protocol.ext/file.allow=never`)
-- [ ] Deploy with interactive env merge/prompt for missing values
-- [ ] Repair keeps local secrets (partial: preserves `.env` file bytes)
+- [x] ScaleTail clone/pull + optional ref pin (branch/tag/commit) + protocol hardening
+- [x] Force redeploy preserves `.env` secrets from backup; restores previous deploy on failure
+- [x] Remove fails closed if `compose down` fails; only managed deployments are lifecycle targets
+- [x] Deploy resolves empty `TS_AUTHKEY` via `--authkey <name>` store lookup; empty key fails closed
+- [x] Auth key prompt uses hidden input; single-line bounded stdin; store RMW locked
+- [x] Log rotation checks size on every event
+- [ ] Deploy with interactive env merge/prompt for missing values (non-authkey fields)
+- [x] Repair keeps local secrets (preserves `.env` file bytes)
 - [ ] Status: managed vs manual ScaleTail vs other (partial: managed marker + deployed tag)
 - [ ] `--yes` only auto-confirms default-yes style prompts (flag exists; prompts incomplete)
 - [ ] Full Tailarr compose labels on services for runtime status
-- [ ] Log rotation polish and multi-select TUI flows
+- [ ] Multi-select TUI deploy wizard
 - [ ] Integration tests (`//go:build integration`) against real Docker
 
 ## Explicit non-goals (for now)

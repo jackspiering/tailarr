@@ -24,7 +24,7 @@ func ParseEnvFile(path string) (EnvMap, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -107,7 +107,7 @@ func ReadEnvKeys(path string) ([]string, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var keys []string
 	seen := make(map[string]bool)
 	sc := bufio.NewScanner(f)

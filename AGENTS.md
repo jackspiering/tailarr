@@ -85,5 +85,5 @@ go build -o bin/tailarr ./cmd/tailarr
 
 ## Exit codes
 
-See `internal/exitcode`: 64 usage, 65 not found, 66 cancelled, 67 unsafe,
+See `internal/exitcode`: 64 usage, 65 not found, 66 canceled, 67 unsafe,
 69 Docker, 70 health, 77 permission/lock.

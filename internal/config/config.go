@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jackspiering/tailarr/internal/security/atomic"
+	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
@@ -82,7 +83,7 @@ func loadFile(cfg *Config, path string) error {
 		}
 		return fmt.Errorf("open config: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	// Allow long lines without loading secrets into huge buffers unnecessarily.
@@ -150,19 +151,25 @@ func applyEnv(cfg *Config) {
 	}
 }
 
-// Save writes the config atomically as plain KEY=VALUE (mode 0644).
+// Save writes the config atomically as plain KEY=VALUE (mode 0600).
+// Restrictive mode because RepoURL or paths could be sensitive in some setups.
 func Save(cfg Config) error {
 	if paths.IsSymlink(cfg.ConfigPath) {
 		return fmt.Errorf("config file must not be a symlink: %s", cfg.ConfigPath)
 	}
+	// Reject credential-bearing URLs before persisting.
+	if err := names.ValidateRepoURL(cfg.RepoURL); err != nil {
+		return err
+	}
 	body := format(cfg)
-	return atomic.WriteFileString(cfg.ConfigPath, body, 0o644)
+	return atomic.WriteFileString(cfg.ConfigPath, body, 0o600)
 }
 
 func format(cfg Config) string {
 	var b strings.Builder
 	b.WriteString("# Tailarr configuration\n")
-	fmt.Fprintf(&b, "TAILARR_REPO_URL=%s\n", cfg.RepoURL)
+	// Always redact userinfo when displaying/saving so tokens cannot leak via `config show`.
+	fmt.Fprintf(&b, "TAILARR_REPO_URL=%s\n", names.RedactRepoURL(cfg.RepoURL))
 	fmt.Fprintf(&b, "TAILARR_REPO_PATH=%s\n", cfg.RepoPath)
 	fmt.Fprintf(&b, "TAILARR_DEPLOY_PATH=%s\n", cfg.DeployPath)
 	fmt.Fprintf(&b, "TAILARR_LOG_PATH=%s\n", cfg.LogPath)

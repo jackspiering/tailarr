@@ -17,9 +17,6 @@ import (
 
 // IsInteractive reports whether stdin/stdout support a TUI.
 func IsInteractive() bool {
-	if os.Getenv("NO_COLOR") != "" {
-		// Still allow TUI; NO_COLOR only affects styling preference.
-	}
 	if term := os.Getenv("TERM"); term == "dumb" {
 		return false
 	}
@@ -32,6 +29,18 @@ func IsInteractive() bool {
 		return false
 	}
 	return true
+}
+
+// colorEnabled is false when NO_COLOR is set (https://no-color.org/).
+func colorEnabled() bool {
+	return os.Getenv("NO_COLOR") == ""
+}
+
+func styleOrPlain(s lipgloss.Style, text string) string {
+	if !colorEnabled() {
+		return text
+	}
+	return s.Render(text)
 }
 
 var (
@@ -129,33 +138,33 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 	case "list":
 		svcs, err := scaletail.ListAvailable(m.cfg.RepoPath)
 		if err != nil {
-			m.status = errStyle.Render("list: " + err.Error())
+			m.status = styleOrPlain(errStyle, "list: "+err.Error())
 			return m, nil
 		}
 		if len(svcs) == 0 {
-			m.status = dimStyle.Render("No valid ScaleTail services found at " + m.cfg.RepoPath)
+			m.status = styleOrPlain(dimStyle, "No valid ScaleTail services found at "+m.cfg.RepoPath)
 			return m, nil
 		}
 		var b string
 		for _, s := range svcs {
 			b += "  " + s.Name + "\n"
 		}
-		m.status = okStyle.Render("Available services:") + "\n" + b
+		m.status = styleOrPlain(okStyle, "Available services:") + "\n" + b
 	case "deployed":
 		svcs, err := scaletail.ListDeployed(m.cfg.DeployPath)
 		if err != nil {
-			m.status = errStyle.Render("deployed: " + err.Error())
+			m.status = styleOrPlain(errStyle, "deployed: "+err.Error())
 			return m, nil
 		}
 		if len(svcs) == 0 {
-			m.status = dimStyle.Render("No deployed services.")
+			m.status = styleOrPlain(dimStyle, "No deployed services.")
 			return m, nil
 		}
 		var b string
 		for _, s := range svcs {
 			b += "  " + s.Name + "\n"
 		}
-		m.status = okStyle.Render("Deployed:") + "\n" + b
+		m.status = styleOrPlain(okStyle, "Deployed:") + "\n" + b
 	case "doctor":
 		res := doctor.Run(m.cfg)
 		var b string
@@ -164,9 +173,8 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		}
 		m.status = b
 	case "config":
-		m.status = dimStyle.Render(m.cfg.String())
+		m.status = styleOrPlain(dimStyle, m.cfg.String())
 	case "authkeys":
-		// Lazy import cycle avoidance: call via small helper in same package
 		m.status = showAuthkeys(m.cfg.AuthkeysPath)
 	case "logs":
 		m.status = "Log file: " + m.cfg.LogPath
@@ -179,24 +187,24 @@ func (m model) View() string {
 		return ""
 	}
 	var b string
-	b += titleStyle.Render(fmt.Sprintf("Tailarr %s", version.Version)) + "\n"
-	b += dimStyle.Render("Deploy and manage ScaleTail services") + "\n"
-	b += border.Render(repeat("-", 48)) + "\n\n"
+	b += styleOrPlain(titleStyle, fmt.Sprintf("Tailarr %s", version.Version)) + "\n"
+	b += styleOrPlain(dimStyle, "Deploy and manage ScaleTail services") + "\n"
+	b += styleOrPlain(border, repeat("-", 48)) + "\n\n"
 
 	for i, item := range m.items {
 		cursor := "  "
 		line := fmt.Sprintf("%d  %s", i+1, item.label)
 		if i == m.cursor {
 			cursor = "> "
-			b += selStyle.Render(cursor+line) + "\n"
-			b += dimStyle.Render("     "+item.desc) + "\n"
+			b += styleOrPlain(selStyle, cursor+line) + "\n"
+			b += styleOrPlain(dimStyle, "     "+item.desc) + "\n"
 		} else {
-			b += itemStyle.Render(cursor+line) + "\n"
+			b += styleOrPlain(itemStyle, cursor+line) + "\n"
 		}
 	}
-	b += "\n" + dimStyle.Render("arrows/jk move  enter select  q quit") + "\n"
+	b += "\n" + styleOrPlain(dimStyle, "arrows/jk move  enter select  q quit") + "\n"
 	if m.status != "" {
-		b += "\n" + border.Render(repeat("-", 48)) + "\n"
+		b += "\n" + styleOrPlain(border, repeat("-", 48)) + "\n"
 		b += m.status
 	}
 	return b

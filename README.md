@@ -56,9 +56,9 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 | Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed) |
 | Auth keys | Named `TS_AUTHKEY` store (`tskey-auth-*`, mode `600`, redacted listings) |
 | Status | Deployed listing with managed marker (more status work tracked in parity) |
-| Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, locks |
-| Doctor | Dependencies, paths, Docker/Compose reachability |
-| UI | Bubble Tea TUI by default; plain help when not a TTY |
+| Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, ownership-aware locks |
+| Doctor | Dependencies, paths, Docker/Compose reachability (safe write probe) |
+| UI | Bubble Tea TUI by default; plain help when not a TTY; respects `NO_COLOR` |
 
 ## Usage
 
@@ -95,9 +95,9 @@ tailarr version
 | `list` | Available ScaleTail services |
 | `deployed` | Local deployments |
 | `running` | Running Compose project names (best effort) |
-| `deploy <service>` | Deploy (`--force` replaces an existing one) |
+| `deploy <service>` | Deploy (`--force` replaces managed; `--authkey <name>` fills empty `TS_AUTHKEY`) |
 | `repair <service>` | Refresh templates; keep local `.env` when possible |
-| `update` / `stop` / `restart` / `remove` | Lifecycle (`remove --volumes` drops Compose volumes) |
+| `update` / `stop` / `restart` / `remove` | Lifecycle on **managed** deploys only (`remove` fails closed if compose down fails; `--volumes` drops volumes) |
 | `authkeys` | List/add/remove stored keys (values never on flags) |
 | `logs` | Print log file path |
 | `config` | Show or `config write` effective config |

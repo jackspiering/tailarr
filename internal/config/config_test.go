@@ -63,6 +63,31 @@ UNKNOWN=ignore
 	if !contains(string(data), "TAILARR_DEPLOY_PATH=/new/deploy") {
 		t.Fatalf("saved body:\n%s", data)
 	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode %o want 0600", info.Mode().Perm())
+	}
+}
+
+func TestSaveRedactsURLCredentials(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "c.conf")
+	cfg := Default()
+	cfg.ConfigPath = out
+	// Save rejects credential URLs via ValidateRepoURL.
+	cfg.RepoURL = "https://user:token@github.com/org/repo.git"
+	if err := Save(cfg); err == nil {
+		t.Fatal("expected save to reject credential URL")
+	}
+	// Display redacts even if value is in memory.
+	cfg.RepoURL = "https://user:token@github.com/org/repo.git"
+	s := cfg.String()
+	if contains(s, "token") {
+		t.Fatalf("config String leaked credentials:\n%s", s)
+	}
 }
 
 func TestEnvOverridesFile(t *testing.T) {

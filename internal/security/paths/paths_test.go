@@ -22,11 +22,33 @@ func TestWithin(t *testing.T) {
 	outside := filepath.Join(other, "x")
 	ok, err = Within(outside, root)
 	if err != nil {
-		// parent of outside is other, which exists; Within should return false not error
-		// if parent exists
+		t.Fatalf("Within outside should not error when parent exists: %v", err)
 	}
 	if ok {
 		t.Fatal("outside path should not be within root")
+	}
+}
+
+func TestRefuseSymlinkAncestry(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := filepath.Join(root, "real")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// Path under symlink ancestor.
+	under := filepath.Join(link, "child")
+	if err := RefuseSymlinkAncestry(under); err == nil {
+		t.Fatal("expected error for symlink ancestor")
+	}
+	// Normal path is fine.
+	normal := filepath.Join(target, "child")
+	if err := RefuseSymlinkAncestry(normal); err != nil {
+		t.Fatal(err)
 	}
 }
 

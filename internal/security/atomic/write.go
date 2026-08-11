@@ -10,9 +10,12 @@ import (
 )
 
 // WriteFile writes data to dest atomically (temp file + rename) with the
-// given mode. Parent must not be a symlink.
+// given mode. Parent must not be a symlink (including ancestors).
 func WriteFile(dest string, data []byte, mode os.FileMode) error {
 	parent := filepath.Dir(dest)
+	if err := paths.RefuseSymlinkAncestry(parent); err != nil {
+		return fmt.Errorf("parent directory: %w", err)
+	}
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create parent: %w", err)
 	}

@@ -17,7 +17,6 @@ type Logger struct {
 	mu       sync.Mutex
 	path     string
 	maxBytes int64
-	checked  bool
 }
 
 // New creates a logger for path. maxBytes triggers simple rotation to path.1.
@@ -41,17 +40,15 @@ func (l *Logger) Event(message string) {
 	if paths.IsSymlink(dir) || paths.IsSymlink(l.path) {
 		return
 	}
-	if !l.checked {
-		l.checked = true
-		l.rotateIfNeeded()
-	}
+	// Check size on every write so rotation keeps working for long-lived processes.
+	l.rotateIfNeeded()
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	line := fmt.Sprintf("[%s] %s\n", time.Now().UTC().Format(time.RFC3339), redact.Text(message))
 	_, _ = f.WriteString(line)
+	_ = f.Close()
 }
 
 func (l *Logger) rotateIfNeeded() {

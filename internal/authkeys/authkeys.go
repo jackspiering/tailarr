@@ -39,7 +39,7 @@ func Load(path string) (*Store, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Tighten permissions if loose.
 	if info, err := f.Stat(); err == nil {
@@ -123,9 +123,14 @@ func (s *Store) Save() error {
 }
 
 // Put validates and stores a named key.
+// Values must be single-line tskey-auth-* material (no CR/LF injection).
 func (s *Store) Put(name, value string) error {
 	if err := names.ValidateAuthkeyName(name); err != nil {
 		return err
+	}
+	value = strings.TrimSpace(value)
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("TS_AUTHKEY must be a single line")
 	}
 	if !names.ValidTSAuthkey(value) {
 		return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
@@ -133,7 +138,7 @@ func (s *Store) Put(name, value string) error {
 	if _, exists := s.Keys[name]; !exists {
 		s.Order = append(s.Order, name)
 	}
-	s.Keys[name] = strings.TrimSpace(value)
+	s.Keys[name] = value
 	return nil
 }
 
