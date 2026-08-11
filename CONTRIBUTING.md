@@ -42,7 +42,7 @@ go vet ./...
 gofmt -l .
 ```
 
-Optional: `staticcheck ./...` and `golangci-lint run` (versions pinned in CI).
+Optional: `golangci-lint run` (version pinned in CI, includes staticcheck and gofmt checks).
 
 ## Project layout
 
