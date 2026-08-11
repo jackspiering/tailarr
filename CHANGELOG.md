@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-11
+
+First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
+
 ### Added
 
 - Initial Go rewrite scaffolding (CLI + Bubble Tea TUI).
@@ -18,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deploy / repair / update / stop / restart / remove with locks, backups, managed-only lifecycle.
 - `deploy --authkey <name>` resolves empty `TS_AUTHKEY` from the store (never the secret on flags).
 - Unit tests for pure logic including force-redeploy secret preservation and fail-closed remove (no Docker required).
+- Binary-first install story documented in README.
 
 ### Security
 
@@ -35,13 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
 - golangci-lint / misspell CI (errcheck, empty branches, US `Canceled` exit code name).
-
-## [0.1.0] - 2026-08-11
-
-### Added
-
-- First public Go tree for Tailarr (`github.com/jackspiering/tailarr`).
-- Binary-first install story documented in README.
 
 [Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0
