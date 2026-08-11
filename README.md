@@ -1,18 +1,12 @@
 # Tailarr
 
 Deploy and manage [ScaleTail](https://github.com/tailscale-dev/ScaleTail) Docker
-Compose services from a terminal TUI or scriptable CLI.
+Compose services from a TUI.
 
 [![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Version](https://img.shields.io/badge/version-0.2.0-informational)](CHANGELOG.md)
-
-No daemon. No cloud control plane. You run Tailarr next to Docker on a host
-you already control.
-
-Install a release binary (or build from source). The host still needs Git,
-Docker, and Compose v2; Go is only required to build from source.
 
 ## Quick start
 
@@ -22,17 +16,11 @@ Docker, and Compose v2; Go is only required to build from source.
 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
 ```
 
-Pinned release script (preferred for production):
-
-```bash
-curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.2.0/install.sh | sh
-```
-
 Options:
 
 ```bash
 # Pin the binary version (default: latest GitHub release)
-TAILARR_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+TAILARR_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
 
 # Install without root (default falls back here if /usr/local/bin is not writable)
 INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
