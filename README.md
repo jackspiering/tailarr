@@ -45,9 +45,16 @@ The script detects OS/arch, downloads the matching release asset, verifies
 Then:
 
 ```bash
+tailarr version    # expect: tailarr 0.1.0 (or newer)
 tailarr doctor
 tailarr            # interactive TUI when stdout is a TTY
 ```
+
+If `tailarr version` does not look like that (or you see a Python-style
+`usage: tailarr [-h]` / a "Packet Wizard" TUI), another older `tailarr` is
+earlier on your `PATH`. The install script prints a warning in that case.
+Check with `type -a tailarr` and either fix `PATH` or run the full path
+printed by the installer (for example `/usr/local/bin/tailarr doctor`).
 
 ### Manual binary
 

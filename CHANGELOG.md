@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One-liner install script (`scripts/install.sh`) with OS/arch detection and
   SHA256 verification of release assets.
 
+### Fixed
+
+- Install script warns when another `tailarr` is earlier on `PATH` (legacy
+  installs) and prints next steps using the full path to the Go binary.
+
 ### Changed
 
 - Docs no longer link to the private legacy Bash prototype repository.
