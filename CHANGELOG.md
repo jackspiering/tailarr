@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   atomic replace); `--check`, `--force`, `--repo` / `TAILARR_UPGRADE_REPO`;
   TUI Maintenance menu entry.
 
+### Fixed
+
+- Install script warns when another `tailarr` is earlier on `PATH` (legacy
+  installs) and prints next steps using the full path to the Go binary.
+- Install script prefers replacing the first `tailarr` on `PATH` when that
+  directory is writable (e.g. `~/.local/bin` ahead of `/usr/local/bin`).
+
 ## [0.2.0] - 2026-08-11
 
 ### Added
@@ -31,8 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Install script warns when another `tailarr` is earlier on `PATH` and prefers
-  replacing the first on-PATH binary when that directory is writable.
+- Docs no longer link to the private legacy Bash prototype repository.
 
 ## [0.1.0] - 2026-08-11
 

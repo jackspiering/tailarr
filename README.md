@@ -33,8 +33,27 @@ The script detects OS/arch, downloads the matching release asset, verifies
 Then:
 
 ```bash
+tailarr version    # expect: tailarr 0.1.0 (or newer)
 tailarr doctor
 tailarr            # interactive TUI when stdout is a TTY
+```
+
+If `tailarr version` does not look like that (or you see a Python-style
+`usage: tailarr [-h]` / a "Packet Wizard" TUI), another older `tailarr` is
+earlier on your `PATH` (often `~/.local/bin/tailarr` ahead of
+`/usr/local/bin/tailarr`). Check with `type -a tailarr`.
+
+The installer prefers to **replace the first `tailarr` on PATH** when that
+directory is writable, so a re-run of the one-liner upgrades the binary you
+actually invoke. You can also:
+
+```bash
+# use the Go binary explicitly
+/usr/local/bin/tailarr doctor
+
+# or retire a legacy user install
+mv ~/.local/bin/tailarr ~/.local/bin/tailarr.legacy
+hash -r
 ```
 
 ### Upgrade an existing install

@@ -7,7 +7,9 @@
 #
 # Environment:
 #   TAILARR_VERSION  Release tag (e.g. v0.2.0). Default: latest via GitHub API, else v0.2.0
-#   INSTALL_DIR      Install directory. Default: /usr/local/bin if writable, else ~/.local/bin
+#   INSTALL_DIR      Install directory. Default: directory of the first `tailarr` on
+#                    PATH if writable (replaces legacy installs), else /usr/local/bin
+#                    if writable, else ~/.local/bin
 #   GITHUB_REPO      owner/repo (default: jackspiering/tailarr)
 #
 # Requires: curl or wget; sha256sum or shasum.
@@ -87,11 +89,42 @@ resolve_version() {
 	printf '%s\n' "$DEFAULT_VERSION"
 }
 
+# is_go_tailarr reports whether path looks like this project's Go binary.
+is_go_tailarr() {
+	path=$1
+	[ -x "$path" ] || return 1
+	out=$("$path" version 2>/dev/null || true)
+	case "$out" in
+	"${BINARY_NAME} "*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 resolve_install_dir() {
 	if [ -n "${INSTALL_DIR:-}" ]; then
 		printf '%s\n' "$INSTALL_DIR"
 		return
 	fi
+
+	# Prefer replacing whatever `tailarr` would run today. That fixes the common
+	# case where a legacy tool lives in ~/.local/bin ahead of /usr/local/bin.
+	hash -r 2>/dev/null || true
+	existing=$(command -v "${BINARY_NAME}" 2>/dev/null || true)
+	if [ -n "$existing" ]; then
+		existing_dir=$(dirname "$existing")
+		if [ -w "$existing_dir" ] || { [ ! -e "$existing" ] && [ -w "$existing_dir" ]; }; then
+			if [ -w "$existing" ] || [ -w "$existing_dir" ]; then
+				if ! is_go_tailarr "$existing"; then
+					info "Found existing non-Go '${BINARY_NAME}' at ${existing}; replacing it" >&2
+				else
+					info "Upgrading existing Go Tailarr at ${existing}" >&2
+				fi
+				printf '%s\n' "$existing_dir"
+				return
+			fi
+		fi
+	fi
+
 	if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
 		printf '/usr/local/bin\n'
 		return
@@ -162,10 +195,20 @@ main() {
 	installed="${install_dir}/${BINARY_NAME}"
 	info "Installed: ${installed}"
 
-	# Version smoke check when binary is executable here.
-	if "${installed}" version >/dev/null 2>&1; then
-		info "Version: $("${installed}" version)"
+	# Version smoke check on the file we just wrote (full path).
+	installed_ver=""
+	if installed_ver=$("${installed}" version 2>/dev/null); then
+		info "Version: ${installed_ver}"
+	else
+		err "installed binary does not respond to 'version' (not the expected Go Tailarr): ${installed}"
 	fi
+	# Go Tailarr prints "tailarr X.Y.Z". Reject obvious foreign CLIs.
+	case "${installed_ver}" in
+	"${BINARY_NAME} "*) ;;
+	*)
+		err "unexpected version output from ${installed}: ${installed_ver}"
+		;;
+	esac
 
 	case ":${PATH}:" in
 	*":${install_dir}:"*) ;;
@@ -177,11 +220,90 @@ main() {
 		;;
 	esac
 
+	# Detect a different tailarr earlier on PATH (common with legacy installs).
+	# Shells may also cache a previous location (bash: hash -r).
+	warn_path_shadow "${installed}" "${installed_ver}"
+
 	info ""
 	info "Next steps:"
-	info "  tailarr doctor"
-	info "  tailarr              # TUI when stdout is a TTY"
-	info "  tailarr --help"
+	info "  ${installed} doctor"
+	info "  ${installed}              # TUI when stdout is a TTY"
+	info "  ${installed} --help"
+	if command -v "${BINARY_NAME}" >/dev/null 2>&1; then
+		resolved=$(command -v "${BINARY_NAME}" 2>/dev/null || true)
+		if [ -n "${resolved}" ] && same_file "${resolved}" "${installed}"; then
+			info ""
+			info "Or, if ${install_dir} is first on your PATH:"
+			info "  tailarr doctor"
+		fi
+	fi
+}
+
+# same_file returns 0 if both paths exist and refer to the same inode (best effort).
+same_file() {
+	a=$1
+	b=$2
+	[ -e "$a" ] && [ -e "$b" ] || return 1
+	# Prefer portable stat when available; fall back to cmp of resolved paths.
+	if command -v stat >/dev/null 2>&1; then
+		# GNU and BSD stat differ; try GNU first, then BSD.
+		ida=$(stat -c '%d:%i' "$a" 2>/dev/null || stat -f '%d:%i' "$a" 2>/dev/null || true)
+		idb=$(stat -c '%d:%i' "$b" 2>/dev/null || stat -f '%d:%i' "$b" 2>/dev/null || true)
+		if [ -n "$ida" ] && [ -n "$idb" ] && [ "$ida" = "$idb" ]; then
+			return 0
+		fi
+	fi
+	# Path string compare after cd -P style resolve is hard in pure sh; use cmp.
+	cmp -s "$a" "$b" 2>/dev/null
+}
+
+warn_path_shadow() {
+	installed=$1
+	installed_ver=$2
+
+	# Clear bash command hash so we do not report a stale cached path.
+	# hash is a bash builtin; ignore failures under plain sh/dash.
+	hash -r 2>/dev/null || true
+
+	resolved=$(command -v "${BINARY_NAME}" 2>/dev/null || true)
+	if [ -z "${resolved}" ]; then
+		info ""
+		info "Warning: '${BINARY_NAME}' was not found on PATH after install."
+		info "Use the full path: ${installed}"
+		return
+	fi
+
+	if same_file "${resolved}" "${installed}"; then
+		# Confirm PATH entry is also the Go binary (not a wrapper that shells out elsewhere).
+		path_ver=$("${resolved}" version 2>/dev/null || true)
+		if [ "${path_ver}" = "${installed_ver}" ]; then
+			return
+		fi
+	fi
+
+	info ""
+	info "WARNING: another program named '${BINARY_NAME}' is first on your PATH."
+	info "  PATH resolves to: ${resolved}"
+	info "  Go Tailarr is at: ${installed} (${installed_ver})"
+	if path_ver=$("${resolved}" version 2>/dev/null); then
+		info "  PATH binary version: ${path_ver}"
+	elif path_help=$("${resolved}" --help 2>&1 | head -n 1); then
+		info "  PATH binary help: ${path_help}"
+	fi
+	info ""
+	info "The Go install succeeded, but running bare 'tailarr' may invoke a legacy tool."
+	info "Fix (pick one):"
+	info "  1. Run the Go binary by full path:"
+	info "       ${installed} doctor"
+	install_dir=$(dirname "${installed}")
+	info "  2. Put ${install_dir} earlier on PATH than the directory of ${resolved}"
+	info "  3. Rename or remove the other binary if you no longer need it:"
+	info "       mv ${resolved} ${resolved}.legacy"
+	info "  4. If your shell cached the old path (bash): hash -r"
+	info ""
+	info "List all matches with:"
+	info "  type -a ${BINARY_NAME}    # bash/zsh"
+	info "  which -a ${BINARY_NAME}   # some systems"
 }
 
 main
