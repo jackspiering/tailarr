@@ -22,7 +22,7 @@
       "matchStrings": ["GO_VERSION: \"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "golang/go",
       "datasourceTemplate": "golang-version",
-      "versioning": "semver-coerced"
+      "versioningTemplate": "semver-coerced"
     },
     {
       "customType": "regex",
