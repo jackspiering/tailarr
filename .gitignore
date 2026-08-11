@@ -1,0 +1,53 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/tailarr
+cmd/tailarr/tailarr
+
+# Test and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+profile.cov
+
+# Go workspace (local)
+go.work
+go.work.sum
+
+# Dependency caches (local vendor is optional; do not ignore if committed)
+# vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS junk
+Thumbs.db
+
+# Local config and secrets (never commit)
+*.local
+.env
+.env.*
+!testdata/**/.env
+authkeys.conf
+*.authkeys
+/opt/
+
+# Release artifacts
+*.tar.gz
+*.zip
+checksums.txt
+
+# Tooling caches
+.golangci-lint-cache/
+.rumdl_cache/
