@@ -33,6 +33,8 @@ Include:
 - Review backups under `.tailarr_backups` (they may contain secrets).
 - Only Tailarr-managed deployments (with `.tailarr.compose.yaml` marker) are
   updated/stopped/removed.
+- Prefer a pinned install script URL or `TAILARR_VERSION=...` when using
+  `curl | sh`. The install script verifies release asset checksums.
 
 ## Project rules
 

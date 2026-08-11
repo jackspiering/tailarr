@@ -1,7 +1,7 @@
-# Parity checklist (Bash Tailarr -> Go)
+# Feature parity checklist
 
-Track feature parity with the original Bash tool spirit. Items marked done
-are implemented with tests and/or working CLI paths in this tree.
+Track planned vs implemented operator features. Items marked done are
+implemented with tests and/or working CLI paths in this tree.
 
 ## Core
 

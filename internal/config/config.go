@@ -14,7 +14,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
-// Default paths matching the Bash Tailarr spirit.
+// Conventional default paths for a single-host operator install.
 const (
 	DefaultConfigPath   = "/opt/tailarr/tailarr.conf"
 	DefaultAuthkeysPath = "/opt/tailarr/authkeys.conf"

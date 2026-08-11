@@ -15,4 +15,4 @@ labels: enhancement
 
 ## Related
 
-<!-- Links to ScaleTail issues, Bash Tailarr parity, etc. -->
+<!-- Links to ScaleTail issues, related docs/parity.md items, etc. -->
