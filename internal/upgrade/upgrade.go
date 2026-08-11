@@ -104,7 +104,7 @@ func Latest(opts Options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch latest release: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("fetch latest release: HTTP %s", resp.Status)
 	}
@@ -190,7 +190,7 @@ func download(client *http.Client, url, path string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %s", resp.Status)
 	}
