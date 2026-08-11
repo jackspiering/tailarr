@@ -1,18 +1,12 @@
 # Tailarr
 
 Deploy and manage [ScaleTail](https://github.com/tailscale-dev/ScaleTail) Docker
-Compose services from a terminal TUI or scriptable CLI.
+Compose services from a TUI.
 
 [![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![Version](https://img.shields.io/badge/version-0.1.0-informational)](CHANGELOG.md)
-
-No daemon. No cloud control plane. You run Tailarr next to Docker on a host
-you already control.
-
-Install a release binary (or build from source). The host still needs Git,
-Docker, and Compose v2; Go is only required to build from source.
+[![Version](https://img.shields.io/badge/version-0.2.0-informational)](CHANGELOG.md)
 
 ## Quick start
 
@@ -20,12 +14,6 @@ Docker, and Compose v2; Go is only required to build from source.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
-```
-
-Pinned release script (preferred for production):
-
-```bash
-curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.1.0/install.sh | sh
 ```
 
 Options:
@@ -40,7 +28,7 @@ INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jack
 
 The script detects OS/arch, downloads the matching release asset, verifies
 `SHA256SUMS`, and installs `tailarr` to `/usr/local/bin` when writable, else
-`~/.local/bin`.
+`~/.local/bin`. Re-running it also upgrades an existing install.
 
 Then:
 
@@ -67,6 +55,22 @@ actually invoke. You can also:
 mv ~/.local/bin/tailarr ~/.local/bin/tailarr.legacy
 hash -r
 ```
+
+### Upgrade an existing install
+
+When installed from a release binary, Tailarr can upgrade itself:
+
+```bash
+tailarr upgrade           # check for a newer release, verify SHA256, replace the binary
+tailarr upgrade --check   # only report whether an upgrade is available
+tailarr upgrade --yes     # confirm automatically (for scripts)
+```
+
+`--force` reinstalls even when already on the latest release. Point
+`TAILARR_UPGRADE_REPO` (or `--repo`) at a fork when needed. The check compares
+SemVer; the running binary is replaced atomically only after the release
+asset's SHA256 matches the published `SHA256SUMS`. Installs from `go install`
+are not upgraded in place; rebuild instead.
 
 ### Manual binary
 
@@ -104,12 +108,13 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 | Area | Description |
 | --- | --- |
 | Catalog | Lists ScaleTail services (`compose.yaml` / `compose.yml` / `docker-compose.y{a,}ml` + `.env`) |
-| Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed) |
-| Auth keys | Named `TS_AUTHKEY` store (`tskey-auth-*`, mode `600`, redacted listings) |
-| Status | Deployed listing with managed marker (more status work tracked in parity) |
+| Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed, confirmations, backups) |
+| Auth keys | Named `TS_AUTHKEY` store (add/rename/replace/remove, mode `600`, redacted listings) |
+| Status | Overview, managed/other counts, container health, running ScaleTail-style names |
+| Deploy env | Interactive prompts for empty/placeholder env values; `--authkey <name>` for stores |
 | Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, ownership-aware locks |
 | Doctor | Dependencies, paths, Docker/Compose reachability (safe write probe) |
-| UI | Bubble Tea TUI by default; plain help when not a TTY; respects `NO_COLOR` |
+| UI | Hierarchical Bubble Tea menus (Status / Services / Keys / Config / Maintenance); multi-select batch ops |
 
 ## Usage
 
@@ -119,8 +124,12 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 tailarr
 ```
 
-Arrow keys / `j` `k` move, Enter selects, `q` or Esc quits. Number keys jump
-to menu items.
+Main menu: **Status**, **Services**, **Tailscale Authentication Keys**,
+**Configuration**, **Maintenance**. Arrow keys / `j` `k` move, Enter selects,
+`q` or Esc backs out / quits. Number keys jump to items. Multi-select deploy
+and lifecycle actions use space to toggle, `a` for all, then Run.
+
+First interactive run can create and optionally edit the config file.
 
 ### CLI
 
@@ -149,9 +158,9 @@ tailarr version
 | `deploy <service>` | Deploy (`--force` replaces managed; `--authkey <name>` fills empty `TS_AUTHKEY`) |
 | `repair <service>` | Refresh templates; keep local `.env` when possible |
 | `update` / `stop` / `restart` / `remove` | Lifecycle on **managed** deploys only (`remove` fails closed if compose down fails; `--volumes` drops volumes) |
-| `authkeys` | List/add/remove stored keys (values never on flags) |
+| `authkeys` | List/add/rename/remove stored keys (values never on flags) |
 | `logs` | Print log file path |
-| `config` | Show or `config write` effective config |
+| `config` | Interactive edit (TTY), or `config show` / `config write` |
 | `doctor` | Host and path checks |
 | `version` | Print version |
 

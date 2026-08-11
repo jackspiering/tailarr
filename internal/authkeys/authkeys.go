@@ -158,6 +158,27 @@ func (s *Store) Remove(name string) error {
 	return nil
 }
 
+// Rename changes a stored key's label while keeping the secret value.
+func (s *Store) Rename(oldName, newName string) error {
+	if err := names.ValidateAuthkeyName(newName); err != nil {
+		return err
+	}
+	val, ok := s.Keys[oldName]
+	if !ok {
+		return fmt.Errorf("auth key not found: %s", oldName)
+	}
+	if oldName == newName {
+		return nil
+	}
+	if _, exists := s.Keys[newName]; exists {
+		return fmt.Errorf("auth key already exists: %s", newName)
+	}
+	if err := s.Remove(oldName); err != nil {
+		return err
+	}
+	return s.Put(newName, val)
+}
+
 // Names returns ordered key names.
 func (s *Store) Names() []string {
 	return append([]string(nil), s.Order...)

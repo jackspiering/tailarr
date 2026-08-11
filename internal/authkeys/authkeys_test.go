@@ -57,6 +57,19 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestRename(t *testing.T) {
+	s := &Store{Keys: map[string]string{"old": "tskey-auth-OLD"}, Order: []string{"old"}}
+	if err := s.Rename("old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Keys["new"] != "tskey-auth-OLD" {
+		t.Fatal(s.Keys)
+	}
+	if _, ok := s.Keys["old"]; ok {
+		t.Fatal("old still present")
+	}
+}
+
 func TestLoadMissing(t *testing.T) {
 	s, err := Load(filepath.Join(t.TempDir(), "nope"))
 	if err != nil {

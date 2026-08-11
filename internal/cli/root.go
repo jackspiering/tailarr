@@ -12,6 +12,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/exitcode"
 	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/ui"
 	"github.com/jackspiering/tailarr/internal/version"
 )
@@ -133,6 +134,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newDeployCmd(rt))
 	root.AddCommand(newRepairCmd(rt))
 	root.AddCommand(newUpdateCmd(rt))
+	root.AddCommand(newUpgradeCmd(rt))
 	root.AddCommand(newStopCmd(rt))
 	root.AddCommand(newRestartCmd(rt))
 	root.AddCommand(newRemoveCmd(rt))
@@ -162,6 +164,9 @@ func Execute() int {
 
 func runDefault(rt *Runtime) error {
 	if ui.IsInteractive() {
+		if err := firstRunSetup(rt); err != nil {
+			return err
+		}
 		return ui.Run(rt.Cfg, rt.Log)
 	}
 	// Non-TTY: short help instead of TUI.
@@ -170,6 +175,31 @@ func runDefault(rt *Runtime) error {
 	_, _ = fmt.Fprintln(rt.Out, "  tailarr list")
 	_, _ = fmt.Fprintln(rt.Out, "  tailarr doctor")
 	_, _ = fmt.Fprintln(rt.Out, "  tailarr --help")
+	return nil
+}
+
+func firstRunSetup(rt *Runtime) error {
+	// If config file already exists, nothing to do.
+	if _, err := os.Stat(rt.Cfg.ConfigPath); err == nil {
+		return nil
+	}
+	uiPrompt := prompt.NewStd(rt.Cfg.AssumeYes)
+	uiPrompt.Printf("No config found at %s.\n", rt.Cfg.ConfigPath)
+	ok, err := uiPrompt.Confirm("Create one now using the current defaults?", true)
+	if err != nil || !ok {
+		return nil
+	}
+	if edit, _ := uiPrompt.Confirm("Edit defaults before saving?", true); edit {
+		if err := editConfigInteractive(rt); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := config.Save(rt.Cfg); err != nil {
+		uiPrompt.Printf("Could not save config: %v\n", err)
+		return nil
+	}
+	uiPrompt.Printf("Saved config: %s\n", rt.Cfg.ConfigPath)
 	return nil
 }
 
