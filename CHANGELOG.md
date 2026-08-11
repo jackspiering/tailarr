@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tailarr upgrade`: self-update to the latest release (SHA256-verified,
+  atomic replace); `--check`, `--force`, `--repo` / `TAILARR_UPGRADE_REPO`;
+  TUI Maintenance menu entry.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added
