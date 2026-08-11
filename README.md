@@ -25,14 +25,14 @@ curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/i
 Pinned release script (preferred for production):
 
 ```bash
-curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.1.0/install.sh | sh
+curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.2.0/install.sh | sh
 ```
 
 Options:
 
 ```bash
 # Pin the binary version (default: latest GitHub release)
-TAILARR_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+TAILARR_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
 
 # Install without root (default falls back here if /usr/local/bin is not writable)
 INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
