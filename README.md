@@ -1,0 +1,196 @@
+# Tailarr
+
+Deploy and manage [ScaleTail](https://github.com/tailscale-dev/ScaleTail) Docker
+Compose services from a terminal TUI or scriptable CLI.
+
+[![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Version](https://img.shields.io/badge/version-0.1.0-informational)](CHANGELOG.md)
+
+No daemon. No cloud control plane. You run Tailarr next to Docker on a host
+you already control.
+
+> This repository is a **Go rewrite** of the Bash Tailarr tool. Install the
+> release binary (or build from source). The host still needs Git, Docker, and
+> Compose v2; Go is only required to build from source.
+
+## Quick start
+
+### Binary (recommended)
+
+```bash
+# Download a release asset for your OS/arch from:
+#   https://github.com/jackspiering/tailarr/releases
+chmod +x tailarr
+sudo mv tailarr /usr/local/bin/   # or keep it anywhere on PATH
+tailarr doctor
+tailarr            # interactive TUI when stdout is a TTY
+```
+
+### go install
+
+```bash
+go install github.com/jackspiering/tailarr/cmd/tailarr@latest
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/jackspiering/tailarr.git
+cd tailarr
+go test ./...
+go build -o bin/tailarr ./cmd/tailarr
+./bin/tailarr version
+./bin/tailarr doctor
+```
+
+On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
+(or override paths). See [Configuration](#configuration).
+
+## Features
+
+| Area | Description |
+| --- | --- |
+| Catalog | Lists ScaleTail services (`compose.yaml` / `compose.yml` / `docker-compose.y{a,}ml` + `.env`) |
+| Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed) |
+| Auth keys | Named `TS_AUTHKEY` store (`tskey-auth-*`, mode `600`, redacted listings) |
+| Status | Deployed listing with managed marker (more status work tracked in parity) |
+| Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, locks |
+| Doctor | Dependencies, paths, Docker/Compose reachability |
+| UI | Bubble Tea TUI by default; plain help when not a TTY |
+
+## Usage
+
+### Interactive TUI
+
+```bash
+tailarr
+```
+
+Arrow keys / `j` `k` move, Enter selects, `q` or Esc quits. Number keys jump
+to menu items.
+
+### CLI
+
+```bash
+tailarr list
+tailarr deploy {SERVICE}
+tailarr update {SERVICE}
+tailarr stop {SERVICE}
+tailarr restart {SERVICE}
+tailarr remove {SERVICE}
+tailarr repair {SERVICE}
+tailarr deployed
+tailarr running
+tailarr doctor
+tailarr config
+tailarr authkeys list
+tailarr logs
+tailarr version
+```
+
+| Command | Purpose |
+| --- | --- |
+| `list` | Available ScaleTail services |
+| `deployed` | Local deployments |
+| `running` | Running Compose project names (best effort) |
+| `deploy <service>` | Deploy (`--force` replaces an existing one) |
+| `repair <service>` | Refresh templates; keep local `.env` when possible |
+| `update` / `stop` / `restart` / `remove` | Lifecycle (`remove --volumes` drops Compose volumes) |
+| `authkeys` | List/add/remove stored keys (values never on flags) |
+| `logs` | Print log file path |
+| `config` | Show or `config write` effective config |
+| `doctor` | Host and path checks |
+| `version` | Print version |
+
+Global options (before the command):
+
+```bash
+tailarr --no-refresh list
+tailarr --deploy-path /srv/stacks deployed
+tailarr --repo-ref v1.2.3 list
+tailarr --yes remove {SERVICE}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--config <path>` | Config file path |
+| `--repo-url <url>` | ScaleTail git URL |
+| `--repo-path <path>` | Local ScaleTail clone |
+| `--deploy-path <path>` | Deployment root |
+| `--log-path <path>` | Log file |
+| `--authkeys-path <path>` | Auth keys file |
+| `--repo-ref <ref>` | Pin ScaleTail to a branch, tag, or commit |
+| `--no-refresh` | Skip ScaleTail clone/pull for list/deploy/repair |
+| `--yes` | Auto-confirm default-yes prompts (when prompts exist) |
+
+Secrets are never accepted on CLI flags. Enter them at prompts or pipe a file
+to stdin for `authkeys add`.
+
+## Configuration
+
+<details>
+<summary>Paths, environment variables, permissions</summary>
+
+Config is plain text (`KEY=VALUE`). The parser reads lines; it never shells
+or evaluates the file. Defaults match the Bash Tailarr spirit:
+
+| Path | Default |
+| --- | --- |
+| Config | `/opt/tailarr/tailarr.conf` |
+| Auth keys | `/opt/tailarr/authkeys.conf` |
+| ScaleTail clone | `/opt/tailarr/scaletail` |
+| Deployments | `/opt/docker/stacks` |
+| Backups | `/opt/docker/stacks/.tailarr_backups` |
+| Log | `/opt/tailarr/logs/tailarr.log` |
+
+| Environment variable | Overrides |
+| --- | --- |
+| `TAILARR_CONFIG_PATH` | Config file path |
+| `TAILARR_REPO_URL` | ScaleTail URL |
+| `TAILARR_REPO_PATH` | ScaleTail clone path |
+| `TAILARR_DEPLOY_PATH` | Deployment root |
+| `TAILARR_LOG_PATH` | Log file |
+| `TAILARR_AUTHKEYS_PATH` | Auth keys file |
+| `TAILARR_REPO_REF` | Pinned ScaleTail ref |
+| `TAILARR_LOG_MAX_BYTES` | Log rotation size (default `5242880`) |
+| `TAILARR_ASSUME_YES` | `1` = same as `--yes` |
+
+Precedence: defaults, then config file, then environment, then CLI flags.
+
+Safety notes:
+
+- Service names: `^[A-Za-z0-9][A-Za-z0-9_.-]*$` without `..`
+- Refuse symlink config/auth/deploy/template write boundaries
+- Atomic writes for config, auth keys, and `.env` (secrets mode `600`)
+- Backups before destructive replace/repair/remove
+- Per-service locks and a repo lock for git refresh
+- ScaleTail clone is **trusted input** (Compose runs on your host)
+
+</details>
+
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and
+[docs/development.md](docs/development.md). Feature parity with the Bash tool
+is tracked in [docs/parity.md](docs/parity.md).
+
+```bash
+go test ./...
+go vet ./...
+```
+
+Commits use [Conventional Commits](https://www.conventionalcommits.org/).
+
+## License
+
+MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Jack Spiering.
+
+## Thanks
+
+- [ScaleTail](https://github.com/tailscale-dev/ScaleTail) for Compose templates
+- The original Bash [Tailarr](https://github.com/2Tiny2Scale/Tailarr) for the
+  operator workflow this rewrite follows
+- [Bubble Tea](https://github.com/charmbracelet/bubbletea) and
+  [Cobra](https://github.com/spf13/cobra)

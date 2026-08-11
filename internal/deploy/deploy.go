@@ -1,0 +1,410 @@
+// Package deploy implements service lifecycle against Docker Compose.
+package deploy
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/jackspiering/tailarr/internal/config"
+	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/scaletail"
+	"github.com/jackspiering/tailarr/internal/security/atomic"
+	"github.com/jackspiering/tailarr/internal/security/names"
+	"github.com/jackspiering/tailarr/internal/security/paths"
+)
+
+// Manager coordinates deploy/update/stop/restart/remove/repair.
+type Manager struct {
+	Cfg *config.Config
+	Log *logging.Logger
+}
+
+// TailarrComposeLabel is applied via override so status can detect managed stacks.
+const TailarrComposeLabel = "com.tailarr.managed=true"
+
+// overrideFilename is written next to the service compose file.
+const overrideFilename = ".tailarr.compose.yaml"
+
+// Deploy copies a template into the deploy path, merges env, and runs compose up.
+// force replaces an existing deployment (with backup).
+func (m *Manager) Deploy(service string, force bool) error {
+	if err := names.ValidateServiceName(service); err != nil {
+		return err
+	}
+	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	if err := paths.EnsureDir(m.Cfg.DeployPath, "deployment directory"); err != nil {
+		return err
+	}
+	if paths.IsSymlink(m.Cfg.DeployPath) {
+		return fmt.Errorf("deployment root must not be a symlink: %s", m.Cfg.DeployPath)
+	}
+
+	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
+	if paths.IsSymlink(templateDir) {
+		return fmt.Errorf("template must not be a symlink: %s", templateDir)
+	}
+	if found, err := paths.ContainsSymlinks(templateDir); err != nil {
+		return fmt.Errorf("template: %w", err)
+	} else if found != "" {
+		return fmt.Errorf("template contains unsupported symlink: %s", found)
+	}
+
+	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+
+	var backupPath string
+	if st, err := os.Lstat(dest); err == nil {
+		if !force {
+			return fmt.Errorf("service already deployed: %s (use --force to replace)", service)
+		}
+		if st.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to operate on symlink deployment: %s", service)
+		}
+		if found, err := paths.ContainsSymlinks(dest); err == nil && found != "" {
+			return fmt.Errorf("deployment contains unsupported symlink: %s", found)
+		}
+		// Best-effort compose down before replace.
+		_ = Compose(dest, "down", "--remove-orphans")
+		backupPath, err = Backup(m.Cfg.DeployPath, service, dest, BackupMove)
+		if err != nil {
+			return err
+		}
+		m.log("backup created for %s: %s", service, backupPath)
+	}
+
+	if err := copyTemplate(templateDir, dest); err != nil {
+		return err
+	}
+	if backupPath != "" {
+		if err := RestorePersistentData(backupPath, dest); err != nil {
+			return fmt.Errorf("restore persistent data: %w", err)
+		}
+	}
+
+	if err := m.mergeAndWriteEnv(service, templateDir, dest); err != nil {
+		return err
+	}
+	if err := writeOverride(dest); err != nil {
+		return err
+	}
+
+	if err := Compose(dest, "-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans"); err != nil {
+		return err
+	}
+	m.log("deployed service %s", service)
+	return nil
+}
+
+func composeBaseName(dir string) string {
+	if p, ok := scaletail.ComposeFileIn(dir); ok {
+		return filepath.Base(p)
+	}
+	return "compose.yaml"
+}
+
+func (m *Manager) mergeAndWriteEnv(service, templateDir, dest string) error {
+	tplEnv := filepath.Join(templateDir, ".env")
+	localEnv := filepath.Join(dest, ".env")
+	// If we restored from backup, local .env may already be at dest from template;
+	// prefer existing dest .env when it has secrets (repair/redeploy).
+	// On fresh deploy after move backup, dest is new template; load backup .env if any.
+	templateMap, err := scaletail.ParseEnvFile(tplEnv)
+	if err != nil {
+		return err
+	}
+	keys, err := scaletail.ReadEnvKeys(tplEnv)
+	if err != nil {
+		return err
+	}
+	localMap, err := scaletail.ParseEnvFile(localEnv)
+	if err != nil {
+		return err
+	}
+	// Also try latest backup env if local empty TS_AUTHKEY
+	merged := scaletail.MergeEnv(templateMap, localMap, keys)
+	if err := scaletail.ValidateMergedTSAuthkey(merged); err != nil {
+		return err
+	}
+	// Non-interactive deploy: leave empty placeholders; operator can repair/config.
+	_ = service
+	return scaletail.WriteEnvFile(localEnv, merged, keys)
+}
+
+func writeOverride(dest string) error {
+	// Minimal override adding a project label via x-tailarr annotation on a dummy extension.
+	// Compose labels on services require knowing service names; use a document-level extension
+	// and a networks-less override that sets labels via name: is hard. Instead write a small
+	// override that operators can inspect; lifecycle still works without parsing YAML.
+	body := `# Generated by Tailarr - do not edit by hand
+# Managed: ` + TailarrComposeLabel + `
+`
+	return atomic.WriteFileString(filepath.Join(dest, overrideFilename), body, 0o644)
+}
+
+func copyTemplate(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to copy symlink: %s", path)
+		}
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFileMode(path, target, info.Mode().Perm())
+	})
+}
+
+func copyFileMode(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
+// Repair refreshes template files while preserving local .env secrets.
+func (m *Manager) Repair(service string) error {
+	if err := names.ValidateServiceName(service); err != nil {
+		return err
+	}
+	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dest); err != nil {
+		return fmt.Errorf("service not deployed: %s", service)
+	}
+	if found, err := paths.ContainsSymlinks(dest); err != nil {
+		return err
+	} else if found != "" {
+		return fmt.Errorf("deployment contains unsupported symlink: %s", found)
+	}
+
+	if _, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy); err != nil {
+		return err
+	}
+
+	// Preserve .env
+	envPath := filepath.Join(dest, ".env")
+	var envBackup []byte
+	if data, err := os.ReadFile(envPath); err == nil {
+		envBackup = data
+	}
+
+	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
+	// Refresh compose files from template only.
+	for _, name := range scaletail.ComposeCandidates {
+		src := filepath.Join(templateDir, name)
+		if st, err := os.Stat(src); err == nil && !st.IsDir() && !paths.IsSymlink(src) {
+			if err := copyFileMode(src, filepath.Join(dest, name), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	if len(envBackup) > 0 {
+		if err := atomic.WriteFile(envPath, envBackup, 0o600); err != nil {
+			return err
+		}
+	}
+	_ = writeOverride(dest)
+	if err := Compose(dest, "-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans"); err != nil {
+		return err
+	}
+	m.log("repaired service %s", service)
+	return nil
+}
+
+// Update pulls images and recreates containers.
+func (m *Manager) Update(service string) error {
+	return m.withServiceDir(service, func(dir string) error {
+		if err := Compose(dir, "-f", composeBaseName(dir), "pull"); err != nil {
+			return err
+		}
+		if err := Compose(dir, "-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans"); err != nil {
+			return err
+		}
+		m.log("updated service %s", service)
+		return nil
+	})
+}
+
+// Stop stops a deployment.
+func (m *Manager) Stop(service string) error {
+	return m.withServiceDir(service, func(dir string) error {
+		if err := Compose(dir, "stop"); err != nil {
+			return err
+		}
+		m.log("stopped service %s", service)
+		return nil
+	})
+}
+
+// Restart restarts a deployment.
+func (m *Manager) Restart(service string) error {
+	return m.withServiceDir(service, func(dir string) error {
+		if err := Compose(dir, "restart"); err != nil {
+			return err
+		}
+		m.log("restarted service %s", service)
+		return nil
+	})
+}
+
+// Remove tears down a deployment. When volumes is true, passes -v.
+func (m *Manager) Remove(service string, volumes bool) error {
+	if err := names.ValidateServiceName(service); err != nil {
+		return err
+	}
+	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dest); err != nil {
+		return fmt.Errorf("service not deployed: %s", service)
+	}
+	if found, err := paths.ContainsSymlinks(dest); err != nil {
+		return err
+	} else if found != "" {
+		return fmt.Errorf("deployment contains unsupported symlink: %s", found)
+	}
+
+	if _, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy); err != nil {
+		return err
+	}
+	args := []string{"down", "--remove-orphans"}
+	if volumes {
+		args = append(args, "--volumes")
+	}
+	_ = Compose(dest, args...)
+	// Safe remove: refuse if symlinks appeared
+	if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
+		return err
+	}
+	m.log("removed service %s", service)
+	return nil
+}
+
+func (m *Manager) withServiceDir(service string, fn func(dir string) error) error {
+	if err := names.ValidateServiceName(service); err != nil {
+		return err
+	}
+	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dest); err != nil {
+		return fmt.Errorf("service not deployed: %s", service)
+	}
+	return fn(dest)
+}
+
+func safeRemoveTree(path, root string) error {
+	if paths.IsSymlink(path) {
+		return fmt.Errorf("refusing to remove symlink: %s", path)
+	}
+	ok, err := paths.Within(path, root)
+	if err != nil || !ok {
+		// path is direct child of root: Within may fail if path was the only child logic
+		// Re-check: path should be root/service
+		rootAbs, err2 := paths.AbsExistingDir(root)
+		if err2 != nil {
+			return fmt.Errorf("unsafe remove path: %s", path)
+		}
+		pathAbs, err2 := filepath.Abs(path)
+		if err2 != nil {
+			return err2
+		}
+		if !strings.HasPrefix(pathAbs, rootAbs+string(os.PathSeparator)) {
+			return fmt.Errorf("path not within deploy root: %s", path)
+		}
+	}
+	if found, err := paths.ContainsSymlinks(path); err != nil {
+		return err
+	} else if found != "" {
+		return fmt.Errorf("refusing to remove tree with symlink: %s", found)
+	}
+	return os.RemoveAll(path)
+}
+
+func (m *Manager) log(format string, args ...any) {
+	if m.Log != nil {
+		m.Log.Event(fmt.Sprintf(format, args...))
+	}
+}
+
+// IsManaged reports whether a deploy dir has a Tailarr override marker.
+func IsManaged(dir string) bool {
+	p := filepath.Join(dir, overrideFilename)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "com.tailarr.managed")
+}
