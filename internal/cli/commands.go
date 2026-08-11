@@ -17,6 +17,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/deploy"
 	"github.com/jackspiering/tailarr/internal/doctor"
 	"github.com/jackspiering/tailarr/internal/exitcode"
+	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/names"
 )
@@ -88,28 +89,35 @@ func newDeployedCmd(rt *Runtime) *cobra.Command {
 func newRunningCmd(rt *Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "running",
-		Short: "List running Compose project names (best effort)",
+		Short: "List running ScaleTail-style service names (best effort)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !deploy.DockerOK() {
 				return exitf(exitcode.Docker, "docker is not available")
 			}
-			// Best-effort: docker ps project label.
-			c := exec.Command("docker", "ps", "--format", "{{.Label \"com.docker.compose.project\"}}")
-			out, err := c.Output()
+			namesList, err := deploy.RunningServiceNames()
 			if err != nil {
-				return exitf(exitcode.Docker, "docker ps failed: %w", err)
+				// Fall back to compose project labels.
+				c := exec.Command("docker", "ps", "--format", "{{.Label \"com.docker.compose.project\"}}")
+				out, err2 := c.Output()
+				if err2 != nil {
+					return exitf(exitcode.Docker, "docker ps failed: %w", err2)
+				}
+				seen := map[string]bool{}
+				for _, line := range strings.Split(string(out), "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" || seen[line] {
+						continue
+					}
+					if !names.ValidServiceName(line) {
+						continue
+					}
+					seen[line] = true
+					_, _ = fmt.Fprintln(rt.Out, line)
+				}
+				return nil
 			}
-			seen := map[string]bool{}
-			for _, line := range strings.Split(string(out), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || seen[line] {
-					continue
-				}
-				if !names.ValidServiceName(line) {
-					continue
-				}
-				seen[line] = true
-				_, _ = fmt.Fprintln(rt.Out, line)
+			for _, n := range namesList {
+				_, _ = fmt.Fprintln(rt.Out, n)
 			}
 			return nil
 		},
@@ -117,7 +125,11 @@ func newRunningCmd(rt *Runtime) *cobra.Command {
 }
 
 func mgr(rt *Runtime) *deploy.Manager {
-	return &deploy.Manager{Cfg: &rt.Cfg, Log: rt.Log}
+	return &deploy.Manager{
+		Cfg: &rt.Cfg,
+		Log: rt.Log,
+		UI:  prompt.NewStd(rt.Cfg.AssumeYes),
+	}
 }
 
 func newDeployCmd(rt *Runtime) *cobra.Command {
@@ -131,7 +143,11 @@ func newDeployCmd(rt *Runtime) *cobra.Command {
 			if err := maybeRefresh(rt); err != nil {
 				return err
 			}
-			opts := deploy.DeployOpts{Force: force, AuthKeyName: authKeyName}
+			opts := deploy.DeployOpts{Force: force, AuthKeyName: authKeyName, SkipConfirm: force}
+			// Non-TTY without --yes: skip interactive env prompts (still fail closed on empty TS_AUTHKEY).
+			if !isStdinTTY() && !rt.Cfg.AssumeYes {
+				opts.SkipInteractive = true
+			}
 			if err := mgr(rt).DeployWith(args[0], opts); err != nil {
 				return mapDeployErr(err)
 			}
@@ -215,7 +231,11 @@ func newRemoveCmd(rt *Runtime) *cobra.Command {
 		Short: "Remove a managed deployment (fails closed if compose down fails)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := mgr(rt).Remove(args[0], volumes); err != nil {
+			if !isStdinTTY() && !rt.Cfg.AssumeYes {
+				return exitf(exitcode.Usage, "stdin is not a terminal; pass --yes to confirm remove")
+			}
+			opts := deploy.DeployOpts{Volumes: volumes, SkipConfirm: rt.Cfg.AssumeYes}
+			if err := mgr(rt).RemoveWith(args[0], opts); err != nil {
 				return mapDeployErr(err)
 			}
 			_, _ = fmt.Fprintf(rt.Out, "Removed %s\n", args[0])
@@ -224,6 +244,14 @@ func newRemoveCmd(rt *Runtime) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&volumes, "volumes", false, "also remove Compose volumes")
 	return cmd
+}
+
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func newLogsCmd(rt *Runtime) *cobra.Command {
@@ -240,7 +268,7 @@ func newLogsCmd(rt *Runtime) *cobra.Command {
 func newConfigCmd(rt *Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show or write configuration",
+		Short: "Show or edit configuration",
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "show",
@@ -261,12 +289,54 @@ func newConfigCmd(rt *Runtime) *cobra.Command {
 			return nil
 		},
 	})
-	// Default: show
+	cmd.AddCommand(&cobra.Command{
+		Use:   "edit",
+		Short: "Interactively edit and save configuration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := editConfigInteractive(rt); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(rt.Out, "Saved %s\n", rt.Cfg.ConfigPath)
+			return nil
+		},
+	})
+	// Default: interactive edit on TTY, otherwise show.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if isStdinTTY() {
+			if err := editConfigInteractive(rt); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(rt.Out, "Saved %s\n", rt.Cfg.ConfigPath)
+			return nil
+		}
 		_, _ = fmt.Fprint(rt.Out, rt.Cfg.String())
 		return nil
 	}
 	return cmd
+}
+
+func editConfigInteractive(rt *Runtime) error {
+	ui := prompt.NewStd(rt.Cfg.AssumeYes)
+	var err error
+	if rt.Cfg.RepoURL, err = ui.Line("TAILARR_REPO_URL", rt.Cfg.RepoURL); err != nil {
+		return err
+	}
+	if rt.Cfg.RepoPath, err = ui.Line("TAILARR_REPO_PATH", rt.Cfg.RepoPath); err != nil {
+		return err
+	}
+	if rt.Cfg.DeployPath, err = ui.Line("TAILARR_DEPLOY_PATH", rt.Cfg.DeployPath); err != nil {
+		return err
+	}
+	if rt.Cfg.LogPath, err = ui.Line("TAILARR_LOG_PATH", rt.Cfg.LogPath); err != nil {
+		return err
+	}
+	if rt.Cfg.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", rt.Cfg.AuthkeysPath); err != nil {
+		return err
+	}
+	if rt.Cfg.RepoRef, err = ui.Line("TAILARR_REPO_REF", rt.Cfg.RepoRef); err != nil {
+		return err
+	}
+	return config.Save(rt.Cfg)
 }
 
 func newAuthkeysCmd(rt *Runtime) *cobra.Command {
@@ -354,6 +424,31 @@ func newAuthkeysCmd(rt *Runtime) *cobra.Command {
 				return exitf(exitcode.Perm, "%w", err)
 			}
 			_, _ = fmt.Fprintf(rt.Out, "Removed auth key %s\n", args[0])
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "rename <old> <new>",
+		Short: "Rename a stored key",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			lockPath := rt.Cfg.AuthkeysPath + ".lock"
+			lock, err := deploy.AcquireLock(lockPath, deploy.DefaultLockTimeout)
+			if err != nil {
+				return exitf(exitcode.Perm, "authkeys lock: %w", err)
+			}
+			defer func() { _ = lock.Release() }()
+			s, err := authkeys.Load(rt.Cfg.AuthkeysPath)
+			if err != nil {
+				return exitf(exitcode.Perm, "%w", err)
+			}
+			if err := s.Rename(args[0], args[1]); err != nil {
+				return exitf(exitcode.Usage, "%w", err)
+			}
+			if err := s.Save(); err != nil {
+				return exitf(exitcode.Perm, "%w", err)
+			}
+			_, _ = fmt.Fprintf(rt.Out, "Renamed auth key %s -> %s\n", args[0], args[1])
 			return nil
 		},
 	})
@@ -446,6 +541,8 @@ func mapDeployErr(err error) error {
 		return nil
 	}
 	switch {
+	case errors.Is(err, prompt.ErrCanceled):
+		return &ExitError{Code: exitcode.Canceled, Err: err}
 	case errors.Is(err, deploy.ErrAlreadyDeployed):
 		return &ExitError{Code: exitcode.Usage, Err: err}
 	case errors.Is(err, deploy.ErrNotDeployed), errors.Is(err, deploy.ErrNoCompose):

@@ -6,7 +6,7 @@ Compose services from a terminal TUI or scriptable CLI.
 [![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![Version](https://img.shields.io/badge/version-0.1.0-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-informational)](CHANGELOG.md)
 
 No daemon. No cloud control plane. You run Tailarr next to Docker on a host
 you already control.
@@ -85,12 +85,13 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 | Area | Description |
 | --- | --- |
 | Catalog | Lists ScaleTail services (`compose.yaml` / `compose.yml` / `docker-compose.y{a,}ml` + `.env`) |
-| Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed) |
-| Auth keys | Named `TS_AUTHKEY` store (`tskey-auth-*`, mode `600`, redacted listings) |
-| Status | Deployed listing with managed marker (more status work tracked in parity) |
+| Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed, confirmations, backups) |
+| Auth keys | Named `TS_AUTHKEY` store (add/rename/replace/remove, mode `600`, redacted listings) |
+| Status | Overview, managed/other counts, container health, running ScaleTail-style names |
+| Deploy env | Interactive prompts for empty/placeholder env values; `--authkey <name>` for stores |
 | Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, ownership-aware locks |
 | Doctor | Dependencies, paths, Docker/Compose reachability (safe write probe) |
-| UI | Bubble Tea TUI by default; plain help when not a TTY; respects `NO_COLOR` |
+| UI | Hierarchical Bubble Tea menus (Status / Services / Keys / Config / Maintenance); multi-select batch ops |
 
 ## Usage
 
@@ -100,8 +101,12 @@ On first real deploy, create dirs under `/opt/tailarr` and `/opt/docker/stacks`
 tailarr
 ```
 
-Arrow keys / `j` `k` move, Enter selects, `q` or Esc quits. Number keys jump
-to menu items.
+Main menu: **Status**, **Services**, **Tailscale Authentication Keys**,
+**Configuration**, **Maintenance**. Arrow keys / `j` `k` move, Enter selects,
+`q` or Esc backs out / quits. Number keys jump to items. Multi-select deploy
+and lifecycle actions use space to toggle, `a` for all, then Run.
+
+First interactive run can create and optionally edit the config file.
 
 ### CLI
 
@@ -130,9 +135,9 @@ tailarr version
 | `deploy <service>` | Deploy (`--force` replaces managed; `--authkey <name>` fills empty `TS_AUTHKEY`) |
 | `repair <service>` | Refresh templates; keep local `.env` when possible |
 | `update` / `stop` / `restart` / `remove` | Lifecycle on **managed** deploys only (`remove` fails closed if compose down fails; `--volumes` drops volumes) |
-| `authkeys` | List/add/remove stored keys (values never on flags) |
+| `authkeys` | List/add/rename/remove stored keys (values never on flags) |
 | `logs` | Print log file path |
-| `config` | Show or `config write` effective config |
+| `config` | Interactive edit (TTY), or `config show` / `config write` |
 | `doctor` | Host and path checks |
 | `version` | Print version |
 

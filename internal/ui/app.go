@@ -4,13 +4,17 @@ package ui
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
+	"github.com/jackspiering/tailarr/internal/deploy"
 	"github.com/jackspiering/tailarr/internal/doctor"
 	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/version"
 )
@@ -31,10 +35,7 @@ func IsInteractive() bool {
 	return true
 }
 
-// colorEnabled is false when NO_COLOR is set (https://no-color.org/).
-func colorEnabled() bool {
-	return os.Getenv("NO_COLOR") == ""
-}
+func colorEnabled() bool { return os.Getenv("NO_COLOR") == "" }
 
 func styleOrPlain(s lipgloss.Style, text string) string {
 	if !colorEnabled() {
@@ -59,35 +60,122 @@ type menuItem struct {
 	id    string
 }
 
+type screen int
+
+const (
+	screenMain screen = iota
+	screenStatus
+	screenServices
+	screenAuthkeys
+	screenConfig
+	screenMaintenance
+	screenMultiSelect
+	screenResult
+)
+
+type multiMode int
+
+const (
+	multiNone multiMode = iota
+	multiDeploy
+	multiRemove
+	multiUpdate
+	multiStop
+	multiRestart
+	multiRepair
+)
+
 type model struct {
 	cfg      config.Config
 	log      *logging.Logger
+	screen   screen
 	cursor   int
 	items    []menuItem
 	status   string
 	quitting bool
 	width    int
 	height   int
+
+	// multi-select state
+	multi multiMode
+	opts  []string
+	// selected indexes for multi
+	picked map[int]bool
 }
 
-// Run starts the main menu TUI.
+// Run starts the interactive TUI. Lifecycle actions that need prompts leave the
+// alternate screen and use stdin prompts, then return to the menu.
 func Run(cfg config.Config, log *logging.Logger) error {
 	m := model{
-		cfg: cfg,
-		log: log,
-		items: []menuItem{
-			{id: "list", label: "List services", desc: "Catalog ScaleTail templates"},
-			{id: "deployed", label: "Deployed", desc: "Local deployments under deploy path"},
-			{id: "doctor", label: "Doctor", desc: "Host readiness checks"},
-			{id: "config", label: "Configuration", desc: "Show effective config"},
-			{id: "authkeys", label: "Auth keys", desc: "List stored keys (redacted)"},
-			{id: "logs", label: "Log path", desc: "Show Tailarr log file path"},
-			{id: "quit", label: "Quit", desc: "Exit Tailarr"},
-		},
+		cfg:    cfg,
+		log:    log,
+		screen: screenMain,
+		items:  mainMenuItems(),
+		picked: map[int]bool{},
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+func mainMenuItems() []menuItem {
+	return []menuItem{
+		{id: "status", label: "Status", desc: "Health, counts, and deployment status"},
+		{id: "services", label: "Services", desc: "Deploy, repair, and control services"},
+		{id: "authkeys", label: "Tailscale Authentication Keys", desc: "Manage stored Tailscale authentication keys"},
+		{id: "config", label: "Configuration", desc: "View or edit Tailarr configuration"},
+		{id: "maintenance", label: "Maintenance", desc: "Doctor checks and maintenance tools"},
+		{id: "quit", label: "Exit", desc: "Quit Tailarr"},
+	}
+}
+
+func statusMenuItems() []menuItem {
+	return []menuItem{
+		{id: "overview", label: "Overview", desc: "Health, counts, and managed services"},
+		{id: "deployed", label: "Deployed services", desc: "Browse local deployments"},
+		{id: "running", label: "Running services", desc: "Inspect running Docker containers"},
+		{id: "summary", label: "Docker and config summary", desc: "Review Docker access and configuration"},
+		{id: "back", label: "Back", desc: "Return to main menu"},
+	}
+}
+
+func servicesMenuItems() []menuItem {
+	return []menuItem{
+		{id: "search", label: "Search available services", desc: "Find available ScaleTail templates"},
+		{id: "deploy", label: "Deploy services", desc: "Create or replace deployments"},
+		{id: "remove", label: "Remove services", desc: "Stop and remove deployments"},
+		{id: "update", label: "Check for container updates", desc: "Pull images and recreate services"},
+		{id: "stop", label: "Stop services", desc: "Stop selected deployments"},
+		{id: "restart", label: "Restart services", desc: "Restart selected deployments"},
+		{id: "back", label: "Back", desc: "Return to main menu"},
+	}
+}
+
+func authkeysMenuItems() []menuItem {
+	return []menuItem{
+		{id: "list", label: "List keys", desc: "Show stored key names (redacted)"},
+		{id: "add", label: "Add key", desc: "Add a new stored auth key"},
+		{id: "rename", label: "Rename key", desc: "Change a stored key name"},
+		{id: "replace", label: "Replace key value", desc: "Replace a stored key value"},
+		{id: "remove", label: "Remove key", desc: "Delete a stored auth key"},
+		{id: "back", label: "Back", desc: "Return to main menu"},
+	}
+}
+
+func configMenuItems() []menuItem {
+	return []menuItem{
+		{id: "view", label: "View current config", desc: "View the active configuration"},
+		{id: "edit", label: "Edit config", desc: "Edit paths, repository, and logging"},
+		{id: "back", label: "Back", desc: "Return to main menu"},
+	}
+}
+
+func maintenanceMenuItems() []menuItem {
+	return []menuItem{
+		{id: "doctor", label: "Run doctor checks", desc: "Host, path, Docker, and health checks"},
+		{id: "repair", label: "Repair a service", desc: "Refresh files while preserving local data"},
+		{id: "back", label: "Back", desc: "Return to main menu"},
+	}
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -98,26 +186,54 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case resultMsg:
+		m.screen = screenResult
+		m.status = msg.text
+		m.items = []menuItem{{id: "back", label: "Back", desc: "Return"}}
+		m.cursor = 0
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q", "esc":
+		case "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
+		case "q", "esc":
+			if m.screen == screenMain {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m.goBack(), nil
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.items)-1 {
+			max := len(m.items) - 1
+			if m.screen == screenMultiSelect {
+				max = len(m.opts) + len(m.items) - 1
+			}
+			if m.cursor < max {
 				m.cursor++
 			}
-		case "enter", " ":
+		case " ":
+			if m.screen == screenMultiSelect && m.cursor < len(m.opts) {
+				m.picked[m.cursor] = !m.picked[m.cursor]
+			}
+		case "enter":
 			return m.activate()
+		case "a":
+			if m.screen == screenMultiSelect {
+				for i := range m.opts {
+					m.picked[i] = true
+				}
+			}
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			// Number keys 1..n select; 0 = quit
 			if msg.String() == "0" {
-				m.quitting = true
-				return m, tea.Quit
+				if m.screen == screenMain {
+					m.quitting = true
+					return m, tea.Quit
+				}
+				return m.goBack(), nil
 			}
 			n := int(msg.String()[0] - '0')
 			if n >= 1 && n <= len(m.items) {
@@ -129,57 +245,463 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+type resultMsg struct{ text string }
+
+func (m model) goBack() model {
+	m.screen = screenMain
+	m.items = mainMenuItems()
+	m.cursor = 0
+	m.status = ""
+	m.multi = multiNone
+	m.picked = map[int]bool{}
+	m.opts = nil
+	return m
+}
+
+func (m model) setScreen(s screen, items []menuItem) model {
+	m.screen = s
+	m.items = items
+	m.cursor = 0
+	m.status = ""
+	return m
+}
+
 func (m model) activate() (tea.Model, tea.Cmd) {
-	item := m.items[m.cursor]
-	switch item.id {
-	case "quit":
-		m.quitting = true
-		return m, tea.Quit
-	case "list":
-		svcs, err := scaletail.ListAvailable(m.cfg.RepoPath)
+	if m.screen == screenMultiSelect {
+		// cursor indexes opts first, then action items.
+		if m.cursor < len(m.opts) {
+			m.picked[m.cursor] = !m.picked[m.cursor]
+			return m, nil
+		}
+		ai := m.cursor - len(m.opts)
+		if ai >= 0 && ai < len(m.items) {
+			// temporarily set cursor to action index for finishMulti
+			saved := m.cursor
+			m.cursor = ai
+			nm, cmd := m.finishMulti()
+			if mm, ok := nm.(model); ok {
+				mm.cursor = saved
+				return mm, cmd
+			}
+			return nm, cmd
+		}
+		return m, nil
+	}
+	if len(m.items) == 0 {
+		return m, nil
+	}
+	id := m.items[m.cursor].id
+
+	switch m.screen {
+	case screenMain:
+		switch id {
+		case "quit":
+			m.quitting = true
+			return m, tea.Quit
+		case "status":
+			return m.setScreen(screenStatus, statusMenuItems()), nil
+		case "services":
+			return m.setScreen(screenServices, servicesMenuItems()), nil
+		case "authkeys":
+			return m.setScreen(screenAuthkeys, authkeysMenuItems()), nil
+		case "config":
+			return m.setScreen(screenConfig, configMenuItems()), nil
+		case "maintenance":
+			return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
+		}
+	case screenStatus:
+		return m.activateStatus(id)
+	case screenServices:
+		return m.activateServices(id)
+	case screenAuthkeys:
+		return m.activateAuthkeys(id)
+	case screenConfig:
+		return m.activateConfig(id)
+	case screenMaintenance:
+		return m.activateMaintenance(id)
+	case screenResult:
+		return m.goBack(), nil
+	}
+	return m, nil
+}
+
+func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "back":
+		return m.goBack(), nil
+	case "overview":
+		st, err := deploy.CollectOverview(m.cfg.DeployPath)
 		if err != nil {
-			m.status = styleOrPlain(errStyle, "list: "+err.Error())
+			m.status = styleOrPlain(errStyle, err.Error())
 			return m, nil
 		}
-		if len(svcs) == 0 {
-			m.status = styleOrPlain(dimStyle, "No valid ScaleTail services found at "+m.cfg.RepoPath)
-			return m, nil
-		}
-		var b string
-		for _, s := range svcs {
-			b += "  " + s.Name + "\n"
-		}
-		m.status = styleOrPlain(okStyle, "Available services:") + "\n" + b
+		m.status = deploy.FormatOverview(st)
+		return m, nil
 	case "deployed":
 		svcs, err := scaletail.ListDeployed(m.cfg.DeployPath)
 		if err != nil {
-			m.status = styleOrPlain(errStyle, "deployed: "+err.Error())
+			m.status = styleOrPlain(errStyle, err.Error())
 			return m, nil
 		}
 		if len(svcs) == 0 {
-			m.status = styleOrPlain(dimStyle, "No deployed services.")
+			m.status = "No deployed services."
 			return m, nil
 		}
-		var b string
+		var b strings.Builder
 		for _, s := range svcs {
-			b += "  " + s.Name + "\n"
+			tag := "other"
+			if deploy.IsManaged(s.Dir) {
+				tag = "managed"
+			}
+			h := deploy.ServiceHealth(s.Name)
+			fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, h)
 		}
-		m.status = styleOrPlain(okStyle, "Deployed:") + "\n" + b
-	case "doctor":
-		res := doctor.Run(m.cfg)
-		var b string
-		for _, c := range res.Checks {
-			b += fmt.Sprintf("  [%s] %s: %s\n", c.Level, c.Name, c.Message)
+		m.status = b.String()
+		return m, nil
+	case "running":
+		names, err := deploy.RunningServiceNames()
+		if err != nil {
+			m.status = styleOrPlain(errStyle, err.Error())
+			return m, nil
 		}
-		m.status = b
-	case "config":
-		m.status = styleOrPlain(dimStyle, m.cfg.String())
-	case "authkeys":
-		m.status = showAuthkeys(m.cfg.AuthkeysPath)
-	case "logs":
-		m.status = "Log file: " + m.cfg.LogPath
+		if len(names) == 0 {
+			m.status = "No running ScaleTail-style containers found."
+			return m, nil
+		}
+		m.status = "  - " + strings.Join(names, "\n  - ")
+		return m, nil
+	case "summary":
+		st, _ := deploy.CollectOverview(m.cfg.DeployPath)
+		m.status = deploy.FormatOverview(st) + "\n" + m.cfg.String() + "\nLog path: " + m.cfg.LogPath
+		return m, nil
 	}
 	return m, nil
+}
+
+func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "back":
+		return m.goBack(), nil
+	case "search":
+		svcs, err := scaletail.ListAvailable(m.cfg.RepoPath)
+		if err != nil {
+			m.status = styleOrPlain(errStyle, err.Error())
+			return m, nil
+		}
+		if len(svcs) == 0 {
+			m.status = "No valid ScaleTail services found."
+			return m, nil
+		}
+		var b strings.Builder
+		for _, s := range svcs {
+			fmt.Fprintf(&b, "  - %s\n", s.Name)
+		}
+		m.status = b.String()
+		return m, nil
+	case "deploy":
+		return m.beginMulti(multiDeploy)
+	case "remove":
+		return m.beginMulti(multiRemove)
+	case "update":
+		return m.beginMulti(multiUpdate)
+	case "stop":
+		return m.beginMulti(multiStop)
+	case "restart":
+		return m.beginMulti(multiRestart)
+	}
+	return m, nil
+}
+
+func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
+	ui := prompt.NewStd(m.cfg.AssumeYes)
+	switch id {
+	case "back":
+		return m.goBack(), nil
+	case "list":
+		s, err := authkeys.Load(m.cfg.AuthkeysPath)
+		if err != nil {
+			m.status = styleOrPlain(errStyle, err.Error())
+			return m, nil
+		}
+		lines := s.RedactedList()
+		if len(lines) == 0 {
+			m.status = "No stored auth keys."
+		} else {
+			m.status = "  - " + strings.Join(lines, "\n  - ")
+		}
+		return m, nil
+	case "add", "rename", "replace", "remove":
+		// Leave alt screen for interactive prompts.
+		return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+			text := runAuthkeyAction(m.cfg, ui, id)
+			return resultMsg{text: text}
+		}, tea.EnterAltScreen)
+	}
+	return m, nil
+}
+
+func runAuthkeyAction(cfg config.Config, ui *prompt.Std, action string) string {
+	s, err := authkeys.Load(cfg.AuthkeysPath)
+	if err != nil {
+		return "Error: " + err.Error()
+	}
+	switch action {
+	case "add":
+		name, err := ui.Line("New key name", "")
+		if err != nil || name == "" {
+			return "Canceled."
+		}
+		val, err := ui.Secret("TS_AUTHKEY")
+		if err != nil {
+			return "Error: " + err.Error()
+		}
+		if err := s.Put(name, val); err != nil {
+			return "Error: " + err.Error()
+		}
+		if err := s.Save(); err != nil {
+			return "Error: " + err.Error()
+		}
+		return "Stored auth key: " + name
+	case "rename":
+		if len(s.Order) == 0 {
+			return "No stored keys."
+		}
+		ui.Printf("Keys: %s\n", strings.Join(s.Order, ", "))
+		old, err := ui.Line("Key to rename", "")
+		if err != nil || old == "" {
+			return "Canceled."
+		}
+		nw, err := ui.Line("New name", "")
+		if err != nil || nw == "" {
+			return "Canceled."
+		}
+		if err := s.Rename(old, nw); err != nil {
+			return "Error: " + err.Error()
+		}
+		if err := s.Save(); err != nil {
+			return "Error: " + err.Error()
+		}
+		return "Renamed to: " + nw
+	case "replace":
+		if len(s.Order) == 0 {
+			return "No stored keys."
+		}
+		ui.Printf("Keys: %s\n", strings.Join(s.Order, ", "))
+		name, err := ui.Line("Key to replace", "")
+		if err != nil || name == "" {
+			return "Canceled."
+		}
+		val, err := ui.Secret("TS_AUTHKEY")
+		if err != nil {
+			return "Error: " + err.Error()
+		}
+		if err := s.Put(name, val); err != nil {
+			return "Error: " + err.Error()
+		}
+		if err := s.Save(); err != nil {
+			return "Error: " + err.Error()
+		}
+		return "Updated auth key: " + name
+	case "remove":
+		if len(s.Order) == 0 {
+			return "No stored keys."
+		}
+		ui.Printf("Keys: %s\n", strings.Join(s.Order, ", "))
+		name, err := ui.Line("Key to remove", "")
+		if err != nil || name == "" {
+			return "Canceled."
+		}
+		ok, err := ui.Confirm("Remove stored auth key "+name+"?", true)
+		if err != nil || !ok {
+			return "Canceled."
+		}
+		if err := s.Remove(name); err != nil {
+			return "Error: " + err.Error()
+		}
+		if err := s.Save(); err != nil {
+			return "Error: " + err.Error()
+		}
+		return "Removed auth key: " + name
+	}
+	return ""
+}
+
+func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "back":
+		return m.goBack(), nil
+	case "view":
+		m.status = m.cfg.String()
+		return m, nil
+	case "edit":
+		return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+			cfg := m.cfg
+			ui := prompt.NewStd(false)
+			text := editConfigInteractive(&cfg, ui)
+			// Persist back into model via result only; caller reloads next TUI start.
+			_ = config.Save(cfg)
+			return resultMsg{text: text}
+		}, tea.EnterAltScreen)
+	}
+	return m, nil
+}
+
+func editConfigInteractive(cfg *config.Config, ui *prompt.Std) string {
+	var err error
+	if cfg.RepoURL, err = ui.Line("TAILARR_REPO_URL", cfg.RepoURL); err != nil {
+		return err.Error()
+	}
+	if cfg.RepoPath, err = ui.Line("TAILARR_REPO_PATH", cfg.RepoPath); err != nil {
+		return err.Error()
+	}
+	if cfg.DeployPath, err = ui.Line("TAILARR_DEPLOY_PATH", cfg.DeployPath); err != nil {
+		return err.Error()
+	}
+	if cfg.LogPath, err = ui.Line("TAILARR_LOG_PATH", cfg.LogPath); err != nil {
+		return err.Error()
+	}
+	if cfg.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", cfg.AuthkeysPath); err != nil {
+		return err.Error()
+	}
+	if cfg.RepoRef, err = ui.Line("TAILARR_REPO_REF", cfg.RepoRef); err != nil {
+		return err.Error()
+	}
+	if err := config.Save(*cfg); err != nil {
+		return "Error saving: " + err.Error()
+	}
+	return "Saved config: " + cfg.ConfigPath
+}
+
+func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "back":
+		return m.goBack(), nil
+	case "doctor":
+		res := doctor.Run(m.cfg)
+		var b strings.Builder
+		for _, c := range res.Checks {
+			fmt.Fprintf(&b, "  [%s] %s: %s\n", c.Level, c.Name, c.Message)
+		}
+		m.status = b.String()
+		return m, nil
+	case "repair":
+		return m.beginMulti(multiRepair)
+	}
+	return m, nil
+}
+
+func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
+	var names []string
+	var err error
+	switch mode {
+	case multiDeploy:
+		svcs, e := scaletail.ListAvailable(m.cfg.RepoPath)
+		err = e
+		for _, s := range svcs {
+			names = append(names, s.Name)
+		}
+	default:
+		svcs, e := scaletail.ListDeployed(m.cfg.DeployPath)
+		err = e
+		for _, s := range svcs {
+			if deploy.IsManaged(s.Dir) {
+				names = append(names, s.Name)
+			}
+		}
+	}
+	if err != nil {
+		m.status = styleOrPlain(errStyle, err.Error())
+		return m, nil
+	}
+	if len(names) == 0 {
+		m.status = "No services available for this action."
+		return m, nil
+	}
+	m.multi = mode
+	m.opts = names
+	m.picked = map[int]bool{}
+	m.screen = screenMultiSelect
+	m.items = []menuItem{
+		{id: "run", label: "Run on selection", desc: "space toggles, a selects all, enter runs"},
+		{id: "cancel", label: "Cancel", desc: "Return without changes"},
+	}
+	m.cursor = 0
+	m.status = "Select services (space toggle, a=all), then Run"
+	return m, nil
+}
+
+func (m model) finishMulti() (tea.Model, tea.Cmd) {
+	id := m.items[m.cursor].id
+	if id == "cancel" {
+		return m.setScreen(screenServices, servicesMenuItems()), nil
+	}
+	var selected []string
+	for i, name := range m.opts {
+		if m.picked[i] {
+			selected = append(selected, name)
+		}
+	}
+	if len(selected) == 0 {
+		m.status = "No services selected."
+		return m, nil
+	}
+	mode := m.multi
+	cfg := m.cfg
+	log := m.log
+	return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+		text := runBatch(cfg, log, mode, selected)
+		return resultMsg{text: text}
+	}, tea.EnterAltScreen)
+}
+
+func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services []string) string {
+	ui := prompt.NewStd(cfg.AssumeYes)
+	mgr := &deploy.Manager{Cfg: &cfg, Log: log, UI: ui}
+	var b strings.Builder
+	var sharedKey string
+	if mode == multiDeploy && len(services) > 1 {
+		if ok, _ := ui.Confirm("Use one reusable Tailscale auth key for all selected services?", true); ok {
+			// Resolve once interactively via a dummy merge path is complex; prompt once.
+			s, err := authkeys.Load(cfg.AuthkeysPath)
+			if err == nil && len(s.Order) > 0 {
+				ui.Printf("Stored keys: %s\n", strings.Join(s.Order, ", "))
+				name, _ := ui.Line("Auth key name (empty to paste)", "")
+				if name != "" {
+					sharedKey = s.Keys[name]
+				}
+			}
+			if sharedKey == "" {
+				val, err := ui.Secret("TS_AUTHKEY for all services")
+				if err == nil && val != "" {
+					sharedKey = val
+				}
+			}
+		}
+	}
+	for _, svc := range services {
+		fmt.Fprintf(&b, "==> %s\n", svc)
+		var err error
+		switch mode {
+		case multiDeploy:
+			err = mgr.DeployWith(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
+		case multiRemove:
+			err = mgr.RemoveWith(svc, deploy.DeployOpts{})
+		case multiUpdate:
+			err = mgr.Update(svc)
+		case multiStop:
+			err = mgr.Stop(svc)
+		case multiRestart:
+			err = mgr.Restart(svc)
+		case multiRepair:
+			err = mgr.Repair(svc)
+		}
+		if err != nil {
+			fmt.Fprintf(&b, "  error: %v\n", err)
+		} else {
+			fmt.Fprintf(&b, "  ok\n")
+		}
+	}
+	return b.String()
 }
 
 func (m model) View() string {
@@ -189,12 +711,33 @@ func (m model) View() string {
 	var b string
 	b += styleOrPlain(titleStyle, fmt.Sprintf("Tailarr %s", version.Version)) + "\n"
 	b += styleOrPlain(dimStyle, "Deploy and manage ScaleTail services") + "\n"
-	b += styleOrPlain(border, repeat("-", 48)) + "\n\n"
+	b += styleOrPlain(border, strings.Repeat("-", 48)) + "\n\n"
+
+	if m.screen == screenMultiSelect {
+		b += styleOrPlain(okStyle, "Select services") + "\n"
+		for i, name := range m.opts {
+			mark := "[ ]"
+			if m.picked[i] {
+				mark = "[x]"
+			}
+			line := fmt.Sprintf("%s %s", mark, name)
+			if i == m.cursor {
+				b += styleOrPlain(selStyle, "> "+line) + "\n"
+			} else {
+				b += styleOrPlain(itemStyle, "  "+line) + "\n"
+			}
+		}
+		b += "\n"
+	}
 
 	for i, item := range m.items {
 		cursor := "  "
 		line := fmt.Sprintf("%d  %s", i+1, item.label)
-		if i == m.cursor {
+		idx := i
+		if m.screen == screenMultiSelect {
+			idx = len(m.opts) + i
+		}
+		if idx == m.cursor {
 			cursor = "> "
 			b += styleOrPlain(selStyle, cursor+line) + "\n"
 			b += styleOrPlain(dimStyle, "     "+item.desc) + "\n"
@@ -202,21 +745,10 @@ func (m model) View() string {
 			b += styleOrPlain(itemStyle, cursor+line) + "\n"
 		}
 	}
-	b += "\n" + styleOrPlain(dimStyle, "arrows/jk move  enter select  q quit") + "\n"
+	b += "\n" + styleOrPlain(dimStyle, "arrows/jk move  enter select  space toggle  a all  q/esc back") + "\n"
 	if m.status != "" {
-		b += "\n" + styleOrPlain(border, repeat("-", 48)) + "\n"
+		b += "\n" + styleOrPlain(border, strings.Repeat("-", 48)) + "\n"
 		b += m.status
 	}
 	return b
-}
-
-func repeat(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	out := make([]byte, 0, len(s)*n)
-	for i := 0; i < n; i++ {
-		out = append(out, s...)
-	}
-	return string(out)
 }
