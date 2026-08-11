@@ -18,6 +18,7 @@ concurrency:
 env:
   GO_VERSION: "1.26.5"
   GOLANGCI_LINT_VERSION: v2.12.2
+  RUMDL_VERSION: "0.2.54"
 
 jobs:
   test:
@@ -27,6 +28,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Markdown lint (rumdl)
+        run: |
+          python3 -m venv /tmp/rumdl
+          /tmp/rumdl/bin/pip install --quiet rumdl==${{ env.RUMDL_VERSION }}
+          /tmp/rumdl/bin/rumdl check .
 
       - name: Set up Go
         uses: actions/setup-go@v7

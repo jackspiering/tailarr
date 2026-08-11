@@ -80,6 +80,7 @@ go vet ./...
 go build -o bin/tailarr ./cmd/tailarr
 ./bin/tailarr version
 ./bin/tailarr doctor
+rumdl check .
 ```
 
 ## Exit codes
