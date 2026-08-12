@@ -17,6 +17,7 @@
 - [ ] `go test ./...` passes
 - [ ] `go vet ./...` passes
 - [ ] `gofmt` clean (or CI lint green)
+- [ ] `rumdl check .` passes
 - [ ] No secrets, real `tskey-*` values, or local `/opt` dumps committed
 - [ ] README / CHANGELOG / parity notes updated when behavior changes
 - [ ] Version bump considered (SemVer) if this is a user-visible release change
