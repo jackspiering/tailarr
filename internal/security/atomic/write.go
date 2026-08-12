@@ -58,7 +58,8 @@ func WriteFile(dest string, data []byte, mode os.FileMode) error {
 	}
 	cleanup = false
 	// Re-apply mode after rename (some filesystems ignore temp mode).
-	if err := os.Chmod(dest, mode); err != nil {
+	// Chmod via O_NOFOLLOW so a raced symlink cannot redirect the mode change.
+	if err := paths.ChmodNoFollow(dest, mode); err != nil {
 		return fmt.Errorf("chmod dest: %w", err)
 	}
 	// Best-effort durability: fsync the parent directory so the rename

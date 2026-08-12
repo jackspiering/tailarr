@@ -98,6 +98,11 @@ func TestLooksSecret(t *testing.T) {
 	if LooksSecret("HOSTNAME") {
 		t.Fatal("HOSTNAME is not secret")
 	}
+	for _, k := range []string{"TIMEOUT", "CONNECT_TIMEOUT", "SECRETARY"} {
+		if LooksSecret(k) {
+			t.Errorf("LooksSecret(%q) = true, want false", k)
+		}
+	}
 }
 
 func TestWriterLineAtomic(t *testing.T) {
@@ -135,6 +140,28 @@ func TestWriterRedactsEachLine(t *testing.T) {
 	}
 	if strings.Contains(out, "tskey-auth-secret") {
 		t.Fatalf("secret leaked: %s", out)
+	}
+}
+
+func TestWriterFlushResidual(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	w := Writer(&b)
+	if _, err := w.Write([]byte("SECRET=abc")); err != nil {
+		t.Fatal(err)
+	}
+	flusher, ok := w.(interface{ Flush() error })
+	if !ok {
+		t.Fatal("Writer must support Flush")
+	}
+	if err := flusher.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "abc") {
+		t.Fatalf("residual leaked: %s", b.String())
+	}
+	if !strings.Contains(b.String(), "SECRET="+Redacted) {
+		t.Fatalf("residual not flushed: %s", b.String())
 	}
 }
 

@@ -111,7 +111,10 @@ func loadFile(cfg *Config, path string) error {
 		// Keep value as-is after first '=' (may contain '=').
 		switch key {
 		case "TAILARR_REPO_URL":
-			cfg.RepoURL = value
+			if err := names.ValidateRepoURL(strings.TrimSpace(value)); err != nil {
+				return err
+			}
+			cfg.RepoURL = strings.TrimSpace(value)
 		case "TAILARR_REPO_PATH":
 			cfg.RepoPath = value
 		case "TAILARR_DEPLOY_PATH":

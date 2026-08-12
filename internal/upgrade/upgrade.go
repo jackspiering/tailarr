@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -50,7 +51,15 @@ type Options struct {
 const (
 	defaultAPIBase     = "https://api.github.com"
 	defaultReleaseBase = "https://github.com"
+	maxAssetBytes      = 64 << 20
+	maxSumsBytes       = 1 << 20
 )
+
+var releaseTagRE = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
+
+func validReleaseTag(tag string) bool {
+	return tag != "" && releaseTagRE.MatchString(tag) && !strings.Contains(tag, "..")
+}
 
 // releaseInfo is the minimal GitHub API response needed to find the latest tag.
 type releaseInfo struct {
@@ -68,7 +77,7 @@ func (o Options) client() *http.Client {
 	if o.Client != nil {
 		return o.Client
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: safeGitHubRedirect}
 }
 
 func (o Options) apiURL(repo string) string {
@@ -115,7 +124,26 @@ func Latest(opts Options) (string, error) {
 	if info.TagName == "" {
 		return "", fmt.Errorf("latest release has no tag_name")
 	}
+	if !validReleaseTag(info.TagName) {
+		return "", fmt.Errorf("latest release has invalid tag_name %q", info.TagName)
+	}
 	return info.TagName, nil
+}
+
+func safeGitHubRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("too many redirects")
+	}
+	host := req.URL.Hostname()
+	switch {
+	case host == "github.com", host == "api.github.com",
+		host == "objects.githubusercontent.com",
+		host == "release-assets.githubusercontent.com",
+		strings.HasSuffix(host, ".githubusercontent.com"):
+		return nil
+	default:
+		return fmt.Errorf("refusing redirect to %s", host)
+	}
 }
 
 // Upgrade replaces the running binary with the latest release. It returns the
@@ -126,7 +154,7 @@ func Upgrade(opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !opts.Force && Compare(opts.Current, tag) >= 0 {
+	if !opts.Force && Comparable(opts.Current, tag) && Compare(opts.Current, tag) >= 0 {
 		return "", fmt.Errorf("%w: installed %s, latest %s", ErrUpToDate, opts.Current, tag)
 	}
 
@@ -160,11 +188,11 @@ func Upgrade(opts Options) (string, error) {
 
 	base := opts.releaseURL(opts.repo(), tag)
 	assetPath := filepath.Join(tmpdir, asset)
-	if err := download(opts.client(), base+"/"+asset, assetPath); err != nil {
+	if err := download(opts.client(), base+"/"+asset, assetPath, maxAssetBytes); err != nil {
 		return "", fmt.Errorf("download %s: %w", asset, err)
 	}
 	sumsPath := filepath.Join(tmpdir, "SHA256SUMS")
-	if err := download(opts.client(), base+"/SHA256SUMS", sumsPath); err != nil {
+	if err := download(opts.client(), base+"/SHA256SUMS", sumsPath, maxSumsBytes); err != nil {
 		return "", fmt.Errorf("download SHA256SUMS: %w", err)
 	}
 	data, err := os.ReadFile(assetPath)
@@ -185,7 +213,7 @@ func Upgrade(opts Options) (string, error) {
 }
 
 // download fetches url into path (mode 0600, unlinked on error).
-func download(client *http.Client, url, path string) error {
+func download(client *http.Client, url, path string, limit int64) error {
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
@@ -198,10 +226,16 @@ func download(client *http.Client, url, path string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	n, err := io.Copy(f, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return err
+	}
+	if n > limit {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("download exceeds %d bytes", limit)
 	}
 	return f.Close()
 }

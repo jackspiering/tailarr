@@ -86,6 +86,21 @@ func TestParseEnvFileStripsBOM(t *testing.T) {
 	}
 }
 
+func TestReadEnvKeysStripsBOM(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "bom.env")
+	if err := os.WriteFile(p, []byte("\ufeffTS_AUTHKEY=\nHOSTNAME=box\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := ReadEnvKeys(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] != "TS_AUTHKEY" || keys[1] != "HOSTNAME" {
+		t.Fatalf("keys=%v", keys)
+	}
+}
+
 func TestWriteEnvFileMode(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")

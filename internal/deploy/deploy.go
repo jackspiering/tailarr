@@ -102,7 +102,7 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 			if m.UI == nil {
 				return fmt.Errorf("%w: %s (replace requires confirmation)", ErrAlreadyDeployed, service)
 			}
-			ok, cerr := m.UI.Confirm(fmt.Sprintf("Deployment already exists for %s. Replace it?", service), true)
+			ok, cerr := m.UI.Confirm(fmt.Sprintf("Deployment already exists for %s. Replace it?", service), false)
 			if cerr != nil {
 				return cerr
 			}
@@ -131,7 +131,7 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 	// From here, if we moved the old deployment, failures must try to restore it.
 	if err := m.finishDeploy(service, templateDir, dest, backupPath, opts); err != nil {
 		if backupPath != "" {
-			if rerr := restoreDeploymentFromBackup(backupPath, dest); rerr != nil {
+			if rerr := restoreDeploymentFromBackup(m.Cfg.DeployPath, service, backupPath, dest); rerr != nil {
 				return fmt.Errorf("deploy failed (%v); also failed to restore previous deployment from %s: %w", err, backupPath, rerr)
 			}
 			m.log("restored previous deployment for %s after failed force replace", service)
@@ -283,14 +283,7 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 					return err
 				}
 				if storeName != "" {
-					s, err := authkeys.Load(m.Cfg.AuthkeysPath)
-					if err != nil {
-						return err
-					}
-					if err := s.Put(storeName, val); err != nil {
-						return err
-					}
-					if err := s.Save(); err != nil {
+					if err := storeAuthkey(m.Cfg.AuthkeysPath, storeName, val); err != nil {
 						return err
 					}
 					m.UI.Printf("Stored auth key %s\n", storeName)
@@ -384,9 +377,32 @@ func copyFileMode(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = out.Close() }()
-	_, err = io.Copy(out, in)
-	return err
+	if _, err = io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// storeAuthkey writes a named key using the same lock as the Authkeys menu.
+func storeAuthkey(path, name, value string) error {
+	lock, err := AcquireLock(AuthkeysLockPath(path), DefaultLockTimeout)
+	if err != nil {
+		return fmt.Errorf("authkeys lock: %w", err)
+	}
+	defer func() { _ = lock.Release() }()
+	s, err := authkeys.Load(path)
+	if err != nil {
+		return err
+	}
+	if err := s.Put(name, value); err != nil {
+		return err
+	}
+	return s.Save()
 }
 
 // Repair refreshes template files while preserving local .env secrets.
@@ -412,7 +428,8 @@ func (m *Manager) Repair(service string) error {
 		return err
 	}
 
-	if _, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy); err != nil {
+	backupPath, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy)
+	if err != nil {
 		return err
 	}
 
@@ -444,9 +461,35 @@ func (m *Manager) Repair(service string) error {
 	upArgs := append(append([]string{}, proj...),
 		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
 	if err := Compose(dest, upArgs...); err != nil {
+		if backupPath != "" {
+			if rerr := restoreRepairFromBackup(backupPath, dest); rerr != nil {
+				return fmt.Errorf("repair failed (%v); also failed to restore compose files from %s: %w", err, backupPath, rerr)
+			}
+			m.log("restored previous compose files for %s after failed repair", service)
+			return fmt.Errorf("repair failed; previous compose files restored: %w", err)
+		}
 		return err
 	}
 	m.log("repaired service %s", service)
+	return nil
+}
+
+func restoreRepairFromBackup(backupPath, dest string) error {
+	for _, name := range scaletail.ComposeCandidates {
+		src := filepath.Join(backupPath, name)
+		if st, err := os.Stat(src); err != nil || st.IsDir() || paths.IsSymlink(src) {
+			continue
+		}
+		if err := copyFileMode(src, filepath.Join(dest, name), 0o644); err != nil {
+			return err
+		}
+	}
+	ov := filepath.Join(backupPath, overrideFilename)
+	if st, err := os.Stat(ov); err == nil && !st.IsDir() && !paths.IsSymlink(ov) {
+		if err := copyFileMode(ov, filepath.Join(dest, overrideFilename), 0o644); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -519,7 +562,7 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 	}
 
 	if m.UI != nil {
-		ok, cerr := m.UI.Confirm(fmt.Sprintf("Remove %s and delete %s?", service, dest), true)
+		ok, cerr := m.UI.Confirm(fmt.Sprintf("Remove %s and delete %s?", service, dest), false)
 		if cerr != nil {
 			return cerr
 		}
@@ -564,10 +607,9 @@ func listServiceBackups(deployPath, service string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	prefix := service + "-"
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+		if !e.IsDir() || !isServiceBackupName(service, e.Name()) {
 			continue
 		}
 		p := filepath.Join(root, e.Name())

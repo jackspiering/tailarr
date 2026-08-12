@@ -118,8 +118,14 @@ func ReadEnvKeys(path string) ([]string, error) {
 	var keys []string
 	seen := make(map[string]bool)
 	sc := bufio.NewScanner(f)
+	first := true
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := sc.Text()
+		if first {
+			line = strings.TrimPrefix(line, "\ufeff")
+			first = false
+		}
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

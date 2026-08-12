@@ -62,12 +62,33 @@ func Preview(_ string) string {
 }
 
 // LooksSecret reports whether key name appears to hold a secret.
+// Keywords must match a whole '_' segment so TIMEOUT is not treated as TOKEN.
 func LooksSecret(key string) bool {
 	k := strings.ToUpper(key)
 	for _, p := range secretKeywords {
-		if strings.Contains(k, p) {
+		if secretKeyMatch(k, p) {
 			return true
 		}
+	}
+	return false
+}
+
+func secretKeyMatch(key, pat string) bool {
+	if key == pat {
+		return true
+	}
+	for i := 0; i+len(pat) <= len(key); i++ {
+		if key[i:i+len(pat)] != pat {
+			continue
+		}
+		if i > 0 && key[i-1] != '_' {
+			continue
+		}
+		after := i + len(pat)
+		if after < len(key) && key[after] != '_' {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -122,14 +143,21 @@ func (lw *lineWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Flush redacts and writes any residual unterminated line without closing w.
+func (lw *lineWriter) Flush() error {
+	if len(lw.buf) == 0 {
+		return nil
+	}
+	_, err := io.WriteString(lw.w, Text(string(lw.buf)))
+	lw.buf = nil
+	return err
+}
+
 // Close flushes any residual unterminated line, then closes w when it is an
 // io.WriteCloser.
 func (lw *lineWriter) Close() error {
-	if len(lw.buf) > 0 {
-		if _, err := io.WriteString(lw.w, Text(string(lw.buf))); err != nil {
-			return err
-		}
-		lw.buf = nil
+	if err := lw.Flush(); err != nil {
+		return err
 	}
 	if wc, ok := lw.w.(io.WriteCloser); ok {
 		return wc.Close()

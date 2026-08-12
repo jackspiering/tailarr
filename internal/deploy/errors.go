@@ -16,6 +16,9 @@ var (
 	ErrEmptyAuthkey = errors.New("TS_AUTHKEY is empty; set it in .env, or store an auth key from the Authkeys menu")
 	// ErrComposeFailed is returned when docker compose fails (wrapped with detail).
 	ErrComposeFailed = errors.New("docker compose failed")
+	// ErrInterrupted is returned when compose is canceled by SIGTERM/SIGINT.
+	// Callers must finish cleanup (for example restore after BackupMove) before exiting.
+	ErrInterrupted = errors.New("operation interrupted")
 	// ErrSymlink is returned when a path is or contains a symlink that is refused.
 	ErrSymlink = errors.New("symlink refused")
 )

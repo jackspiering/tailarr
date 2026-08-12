@@ -114,6 +114,19 @@ func deadPID(t *testing.T) int {
 	return pid
 }
 
+func TestAcquireLockReclaimsDeadPID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nstale-token\n", deadPID(t))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Release()
+}
+
 func TestStaleLockReclaimedForDeadPID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "t.lock")
@@ -237,6 +250,12 @@ func TestProjectNameDistinctPerRoot(t *testing.T) {
 	}
 	if !strings.Contains(a, "web") || !strings.HasPrefix(a, "tailarr") {
 		t.Fatalf("unexpected name %s", a)
+	}
+	long := strings.Repeat("s", 64)
+	rootA := "/very/long/path/that/ends/with/docker/stacks"
+	rootB := "/other/long/path/that/ends/with/docker/stacks"
+	if ProjectName(rootA, long) == ProjectName(rootB, long) {
+		t.Fatal("long service name dropped deploy-root fingerprint")
 	}
 }
 
@@ -369,6 +388,92 @@ func TestForceDeployPreservesEnvSecrets(t *testing.T) {
 	}
 }
 
+func TestForceDeployRestoresOnInterrupt(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "TS_AUTHKEY=tskey-auth-from-template\nHOSTNAME=t\n")
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("svc", dest); err != nil {
+		t.Fatal(err)
+	}
+	marker := "ORIGINAL-DEPLOYMENT"
+	if err := os.WriteFile(filepath.Join(dest, "marker.txt"), []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "up") {
+			return fmt.Errorf("%w: canceled", ErrInterrupted)
+		}
+		return nil
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.DeployWith("web", DeployOpts{Force: true})
+	if err == nil {
+		t.Fatal("expected deploy failure")
+	}
+	if !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("expected ErrInterrupted, got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "marker.txt"))
+	if err != nil || string(data) != marker {
+		t.Fatalf("previous deployment not restored after interrupt: %v %q", err, data)
+	}
+}
+
+func TestRepairRestoresComposeOnUpFailure(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+	orig := "services:\n  app:\n    image: original\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "services", "web", "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error {
+		return fmt.Errorf("%w: up failed", ErrComposeFailed)
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Repair("web")
+	if err == nil {
+		t.Fatal("expected repair failure")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	if err != nil || string(data) != orig {
+		t.Fatalf("compose not restored: %v %q", err, data)
+	}
+}
+
+func TestContainerMatchesService(t *testing.T) {
+	if !containerMatchesService("app-web", "", "web") {
+		t.Fatal("app-web should match web")
+	}
+	if containerMatchesService("app-web-ui", "", "web") {
+		t.Fatal("app-web-ui must not match web")
+	}
+	if !containerMatchesService("other", "web", "web") {
+		t.Fatal("tailarr.service label should match")
+	}
+}
+
 func TestForceDeployRestoresOnComposeUpFailure(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
@@ -432,7 +537,7 @@ func TestDeployRejectsEmptyAuthkey(t *testing.T) {
 func TestScanComposeServiceNames(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "compose.yaml")
-	body := "services:\n  web:\n    image: x\n  api:\n    image: y\n"
+	body := "services:\n  web:\n    image: x\n    ports:\n      - \"80:80\"\n    environment:\n      FOO: bar\n  api:\n    image: y\n    volumes:\n      - data:/data\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -440,8 +545,13 @@ func TestScanComposeServiceNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 2 {
+	if len(names) != 2 || names[0] != "web" || names[1] != "api" {
 		t.Fatalf("%v", names)
+	}
+	for _, n := range names {
+		if n == "ports" || n == "environment" || n == "volumes" || n == "image" {
+			t.Fatalf("nested key treated as service: %v", names)
+		}
 	}
 }
 
@@ -515,6 +625,75 @@ func TestPruneBackups(t *testing.T) {
 	// Other services' backups are not pruned.
 	if _, err := os.Stat(filepath.Join(backupDir, "api-20200101T000000Z")); err != nil {
 		t.Fatalf("other service backup pruned: %v", err)
+	}
+}
+
+func TestBackupNameDoesNotCollideWithHyphenPrefix(t *testing.T) {
+	if isServiceBackupName("web", "web-ui-20200101T000000Z") {
+		t.Fatal("web-ui backup must not match service web")
+	}
+	if !isServiceBackupName("web-ui", "web-ui-20200101T000000Z") {
+		t.Fatal("exact web-ui backup should match")
+	}
+	if !isServiceBackupName("web", "web-20200101T000000Z-2") {
+		t.Fatal("collision suffix should match")
+	}
+
+	root := t.TempDir()
+	backupDir := filepath.Join(root, config.BackupDirName)
+	for _, name := range []string{"web-20200101T000000Z", "web-ui-20200102T000000Z"} {
+		if err := os.MkdirAll(filepath.Join(backupDir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := LatestBackup(root, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(backupDir, "web-20200101T000000Z") {
+		t.Fatalf("LatestBackup(web) = %s", got)
+	}
+	if err := pruneBackups(backupDir, "web", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "web-ui-20200102T000000Z")); err != nil {
+		t.Fatal("web-ui backup must survive prune of web")
+	}
+}
+
+func TestRestoreDoesNotClobberDotOldService(t *testing.T) {
+	deployRoot := t.TempDir()
+	web := filepath.Join(deployRoot, "web")
+	webOld := filepath.Join(deployRoot, "web.old")
+	if err := os.MkdirAll(web, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(web, "marker.txt"), []byte("PARTIAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(webOld, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webOld, "keep.txt"), []byte("SIBLING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(deployRoot, config.BackupDirName, "web-20200101T000000Z")
+	if err := os.MkdirAll(backup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "marker.txt"), []byte("ORIGINAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreDeploymentFromBackup(deployRoot, "web", backup, web); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(web, "marker.txt"))
+	if err != nil || string(data) != "ORIGINAL" {
+		t.Fatalf("restore failed: %v %q", err, data)
+	}
+	sib, err := os.ReadFile(filepath.Join(webOld, "keep.txt"))
+	if err != nil || string(sib) != "SIBLING" {
+		t.Fatalf("sibling web.old was clobbered: %v %q", err, sib)
 	}
 }
 

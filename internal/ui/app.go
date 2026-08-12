@@ -118,8 +118,9 @@ type model struct {
 	quitting bool
 
 	// multi-select state
-	multi multiMode
-	opts  []string
+	multi       multiMode
+	multiParent screen
+	opts        []string
 	// selected indexes for multi
 	picked map[int]bool
 }
@@ -156,16 +157,25 @@ func FirstRunSetup(cfg *config.Config) error {
 	uiPrompt := prompt.NewStd(cfg.AssumeYes)
 	uiPrompt.Printf("No config found at %s.\n", cfg.ConfigPath)
 	ok, err := uiPrompt.Confirm("Create one now using the current defaults?", true)
-	if err != nil || !ok {
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	if edit, _ := uiPrompt.Confirm("Edit defaults before saving?", true); edit {
-		uiPrompt.Printf("%s\n", editConfigInteractive(cfg, uiPrompt))
+	if edit, err := uiPrompt.Confirm("Edit defaults before saving?", true); err != nil {
+		return err
+	} else if edit {
+		msg := editConfigInteractive(cfg, uiPrompt)
+		uiPrompt.Printf("%s\n", msg)
+		if strings.HasPrefix(msg, "Error") {
+			return fmt.Errorf("%s", msg)
+		}
 		return nil
 	}
 	if err := config.Save(*cfg); err != nil {
 		uiPrompt.Printf("Could not save config: %v\n", err)
-		return nil
+		return fmt.Errorf("save config: %w", err)
 	}
 	uiPrompt.Printf("Saved config: %s\n", cfg.ConfigPath)
 	return nil
@@ -238,6 +248,9 @@ func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case resultMsg:
+		if msg.cfg != nil {
+			m.cfg = *msg.cfg
+		}
 		m.screen = screenResult
 		m.status = msg.text
 		m.items = []menuItem{{id: "back", label: "Back", desc: "Return"}}
@@ -300,7 +313,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-type resultMsg struct{ text string }
+type resultMsg struct {
+	text string
+	cfg  *config.Config
+}
 
 // upgradeDoneMsg signals that the running binary was replaced and the TUI
 // should exit so the new version takes over.
@@ -458,23 +474,12 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 		m.status = b.String()
 		return m, nil
 	case "refresh":
-		lock, err := deploy.AcquireLock(deploy.RepoLockPath(m.cfg.RepoPath), deploy.DefaultLockTimeout)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, "repo lock: "+err.Error())
-			return m, nil
-		}
-		defer func() { _ = lock.Release() }()
-		msg, err := scaletail.Refresh(m.cfg.RepoURL, m.cfg.RepoPath)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, err.Error())
-			return m, nil
-		}
-		if msg == "" {
-			m.status = "Catalog is up to date."
-		} else {
-			m.status = "Catalog refreshed.\n" + msg
-		}
-		return m, nil
+		cfg := m.cfg
+		return m, tea.Sequence(func() tea.Msg {
+			leaveTUI()
+			defer reenterTUI()
+			return resultMsg{text: runCatalogRefresh(cfg)}
+		})
 	case "deploy":
 		return m.beginMulti(multiDeploy)
 	case "remove":
@@ -523,7 +528,7 @@ func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
 
 func runAuthkeyAction(cfg config.Config, ui *prompt.Std, action string) string {
 	// Serialize read-modify-write with a lock next to the store.
-	lock, err := deploy.AcquireLock(cfg.AuthkeysPath+".lock", deploy.DefaultLockTimeout)
+	lock, err := deploy.AcquireLock(deploy.AuthkeysLockPath(cfg.AuthkeysPath), deploy.DefaultLockTimeout)
 	if err != nil {
 		return "Error: authkeys lock: " + err.Error()
 	}
@@ -631,9 +636,7 @@ func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
 			cfg := m.cfg
 			ui := prompt.NewStd(false)
 			text := editConfigInteractive(&cfg, ui)
-			// Persist back into model via result only; caller reloads next TUI start.
-			_ = config.Save(cfg)
-			return resultMsg{text: text}
+			return resultMsg{text: text, cfg: &cfg}
 		})
 	}
 	return m, nil
@@ -707,10 +710,14 @@ func runUpgradeAction(cfg config.Config, log *logging.Logger) (string, bool) {
 	if err != nil {
 		return "Error: " + err.Error(), false
 	}
-	if upgrade.Compare(version.Version, latest) >= 0 {
+	if upgrade.Comparable(version.Version, latest) && upgrade.Compare(version.Version, latest) >= 0 {
 		return fmt.Sprintf("Already up to date (%s)", version.Version), false
 	}
-	ok, err := ui.Confirm(fmt.Sprintf("Upgrade Tailarr %s to %s?", version.Version, latest), true)
+	question := fmt.Sprintf("Upgrade Tailarr %s to %s?", version.Version, latest)
+	if !upgrade.Comparable(version.Version, latest) {
+		question = fmt.Sprintf("Installed %s is not SemVer; install %s anyway?", version.Version, latest)
+	}
+	ok, err := ui.Confirm(question, true)
 	if err != nil || !ok {
 		return "Canceled.", false
 	}
@@ -752,6 +759,7 @@ func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.multi = mode
+	m.multiParent = m.screen
 	m.opts = names
 	m.picked = map[int]bool{}
 	m.screen = screenMultiSelect
@@ -767,6 +775,9 @@ func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
 func (m model) finishMulti() (tea.Model, tea.Cmd) {
 	id := m.items[m.cursor].id
 	if id == "cancel" {
+		if m.multiParent == screenMaintenance {
+			return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
+		}
 		return m.setScreen(screenServices, servicesMenuItems()), nil
 	}
 	var selected []string
@@ -791,6 +802,25 @@ func (m model) finishMulti() (tea.Model, tea.Cmd) {
 		text := runBatch(cfg, log, mode, selected)
 		return resultMsg{text: text}
 	})
+}
+
+func runCatalogRefresh(cfg config.Config) string {
+	lock, err := deploy.AcquireLock(deploy.RepoLockPath(cfg.RepoPath), deploy.DefaultLockTimeout)
+	if err != nil {
+		return styleOrPlain(errStyle, "repo lock: "+err.Error())
+	}
+	defer func() { _ = lock.Release() }()
+	msg, err := scaletail.Refresh(cfg.RepoURL, cfg.RepoPath)
+	if err != nil {
+		return styleOrPlain(errStyle, err.Error())
+	}
+	if strings.HasPrefix(msg, "Using local") {
+		return msg
+	}
+	if msg == "" {
+		return "Catalog is up to date."
+	}
+	return "Catalog refreshed.\n" + msg
 }
 
 func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services []string) string {

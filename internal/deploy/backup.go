@@ -79,10 +79,9 @@ func pruneBackups(root, service string, keep int) error {
 		}
 		return err
 	}
-	prefix := service + "-"
 	var matches []string
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+		if !e.IsDir() || !isServiceBackupName(service, e.Name()) {
 			continue
 		}
 		p := filepath.Join(root, e.Name())
@@ -117,14 +116,13 @@ func LatestBackup(deployPath, service string) (string, error) {
 		}
 		return "", err
 	}
-	prefix := service + "-"
 	var matches []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasPrefix(name, prefix) {
+		if !isServiceBackupName(service, name) {
 			continue
 		}
 		p := filepath.Join(root, name)
@@ -173,9 +171,55 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = out.Close() }()
-	_, err = io.Copy(out, in)
-	return err
+	if _, err = io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// isServiceBackupName reports whether name is a Backup() directory for service.
+// Names are "<service>-<YYYYMMDDTHHMMSSZ>" with an optional "-<n>" collision suffix.
+// A hyphenated service such as "web-ui" must not match the prefix of "web".
+func isServiceBackupName(service, name string) bool {
+	prefix := service + "-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := name[len(prefix):]
+	stamp, suf, ok := strings.Cut(rest, "-")
+	if !ok {
+		return isBackupStamp(rest)
+	}
+	if !isBackupStamp(stamp) || suf == "" {
+		return false
+	}
+	for _, c := range suf {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isBackupStamp(s string) bool {
+	// time.RFC3339 compact UTC: 20060102T150405Z
+	if len(s) != 16 || s[8] != 'T' || s[15] != 'Z' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if i == 8 || i == 15 {
+			continue
+		}
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // RestorePersistentData copies non-compose data directories from backup into a fresh deploy.
@@ -217,12 +261,26 @@ func RestorePersistentData(backupPath, servicePath string) error {
 	return nil
 }
 
+// restorePartialPath is the scratch directory used while swapping a failed
+// force-replace dest aside. It lives under .tailarr_backups and uses a leading
+// dot so it can never collide with a ValidServiceName sibling such as "web.old".
+func restorePartialPath(deployPath, service string) (string, error) {
+	if err := names.ValidateServiceName(service); err != nil {
+		return "", err
+	}
+	root := filepath.Join(deployPath, config.BackupDirName)
+	if err := paths.EnsureDirMode(root, "backup directory", 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(root, ".partial-"+service), nil
+}
+
 // restoreDeploymentFromBackup renames backup back to dest. Any existing dest
 // (a partial copy from a failed force redeploy) is first renamed aside, then
 // the backup is renamed into place, and only then is the partial tree removed.
 // Both renames are atomic, so dest is never left missing: the backup remains
 // the source of truth until the final cleanup step.
-func restoreDeploymentFromBackup(backupPath, dest string) error {
+func restoreDeploymentFromBackup(deployPath, service, backupPath, dest string) error {
 	if backupPath == "" {
 		return fmt.Errorf("no backup to restore")
 	}
@@ -240,8 +298,11 @@ func restoreDeploymentFromBackup(backupPath, dest string) error {
 			return fmt.Errorf("%w: partial deploy has symlink: %s", ErrSymlink, found)
 		}
 	}
-	// Clear any leftover sibling from a previously interrupted restore.
-	partial := dest + ".old"
+	partial, err := restorePartialPath(deployPath, service)
+	if err != nil {
+		return err
+	}
+	// Clear any leftover scratch tree from a previously interrupted restore.
 	if err := os.RemoveAll(partial); err != nil {
 		return fmt.Errorf("clear previous partial for restore: %w", err)
 	}

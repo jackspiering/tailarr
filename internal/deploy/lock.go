@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,26 +49,30 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	token := fmt.Sprintf("%d-%d", pid, time.Now().UnixNano())
 
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 		if err == nil {
-			if _, werr := fmt.Fprintf(f, "%d\n%s\n", pid, token); werr != nil {
+			_ = tryFlock(f)
+			if err := writeLockIdentity(f, pid, token); err != nil {
+				releaseFlock(f)
 				_ = f.Close()
 				_ = os.Remove(path)
-				return nil, fmt.Errorf("write lock: %w", werr)
-			}
-			if serr := f.Sync(); serr != nil {
-				_ = f.Close()
-				_ = os.Remove(path)
-				return nil, fmt.Errorf("sync lock: %w", serr)
+				return nil, err
 			}
 			return &Lock{path: path, file: f, pid: pid, token: token}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("open lock: %w", err)
 		}
-		// Stale lock: reclaim if owner process is gone (regardless of age),
-		// or if content is corrupt and the lock is old.
-		if tryRemoveStaleLock(path, 2*timeout) {
+		// Prefer reclaiming in place under flock so we never unlink a live
+		// owner's file. Fall back to rename-away of a dead-PID lock when flock
+		// is unavailable (non-Unix) or the previous owner never took a flock.
+		if l, ok := tryReclaimExisting(path, pid, token); ok {
+			return l, nil
+		}
+		// Unlink-based reclaim is only safe when flock cannot tell us a live
+		// owner still holds the inode (non-Unix). On Unix, a failed flock means
+		// the owner is alive; renaming the path out from under them races.
+		if !flockAvailable() && tryRemoveStaleLock(path, 2*timeout) {
 			continue
 		}
 		if time.Now().After(deadline) {
@@ -75,6 +80,66 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func writeLockIdentity(f *os.File, pid int, token string) error {
+	if _, err := f.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek lock: %w", err)
+	}
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate lock: %w", err)
+	}
+	if _, err := fmt.Fprintf(f, "%d\n%s\n", pid, token); err != nil {
+		return fmt.Errorf("write lock: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync lock: %w", err)
+	}
+	return nil
+}
+
+// tryReclaimExisting opens an existing lock, takes a non-blocking flock, and
+// rewrites identity when the recorded owner is gone. Returns ok=false when the
+// lock is held or flock is not available.
+func tryReclaimExisting(path string, pid int, token string) (*Lock, bool) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, false
+	}
+	if !tryFlock(f) {
+		_ = f.Close()
+		return nil, false
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		releaseFlock(f)
+		_ = f.Close()
+		return nil, false
+	}
+	if lockOwnerAlive(data) {
+		// Old Tailarr without flock is still running; do not steal.
+		releaseFlock(f)
+		_ = f.Close()
+		return nil, false
+	}
+	if err := writeLockIdentity(f, pid, token); err != nil {
+		releaseFlock(f)
+		_ = f.Close()
+		return nil, false
+	}
+	return &Lock{path: path, file: f, pid: pid, token: token}, true
+}
+
+func lockOwnerAlive(data []byte) bool {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 1 {
+		return false
+	}
+	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || ownerPID <= 0 {
+		return false
+	}
+	return processAlive(ownerPID)
 }
 
 // tryRemoveStaleLock removes path when the recorded owner PID is not running,
@@ -102,13 +167,27 @@ func tryRemoveStaleLock(path string, maxAge time.Duration) bool {
 		if time.Since(info.ModTime()) <= maxAge {
 			return false
 		}
-		_ = os.Remove(path)
-		return true
+		return renameAwayLock(path, data)
 	}
 	if processAlive(ownerPID) {
 		return false
 	}
-	_ = os.Remove(path)
+	return renameAwayLock(path, data)
+}
+
+// renameAwayLock atomically moves path aside only if its contents still match
+// data, then deletes the trash name. A new lock created at path after our
+// first read will not match and is left alone.
+func renameAwayLock(path string, expect []byte) bool {
+	cur, err := os.ReadFile(path)
+	if err != nil || string(cur) != string(expect) {
+		return false
+	}
+	trash := fmt.Sprintf("%s.reclaim-%d-%d", path, os.Getpid(), time.Now().UnixNano())
+	if err := os.Rename(path, trash); err != nil {
+		return false
+	}
+	_ = os.Remove(trash)
 	return true
 }
 
@@ -131,6 +210,7 @@ func (l *Lock) Release() error {
 		return nil
 	}
 	if l.file != nil {
+		releaseFlock(l.file)
 		_ = l.file.Close()
 		l.file = nil
 	}
@@ -167,4 +247,9 @@ func ServiceLockPath(deployPath, service string) (string, error) {
 // RepoLockPath returns the lock file next to the repo path.
 func RepoLockPath(repoPath string) string {
 	return repoPath + ".lock"
+}
+
+// AuthkeysLockPath returns the lock file next to the authkeys store.
+func AuthkeysLockPath(authkeysPath string) string {
+	return authkeysPath + ".lock"
 }
