@@ -22,12 +22,14 @@ func gitHardened(extra ...string) []string {
 
 // Refresh clones or updates the ScaleTail repository.
 // When noRefresh is true, only validates the local tree if present.
-func Refresh(repoURL, repoPath string, noRefresh bool) error {
+// Git output is captured and returned so callers can render it without
+// polluting a TUI alternate screen.
+func Refresh(repoURL, repoPath string, noRefresh bool) (string, error) {
 	if err := names.ValidateRepoURL(repoURL); err != nil {
-		return err
+		return "", err
 	}
 	if paths.IsSymlink(repoPath) {
-		return fmt.Errorf("ScaleTail path must not be a symlink: %s", repoPath)
+		return "", fmt.Errorf("ScaleTail path must not be a symlink: %s", repoPath)
 	}
 
 	gitDir := filepath.Join(repoPath, ".git")
@@ -35,56 +37,54 @@ func Refresh(repoURL, repoPath string, noRefresh bool) error {
 		if _, err := os.Stat(gitDir); err != nil {
 			// Allow non-git local trees (testdata / vendored copies).
 			if _, err2 := os.Stat(filepath.Join(repoPath, "services")); err2 != nil {
-				return fmt.Errorf("ScaleTail path missing or incomplete: %s", repoPath)
+				return "", fmt.Errorf("ScaleTail path missing or incomplete: %s", repoPath)
 			}
 		}
-		return nil
+		return "", nil
 	}
 
 	if _, err := exec.LookPath("git"); err != nil {
-		return fmt.Errorf("git is required: %w", err)
+		return "", fmt.Errorf("git is required: %w", err)
 	}
 
 	parent := filepath.Dir(repoPath)
 	if err := paths.EnsureDir(parent, "ScaleTail parent directory"); err != nil {
-		return err
+		return "", err
 	}
 
 	if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
 		// Unpinned: ensure we are on a branch before pull (detached HEAD breaks pull).
 		if err := ensureOnBranch(repoPath); err != nil {
-			return err
+			return "", err
 		}
 		cmd := exec.Command("git", gitHardened("-C", repoPath, "pull", "--ff-only")...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("ScaleTail git pull failed: %w", err)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("ScaleTail git pull failed: %w: %s", err, out)
 		}
-		return nil
+		return string(out), nil
 	}
 
 	if _, err := os.Stat(repoPath); err == nil {
 		// Path exists but is not a git repo.
 		if _, err2 := os.Stat(filepath.Join(repoPath, "services")); err2 == nil {
 			// Local tree without .git: treat as OK for offline use.
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("%s exists but is not a git repository", repoPath)
+		return "", fmt.Errorf("%s exists but is not a git repository", repoPath)
 	}
 
 	return cloneRepo(repoURL, repoPath)
 }
 
-func cloneRepo(repoURL, repoPath string) error {
+func cloneRepo(repoURL, repoPath string) (string, error) {
 	args := gitHardened("clone", "--depth", "1", repoURL, repoPath)
 	cmd := exec.Command("git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ScaleTail git clone failed: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("ScaleTail git clone failed: %w: %s", err, out)
 	}
-	return nil
+	return string(out), nil
 }
 
 // ensureOnBranch moves a detached HEAD onto the remote default branch so pull works.
@@ -110,9 +110,7 @@ func ensureOnBranch(repoPath string) error {
 		return fmt.Errorf("ScaleTail repo is detached and no default branch could be determined")
 	}
 	co := exec.Command("git", gitHardened("-C", repoPath, "checkout", "-B", branch, "origin/"+branch)...)
-	co.Stdout = os.Stdout
-	co.Stderr = os.Stderr
-	if err := co.Run(); err != nil {
+	if _, err := co.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not leave detached HEAD for pull: %w", err)
 	}
 	return nil

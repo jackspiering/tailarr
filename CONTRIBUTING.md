@@ -12,15 +12,16 @@ git clone https://github.com/jackspiering/tailarr.git
 cd tailarr
 go test ./...
 go build -o bin/tailarr ./cmd/tailarr
-./bin/tailarr version
-./bin/tailarr doctor
+./bin/tailarr
 ```
+
+Tailarr is TUI-only; run `./bin/tailarr` inside a terminal.
 
 ## Branching and commits
 
 - Branch from latest `main`: `feat/`, `fix/`, `docs/`, or `chore/` plus a short label.
 - Use [Conventional Commits](https://www.conventionalcommits.org/):
-  - `feat: add list command`
+  - `feat: add catalog refresh to the TUI`
   - `fix: reject symlink deploy roots`
   - `docs: clarify binary install`
   - `chore: pin golangci-lint`

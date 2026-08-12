@@ -19,12 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs) and prints next steps using the full path to the Go binary.
 - Install script prefers replacing the first `tailarr` on `PATH` when that
   directory is writable (e.g. `~/.local/bin` ahead of `/usr/local/bin`).
+- TUI auth key add/rename/replace/remove now serializes read-modify-write
+  with the authkeys lock, matching the former CLI behavior.
 
 ### Removed
 
 - `--repo-ref` / `TAILARR_REPO_REF`: ScaleTail ref pinning removed; the
   catalog clone always tracks the repository default branch.
 - TUI `j`/`k` navigation keys; use arrow keys or number shortcuts.
+- CLI removed: Tailarr is TUI-only. Subcommands (`list`, `deploy`, `doctor`,
+  `upgrade`, `authkeys`, ...), global flags, and `internal/cli` /
+  `internal/exitcode` are gone; Cobra, pflag, and mousetrap dependencies
+  dropped. The TUI gains a **Services > Refresh catalog** action that clones
+  or pulls the ScaleTail templates.
 
 ## [0.2.0] - 2026-08-11
 

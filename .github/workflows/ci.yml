@@ -124,8 +124,12 @@ jobs:
       - name: Smoke test (amd64 only)
         if: matrix.goarch == 'amd64'
         run: |
-          bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }} version
-          bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }} upgrade --help >/dev/null
+          # TUI-only binary refuses non-TTY runs; that refusal is the identity probe.
+          out=$(bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }} </dev/null 2>&1 || true)
+          case "$out" in
+          *"Tailarr is interactive"*) ;;
+          *) echo "unexpected output: $out"; exit 1 ;;
+          esac
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
