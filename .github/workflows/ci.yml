@@ -16,6 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Build/test toolchain comes from go.mod (go-version-file). GO_VERSION feeds
+  # govulncheck's scanner install, which needs a newer Go than go.mod's floor.
   GO_VERSION: "1.26.5"
   GOLANGCI_LINT_VERSION: v2.12.2
   RUMDL_VERSION: "0.2.54"
@@ -27,7 +29,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Markdown lint (rumdl)
         run: |
@@ -36,9 +38,9 @@ jobs:
           /tmp/rumdl/bin/rumdl check .
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Download modules
@@ -56,25 +58,25 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go test
-        run: go test -race ./...
-
-      - name: go test (integration, skips without Docker)
+      - name: go test (race; integration-tagged tests skip without Docker)
         run: go test -race -tags integration ./...
 
       - name: go mod tidy check
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+          # git diff ignores untracked files; fail too if tidy left go.sum uncommitted.
+          test -z "$(git status --porcelain -- go.mod go.sum)"
 
       - name: govulncheck
-        uses: golang/govulncheck-action@v1.1.0
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
           go-version-input: ${{ env.GO_VERSION }}
           go-package: ./...
+          repo-checkout: false
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m
@@ -86,27 +88,32 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        goos: [linux]
+        goos: [linux, darwin]
         goarch: [amd64, arm64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Derive version
         id: version
         run: |
-          ver=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+          # Dev/PR builds get "<tag>-<n>-g<sha>" so they stay distinguishable from releases.
+          ver=$(git describe --tags 2>/dev/null | sed 's/^v//')
           if [ -z "$ver" ]; then
             ver=$(sed -n 's/^var Version = "\([^"]*\)".*/\1/p' internal/version/version.go)
+          fi
+          if [ -z "$ver" ]; then
+            echo "error: could not derive version" >&2
+            exit 1
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
@@ -115,14 +122,15 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir -p bin
-          go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=${{ steps.version.outputs.version }}" \
+          go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=${VERSION}" \
             -o "bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/tailarr
           ls -la bin/
 
-      - name: Smoke test (amd64 only)
-        if: matrix.goarch == 'amd64'
+      - name: Smoke test (linux amd64 only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
           # TUI-only binary refuses non-TTY runs; that refusal is the identity probe.
           out=$(bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }} </dev/null 2>&1 || true)
@@ -132,7 +140,7 @@ jobs:
           esac
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tailarr-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}
