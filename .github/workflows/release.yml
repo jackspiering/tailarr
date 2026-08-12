@@ -3,33 +3,56 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (e.g. v0.3.0). Must exist on the remote; that commit is built and released.
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release:
-    name: Release ${{ github.ref_name }}
+    name: Release ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Tag push: the pushed tag. Dispatch: the operator-provided tag (never the branch name).
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Derive version
+        id: version
+        run: |
+          version="${RELEASE_TAG#v}"
+          if [ -z "$version" ]; then
+            echo "error: cannot derive version from RELEASE_TAG=$RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
 
       - name: Build assets
         env:
           CGO_ENABLED: "0"
         run: |
-          version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           for goos in linux darwin; do
             for goarch in amd64 arm64; do
@@ -49,17 +72,35 @@ jobs:
           *"Tailarr is interactive"*) ;;
           *) echo "unexpected output: $out"; exit 1 ;;
           esac
-          # Buildinfo records the exact commit; confirm it matches the tagged revision.
+          # Every binary must embed the injected Version (-X on a wrong symbol path
+          # fails silently) and record the tagged commit in its build info.
           rev=$(git rev-parse HEAD)
-          go version -m dist/tailarr-linux-amd64 | grep -F "vcs.revision=${rev}"
-          file dist/tailarr-linux-arm64
+          for bin in dist/tailarr-*; do
+            go version -m "$bin" | grep -F "vcs.revision=${rev}" >/dev/null || { echo "build info mismatch in $bin"; exit 1; }
+            strings "$bin" | grep -Fxq "$version" || { echo "version $version missing from $bin"; exit 1; }
+            file "$bin"
+          done
+
+      - name: Verify release metadata
+        run: |
+          grep -qE "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no section for [$version]"; exit 1; }
+          grep -q "Version = \"$version\"" internal/version/version.go || { echo "internal/version/version.go does not declare Version $version"; exit 1; }
+          grep -q "version-$version-informational" README.md || { echo "README version badge is not $version"; exit 1; }
+
+      - name: Extract release notes
+        id: notes
+        run: |
+          start=$(grep -nE "^## \[$version\]" CHANGELOG.md | cut -d: -f1 | head -1)
+          test -n "$start" || { echo "CHANGELOG.md has no section for [$version]"; exit 1; }
+          tail -n +"$start" CHANGELOG.md | awk 'NR == 1 { next } /^## / { exit } { print }' > /tmp/release-notes.md
+          test -s /tmp/release-notes.md || { echo "no notes extracted for [$version]"; exit 1; }
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             dist/tailarr-* dist/SHA256SUMS scripts/install.sh \
-            --title "$GITHUB_REF_NAME" \
-            --notes "See the CHANGELOG for details." \
+            --title "$RELEASE_TAG" \
+            --notes-file /tmp/release-notes.md \
             --verify-tag

@@ -26,12 +26,13 @@ Include:
 - Never put Tailscale auth keys or other secrets on flags or prompts that echo
   input. Enter them at hidden prompts (TUI/terminal) or from a file.
 - Never put credentials in `TAILARR_REPO_URL` (https userinfo is rejected).
-- Keep `authkeys.conf`, config, and deployment `.env` files mode `600`.
+- Keep the auth keys file (`authkeys.conf`), the config file, and deployment
+  `.env` files mode `600`.
 - Treat the ScaleTail git clone as trusted input: Compose files and images
   run on your host.
 - Review backups under `.tailarr_backups` (they may contain secrets).
-- Only Tailarr-managed deployments (with `.tailarr.compose.yaml` marker) are
-  updated/stopped/removed.
+- Only Tailarr-managed deployments (identified by the `.tailarr.compose.yaml`
+  marker) are updated, stopped, or removed.
 - Prefer a pinned install script URL or `TAILARR_VERSION=...` when using
   `curl | sh`. The install script verifies release asset checksums.
 - The install script and the built-in upgrade verify each release asset's

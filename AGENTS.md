@@ -59,7 +59,7 @@ Module path: `github.com/jackspiering/tailarr`.
 ## Testing
 
 ```bash
-go test ./...
+go test -race ./...
 ```
 
 Unit tests must pass without Docker. Optional integration tests may use
@@ -76,10 +76,15 @@ Unit tests must pass without Docker. Optional integration tests may use
 ## Before you claim done
 
 ```bash
-go test ./...
+go test -race ./...
+go test -race -tags integration ./...
 go vet ./...
 go build -o bin/tailarr ./cmd/tailarr
 ./bin/tailarr
+gofmt -l .
+golangci-lint run
+go mod tidy && git diff --exit-code go.mod go.sum
+govulncheck ./...
 rumdl check .
 ```
 

@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Maintenance > Upgrade Tailarr**: self-update to the latest release
-  (SemVer compare, SHA256 checksum verified against the release `SHA256SUMS`,
-  atomic replace of the running binary).
+- **Maintenance > Upgrade Tailarr**: self-update for release binaries;
+  checks GitHub for a newer SemVer release, verifies the release asset
+  SHA256 against the published SHA256SUMS, then atomically replaces the
+  running binary.
 
 ### Security
 
@@ -29,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config BOM/symlink/URL-validation hardening.
 - Authkeys fd-based chmod and parent-directory fsync.
 - Install script temp-file and PATH-probe hardening.
-- CI action SHA pinning and version interpolation fix.
+- CI action SHA pinning and safe version interpolation.
 
 ### Fixed
 
