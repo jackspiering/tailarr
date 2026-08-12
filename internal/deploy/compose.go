@@ -91,7 +91,7 @@ func defaultCompose(dir string, args ...string) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("%w: docker is required: %v", ErrComposeFailed, err)
 	}
-	// Forward SIGTERM (systemd stop, TUI quit) by cancelling the context, which
+	// Forward SIGTERM (systemd stop, TUI quit) by canceling the context, which
 	// makes exec.CommandContext kill the docker compose child. If the run was
 	// aborted this way we then re-raise SIGTERM so the process exits with
 	// correct systemd semantics instead of returning into the TUI. SIGINT needs
