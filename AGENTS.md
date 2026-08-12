@@ -26,9 +26,11 @@ live in this tree unless they are added as explicit reference material.
 | `internal/scaletail` | Catalog discovery, git refresh, env merge |
 | `internal/deploy` | Compose lifecycle, locks, backups |
 | `internal/doctor` | Host readiness checks |
+| `internal/prompt` | Interactive prompts/confirmation |
 | `internal/security/*` | Names, paths, atomic write, redaction |
 | `internal/logging` | Redacted file logging |
 | `internal/version` | SemVer string (ldflags-friendly) |
+| `internal/upgrade` | Release self-update |
 | `testdata/` | Fixtures for unit tests |
 | `.github/` | CI and templates |
 

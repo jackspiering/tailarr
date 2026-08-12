@@ -34,6 +34,10 @@ Include:
   updated/stopped/removed.
 - Prefer a pinned install script URL or `TAILARR_VERSION=...` when using
   `curl | sh`. The install script verifies release asset checksums.
+- The install script and the built-in upgrade verify each release asset's
+  SHA-256 checksum against `SHA256SUMS` from the same GitHub release. That is
+  transport-integrity protection (corruption/truncation), not cryptographic
+  authenticity: it does not prove the release was published by the maintainer.
 
 ## Project rules
 
