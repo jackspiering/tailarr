@@ -14,10 +14,11 @@
 ## Checklist
 
 - [ ] Conventional Commits used (`feat:`, `fix:`, `docs:`, `chore:`, ...)
-- [ ] `go test ./...` passes
+- [ ] `go test -race ./...` passes
 - [ ] `go vet ./...` passes
 - [ ] `gofmt` clean (or CI lint green)
 - [ ] `rumdl check .` passes
+- [ ] `go mod tidy` clean (no go.mod/go.sum diff)
 - [ ] No secrets, real `tskey-*` values, or local `/opt` dumps committed
 - [ ] README / CHANGELOG / parity notes updated when behavior changes
 - [ ] Version bump considered (SemVer) if this is a user-visible release change
@@ -26,7 +27,7 @@
 
 ```text
 # paste command output
-go test ./...
+go test -race ./...
 ```
 
 ## AI agent disclosure (if applicable)
