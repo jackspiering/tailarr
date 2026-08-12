@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -16,9 +17,30 @@ import (
 	"github.com/jackspiering/tailarr/internal/logging"
 	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
+	"github.com/jackspiering/tailarr/internal/security/redact"
 	"github.com/jackspiering/tailarr/internal/upgrade"
 	"github.com/jackspiering/tailarr/internal/version"
 )
+
+// prog is the running Bubble Tea program, bound in Run so in-TUI prompts can
+// hand the terminal back to cooked mode around direct os.Stdin reads.
+var prog *tea.Program
+
+// leaveTUI hands the terminal back to cooked mode and pauses bubbletea's stdin
+// reader so prompts can read os.Stdin directly. Reenter with reenterTUI.
+func leaveTUI() {
+	if prog != nil {
+		_ = prog.ReleaseTerminal()
+	}
+}
+
+// reenterTUI resumes bubbletea's terminal handling (raw mode, alt screen, stdin
+// reader) after leaveTUI.
+func reenterTUI() {
+	if prog != nil {
+		_ = prog.RestoreTerminal()
+	}
+}
 
 // IsInteractive reports whether stdin/stdout support a TUI.
 func IsInteractive() bool {
@@ -94,8 +116,6 @@ type model struct {
 	items    []menuItem
 	status   string
 	quitting bool
-	width    int
-	height   int
 
 	// multi-select state
 	multi multiMode
@@ -115,7 +135,13 @@ func Run(cfg config.Config, log *logging.Logger) error {
 		picked: map[int]bool{},
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
+	prog = p
 	_, err := p.Run()
+	if errors.Is(err, tea.ErrInterrupted) {
+		// Routine user cancellation mid-prompt (Ctrl-C while the terminal is
+		// released for a stdin prompt) is a clean exit, not an error.
+		err = nil
+	}
 	return err
 }
 
@@ -211,10 +237,6 @@ func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		return m, nil
 	case resultMsg:
 		m.screen = screenResult
 		m.status = msg.text
@@ -442,7 +464,7 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		defer func() { _ = lock.Release() }()
-		msg, err := scaletail.Refresh(m.cfg.RepoURL, m.cfg.RepoPath, m.cfg.NoRefresh)
+		msg, err := scaletail.Refresh(m.cfg.RepoURL, m.cfg.RepoPath)
 		if err != nil {
 			m.status = styleOrPlain(errStyle, err.Error())
 			return m, nil
@@ -486,11 +508,15 @@ func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "add", "rename", "replace", "remove":
-		// Leave alt screen for interactive prompts.
-		return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+		// Leave the TUI for interactive prompts. ReleaseTerminal/RestoreTerminal
+		// (replacing the alt-screen exit/enter commands) also restore raw mode and
+		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
+		return m, tea.Sequence(func() tea.Msg {
+			leaveTUI()
+			defer reenterTUI()
 			text := runAuthkeyAction(m.cfg, ui, id)
 			return resultMsg{text: text}
-		}, tea.EnterAltScreen)
+		})
 	}
 	return m, nil
 }
@@ -596,14 +622,19 @@ func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
 		m.status = m.cfg.String()
 		return m, nil
 	case "edit":
-		return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+		// Leave the TUI for interactive prompts. ReleaseTerminal/RestoreTerminal
+		// (replacing the alt-screen exit/enter commands) also restore raw mode and
+		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
+		return m, tea.Sequence(func() tea.Msg {
+			leaveTUI()
+			defer reenterTUI()
 			cfg := m.cfg
 			ui := prompt.NewStd(false)
 			text := editConfigInteractive(&cfg, ui)
 			// Persist back into model via result only; caller reloads next TUI start.
 			_ = config.Save(cfg)
 			return resultMsg{text: text}
-		}, tea.EnterAltScreen)
+		})
 	}
 	return m, nil
 }
@@ -646,19 +677,25 @@ func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
 	case "repair":
 		return m.beginMulti(multiRepair)
 	case "upgrade":
-		// Leave the alt screen: the running binary may be replaced, and
-		// prompts/download progress need the normal terminal.
+		// Leave the TUI: the running binary may be replaced, and prompts/download
+		// progress need the normal terminal. ReleaseTerminal/RestoreTerminal
+		// (replacing the alt-screen exit/enter commands) also restore raw mode and
+		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
 		cfg := m.cfg
 		log := m.log
-		return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+		return m, tea.Sequence(func() tea.Msg {
+			leaveTUI()
 			text, replaced := runUpgradeAction(cfg, log)
 			if replaced {
-				// Binary replaced: print the result, then quit.
+				// Binary replaced: print the result, then quit. Do not restore the
+				// terminal after quit - the program's shutdown restores state and
+				// the new version takes over the TTY.
 				_, _ = fmt.Fprintln(os.Stdout, text)
 				return upgradeDoneMsg{}
 			}
+			defer reenterTUI()
 			return resultMsg{text: text}
-		}, tea.EnterAltScreen)
+		})
 	}
 	return m, nil
 }
@@ -745,10 +782,15 @@ func (m model) finishMulti() (tea.Model, tea.Cmd) {
 	mode := m.multi
 	cfg := m.cfg
 	log := m.log
-	return m, tea.Sequence(tea.ExitAltScreen, func() tea.Msg {
+	return m, tea.Sequence(func() tea.Msg {
+		// ReleaseTerminal/RestoreTerminal (replacing the alt-screen exit/enter
+		// commands) also restore raw mode and pause bubbletea's stdin reader so
+		// prompt reads don't race the TUI readLoop.
+		leaveTUI()
+		defer reenterTUI()
 		text := runBatch(cfg, log, mode, selected)
 		return resultMsg{text: text}
-	}, tea.EnterAltScreen)
+	})
 }
 
 func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services []string) string {
@@ -793,7 +835,7 @@ func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services [
 			err = mgr.Repair(svc)
 		}
 		if err != nil {
-			fmt.Fprintf(&b, "  error: %v\n", err)
+			fmt.Fprintf(&b, "  error: %s\n", redact.Text(err.Error()))
 		} else {
 			fmt.Fprintf(&b, "  ok\n")
 		}

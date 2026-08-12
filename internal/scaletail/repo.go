@@ -1,11 +1,14 @@
 package scaletail
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
@@ -20,11 +23,28 @@ func gitHardened(extra ...string) []string {
 	return append(args, extra...)
 }
 
+// gitOpTimeout bounds every git invocation so a stalled network op cannot
+// freeze the TUI event loop indefinitely (no Ctrl-C escape, raw tty on kill).
+// ponytail: git ops bounded at 5m; full async UI off the tea loop when the TUI gains a busy state
+const gitOpTimeout = 5 * time.Minute
+
+// runGit runs git with hardened args under a gitOpTimeout deadline and returns
+// combined output. A timeout surfaces as an error naming the timeout.
+func runGit(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitOpTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", gitHardened(args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return out, fmt.Errorf("git operation timed out after %s", gitOpTimeout)
+	}
+	return out, err
+}
+
 // Refresh clones or updates the ScaleTail repository.
-// When noRefresh is true, only validates the local tree if present.
 // Git output is captured and returned so callers can render it without
 // polluting a TUI alternate screen.
-func Refresh(repoURL, repoPath string, noRefresh bool) (string, error) {
+func Refresh(repoURL, repoPath string) (string, error) {
 	if err := names.ValidateRepoURL(repoURL); err != nil {
 		return "", err
 	}
@@ -33,15 +53,6 @@ func Refresh(repoURL, repoPath string, noRefresh bool) (string, error) {
 	}
 
 	gitDir := filepath.Join(repoPath, ".git")
-	if noRefresh {
-		if _, err := os.Stat(gitDir); err != nil {
-			// Allow non-git local trees (testdata / vendored copies).
-			if _, err2 := os.Stat(filepath.Join(repoPath, "services")); err2 != nil {
-				return "", fmt.Errorf("ScaleTail path missing or incomplete: %s", repoPath)
-			}
-		}
-		return "", nil
-	}
 
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", fmt.Errorf("git is required: %w", err)
@@ -57,8 +68,7 @@ func Refresh(repoURL, repoPath string, noRefresh bool) (string, error) {
 		if err := ensureOnBranch(repoPath); err != nil {
 			return "", err
 		}
-		cmd := exec.Command("git", gitHardened("-C", repoPath, "pull", "--ff-only")...)
-		out, err := cmd.CombinedOutput()
+		out, err := runGit("-C", repoPath, "pull", "--ff-only")
 		if err != nil {
 			return "", fmt.Errorf("ScaleTail git pull failed: %w: %s", err, out)
 		}
@@ -78,9 +88,7 @@ func Refresh(repoURL, repoPath string, noRefresh bool) (string, error) {
 }
 
 func cloneRepo(repoURL, repoPath string) (string, error) {
-	args := gitHardened("clone", "--depth", "1", repoURL, repoPath)
-	cmd := exec.Command("git", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runGit("clone", "--depth", "1", repoURL, repoPath)
 	if err != nil {
 		return "", fmt.Errorf("ScaleTail git clone failed: %w: %s", err, out)
 	}
@@ -90,17 +98,16 @@ func cloneRepo(repoURL, repoPath string) (string, error) {
 // ensureOnBranch moves a detached HEAD onto the remote default branch so pull works.
 func ensureOnBranch(repoPath string) error {
 	// symbolic-ref fails when detached.
-	check := exec.Command("git", gitHardened("-C", repoPath, "symbolic-ref", "-q", "HEAD")...)
-	if err := check.Run(); err == nil {
+	if _, err := runGit("-C", repoPath, "symbolic-ref", "-q", "HEAD"); err == nil {
 		return nil // already on a branch
 	}
 	// Detached: resolve origin/HEAD or fall back to main/master.
-	out, err := exec.Command("git", gitHardened("-C", repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")...).Output()
+	out, err := runGit("-C", repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")
 	branch := strings.TrimSpace(string(out))
 	branch = strings.TrimPrefix(branch, "origin/")
 	if err != nil || branch == "" || branch == "HEAD" {
 		for _, candidate := range []string{"main", "master"} {
-			if exec.Command("git", gitHardened("-C", repoPath, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate)...).Run() == nil {
+			if _, err := runGit("-C", repoPath, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
 				branch = candidate
 				break
 			}
@@ -109,8 +116,7 @@ func ensureOnBranch(repoPath string) error {
 	if branch == "" {
 		return fmt.Errorf("ScaleTail repo is detached and no default branch could be determined")
 	}
-	co := exec.Command("git", gitHardened("-C", repoPath, "checkout", "-B", branch, "origin/"+branch)...)
-	if _, err := co.CombinedOutput(); err != nil {
+	if _, err := runGit("-C", repoPath, "checkout", "-B", branch, "origin/"+branch); err != nil {
 		return fmt.Errorf("could not leave detached HEAD for pull: %w", err)
 	}
 	return nil
