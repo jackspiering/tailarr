@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"io"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,50 @@ func TestText(t *testing.T) {
 	}
 	if !strings.Contains(out, "ok=1") {
 		t.Fatalf("non-secret mangled: %s", out)
+	}
+}
+
+func TestTextURLUserinfo(t *testing.T) {
+	t.Parallel()
+	out := Text("clone https://alice:s3cr3t@example.com/repo.git now")
+	if strings.Contains(out, "s3cr3t") || strings.Contains(out, "alice:") {
+		t.Fatalf("userinfo leaked: %s", out)
+	}
+	if !strings.Contains(out, "https://redacted@example.com/repo.git") {
+		t.Fatalf("expected scheme-preserving redaction: %s", out)
+	}
+}
+
+func TestTextJSONSecret(t *testing.T) {
+	t.Parallel()
+	out := Text(`{"PASSWORD":"hunter2","HOSTNAME":"box"}`)
+	if strings.Contains(out, "hunter2") {
+		t.Fatalf("json secret leaked: %s", out)
+	}
+	if !strings.Contains(out, `"HOSTNAME":"box"`) {
+		t.Fatalf("non-secret json mangled: %s", out)
+	}
+}
+
+func TestTextColonSecret(t *testing.T) {
+	t.Parallel()
+	out := Text("PASSWORD: hunter2")
+	if strings.Contains(out, "hunter2") {
+		t.Fatalf("colon secret leaked: %s", out)
+	}
+	if !strings.Contains(out, "PASSWORD: "+Redacted) {
+		t.Fatalf("expected colon redaction: %s", out)
+	}
+}
+
+func TestTextAuthorizationBearer(t *testing.T) {
+	t.Parallel()
+	out := Text("Authorization: Bearer abc123token")
+	if strings.Contains(out, "abc123token") {
+		t.Fatalf("bearer token leaked: %s", out)
+	}
+	if !strings.Contains(out, "Bearer "+Redacted) {
+		t.Fatalf("expected bearer redaction: %s", out)
 	}
 }
 
@@ -40,10 +85,81 @@ func TestEnvLine(t *testing.T) {
 
 func TestLooksSecret(t *testing.T) {
 	t.Parallel()
-	if !LooksSecret("TS_AUTHKEY") {
-		t.Fatal("TS_AUTHKEY")
+	secrets := []string{
+		"TS_AUTHKEY", "AUTHKEY", "AUTH_KEY", "PASSWORD", "SECRET",
+		"TOKEN", "PRIVATE", "PRIVATE_KEY", "API_KEY", "APIKEY",
+		"DB_PASSWORD", "GITHUB_TOKEN", "MY_PRIVATE_VALUE",
+	}
+	for _, k := range secrets {
+		if !LooksSecret(k) {
+			t.Errorf("LooksSecret(%q) = false, want true", k)
+		}
 	}
 	if LooksSecret("HOSTNAME") {
 		t.Fatal("HOSTNAME is not secret")
+	}
+}
+
+func TestWriterLineAtomic(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	w := Writer(&b)
+	if _, err := w.Write([]byte("PASSWORD=")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), Redacted) {
+		t.Fatal("partial line flushed before newline")
+	}
+	if _, err := w.Write([]byte("hunter2\n")); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if strings.Contains(out, "hunter2") {
+		t.Fatalf("secret leaked: %s", out)
+	}
+	if !strings.Contains(out, "PASSWORD="+Redacted) {
+		t.Fatalf("expected redaction: %s", out)
+	}
+}
+
+func TestWriterRedactsEachLine(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	w := Writer(&b)
+	if _, err := w.Write([]byte("HOSTNAME=box\nTS_AUTHKEY=tskey-auth-secret\n")); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !strings.Contains(out, "HOSTNAME=box") {
+		t.Fatalf("plain line mangled: %s", out)
+	}
+	if strings.Contains(out, "tskey-auth-secret") {
+		t.Fatalf("secret leaked: %s", out)
+	}
+}
+
+func TestWriterCloseFlushesResidual(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	w := Writer(&b)
+	if _, err := w.Write([]byte("SECRET=abc")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), Redacted) {
+		t.Fatal("residual flushed before Close")
+	}
+	wc, ok := w.(io.WriteCloser)
+	if !ok {
+		t.Fatal("Writer must return an io.WriteCloser")
+	}
+	if err := wc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if strings.Contains(out, "abc") {
+		t.Fatalf("residual leaked: %s", out)
+	}
+	if !strings.Contains(out, "SECRET="+Redacted) {
+		t.Fatalf("residual not redacted: %s", out)
 	}
 }

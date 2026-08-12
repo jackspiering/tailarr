@@ -18,14 +18,6 @@ func IsSymlink(path string) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-// RefuseSymlink returns an error if path is a symlink.
-func RefuseSymlink(path, label string) error {
-	if IsSymlink(path) {
-		return fmt.Errorf("%s must not be a symlink: %s", label, path)
-	}
-	return nil
-}
-
 // AbsExistingDir returns the physical absolute path of an existing directory.
 func AbsExistingDir(path string) (string, error) {
 	info, err := os.Lstat(path)
@@ -107,8 +99,8 @@ func JoinUnder(root, name string) (string, error) {
 // ContainsSymlinks walks root (non-symlink) and returns the first symlink found.
 // Empty string means no symlinks.
 func ContainsSymlinks(root string) (string, error) {
-	if err := RefuseSymlink(root, "path"); err != nil {
-		return root, err
+	if IsSymlink(root) {
+		return root, fmt.Errorf("path must not be a symlink: %s", root)
 	}
 	info, err := os.Stat(root)
 	if err != nil {

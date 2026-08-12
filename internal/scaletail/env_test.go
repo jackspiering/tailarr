@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
 func TestParseAndMergeEnv(t *testing.T) {
@@ -57,12 +59,30 @@ func TestPlaceholderAndDefaults(t *testing.T) {
 	if v, ok := DefaultForKey("PUID"); !ok || v != "1000" {
 		t.Fatal(v, ok)
 	}
-	if LooksSecret("DB_PASSWORD") != true {
+	if !redact.LooksSecret("DB_PASSWORD") {
 		t.Fatal("expected secret")
 	}
 	keys := PlaceholderKeys(EnvMap{"A": "", "B": "x", "C": "//"}, []string{"A", "B", "C"})
 	if len(keys) != 2 {
 		t.Fatalf("%v", keys)
+	}
+}
+
+func TestParseEnvFileStripsBOM(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "bom.env")
+	if err := os.WriteFile(p, []byte("\ufeffTS_AUTHKEY=tskey-auth-bom\nHOSTNAME=box\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseEnvFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m["TS_AUTHKEY"] != "tskey-auth-bom" {
+		t.Fatalf("BOM dropped first key: %#v", m)
+	}
+	if m["HOSTNAME"] != "box" {
+		t.Fatalf("HOSTNAME=%q", m["HOSTNAME"])
 	}
 }
 

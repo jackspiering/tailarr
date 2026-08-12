@@ -75,25 +75,6 @@ func TestJoinUnder(t *testing.T) {
 	}
 }
 
-func TestRefuseSymlink(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target")
-	if err := os.Mkdir(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := RefuseSymlink(link, "test"); err == nil {
-		t.Fatal("expected refuse symlink")
-	}
-	if err := RefuseSymlink(target, "test"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestContainsSymlinks(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

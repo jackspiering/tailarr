@@ -2,6 +2,8 @@
 package redact
 
 import (
+	"bytes"
+	"io"
 	"regexp"
 	"strings"
 )
@@ -9,11 +11,36 @@ import (
 // Redacted is the placeholder shown instead of secret material.
 const Redacted = "[redacted]"
 
-// Patterns that indicate a secret-bearing env assignment.
-var secretKeyRE = regexp.MustCompile(`(?i)\b(TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)\b`)
+// secretKeywords is the single source of truth for key names that hold
+// secrets (union of the redact and scaletail/env keyword lists).
+var secretKeywords = []string{
+	"TS_AUTHKEY",
+	"AUTHKEY", "AUTH_KEY",
+	"PASSWORD",
+	"SECRET",
+	"TOKEN",
+	"PRIVATE", "PRIVATE_KEY",
+	"API_KEY", "APIKEY",
+}
+
+// secretKeyPattern is the regexp twin of secretKeywords: it matches the same
+// key names (with and without underscore variants) inside redaction patterns.
+const secretKeyPattern = `(?:TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE(?:_?KEY)?|API_?KEY)`
 
 // lineSecretRE matches KEY=value forms where KEY looks sensitive.
-var lineSecretRE = regexp.MustCompile(`(?i)([A-Za-z0-9_]*?(?:TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)[A-Za-z0-9_]*)=([^\s]+)`)
+var lineSecretRE = regexp.MustCompile(`(?i)([A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*)=([^\s]+)`)
+
+// jsonSecretRE matches "KEY":"value" JSON object members.
+var jsonSecretRE = regexp.MustCompile(`(?i)("` + secretKeyPattern + `"\s*:\s*")[^"]*(")`)
+
+// colonSecretRE matches KEY: value forms where KEY looks sensitive.
+var colonSecretRE = regexp.MustCompile(`(?i)(\b` + secretKeyPattern + `\b\s*:\s*)[^\s,;]+`)
+
+// urlUserinfoRE matches scheme://userinfo@ so URL credentials never reach logs.
+var urlUserinfoRE = regexp.MustCompile(`(?i)(https?|ssh)://[^\s/@]+@`)
+
+// bearerRE matches Authorization: Bearer <token>.
+var bearerRE = regexp.MustCompile(`(?i)(\bAuthorization\s*:\s*Bearer\s+)[^\s,;]+`)
 
 // tskeyRE matches raw Tailscale auth key material in free text.
 var tskeyRE = regexp.MustCompile(`tskey-auth-[A-Za-z0-9_-]+`)
@@ -21,6 +48,10 @@ var tskeyRE = regexp.MustCompile(`tskey-auth-[A-Za-z0-9_-]+`)
 // Text redacts secret-looking material from s for safe logging.
 func Text(s string) string {
 	out := lineSecretRE.ReplaceAllString(s, `${1}=`+Redacted)
+	out = urlUserinfoRE.ReplaceAllString(out, `${1}://redacted@`)
+	out = jsonSecretRE.ReplaceAllString(out, `${1}`+Redacted+`${2}`)
+	out = colonSecretRE.ReplaceAllString(out, `${1}`+Redacted)
+	out = bearerRE.ReplaceAllString(out, `${1}`+Redacted)
 	out = tskeyRE.ReplaceAllString(out, Redacted)
 	return out
 }
@@ -32,7 +63,13 @@ func Preview(_ string) string {
 
 // LooksSecret reports whether key name appears to hold a secret.
 func LooksSecret(key string) bool {
-	return secretKeyRE.MatchString(key)
+	k := strings.ToUpper(key)
+	for _, p := range secretKeywords {
+		if strings.Contains(k, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // EnvLine redacts a single KEY=value line if the key is secret-like or the
@@ -51,4 +88,51 @@ func EnvLine(line string) string {
 		return key + "=" + Redacted
 	}
 	return line
+}
+
+// Writer returns a line-atomic redacting writer: each complete line is
+// passed through Text before being written to w. Partial lines are buffered
+// until the next newline. The returned value also implements io.WriteCloser;
+// Close flushes any residual unterminated line and, when w is itself an
+// io.WriteCloser, closes it.
+func Writer(w io.Writer) io.Writer {
+	return &lineWriter{w: w}
+}
+
+// lineWriter is the concrete redacting writer returned by Writer.
+type lineWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+// Write buffers p and forwards complete lines through Text.
+func (lw *lineWriter) Write(p []byte) (int, error) {
+	lw.buf = append(lw.buf, p...)
+	for {
+		i := bytes.IndexByte(lw.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := lw.buf[:i+1]
+		if _, err := io.WriteString(lw.w, Text(string(line))); err != nil {
+			return 0, err
+		}
+		lw.buf = lw.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+// Close flushes any residual unterminated line, then closes w when it is an
+// io.WriteCloser.
+func (lw *lineWriter) Close() error {
+	if len(lw.buf) > 0 {
+		if _, err := io.WriteString(lw.w, Text(string(lw.buf))); err != nil {
+			return err
+		}
+		lw.buf = nil
+	}
+	if wc, ok := lw.w.(io.WriteCloser); ok {
+		return wc.Close()
+	}
+	return nil
 }

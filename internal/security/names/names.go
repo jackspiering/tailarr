@@ -16,15 +16,24 @@ var serviceNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 // authkeyNameRE is the same shape as service names for stored key labels.
 var authkeyNameRE = serviceNameRE
 
-// ValidServiceName reports whether name is a safe service directory name.
-func ValidServiceName(name string) bool {
-	if name == "" {
+// maxNameLen caps service and auth-key identifier length.
+const maxNameLen = 64
+
+// validSegment enforces the shared shape constraints: non-empty, bounded
+// length, and no path traversal.
+func validSegment(name string) bool {
+	if name == "" || len(name) > maxNameLen {
 		return false
 	}
 	if strings.Contains(name, "..") {
 		return false
 	}
-	return serviceNameRE.MatchString(name)
+	return true
+}
+
+// ValidServiceName reports whether name is a safe service directory name.
+func ValidServiceName(name string) bool {
+	return validSegment(name) && serviceNameRE.MatchString(name)
 }
 
 // ValidateServiceName returns an error when name is invalid.
@@ -40,10 +49,7 @@ func ValidateServiceName(name string) error {
 
 // ValidAuthkeyName reports whether name is a safe stored auth key label.
 func ValidAuthkeyName(name string) bool {
-	if name == "" {
-		return false
-	}
-	return authkeyNameRE.MatchString(name)
+	return validSegment(name) && authkeyNameRE.MatchString(name)
 }
 
 // ValidateAuthkeyName returns an error when name is invalid.

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -36,7 +37,6 @@ type Config struct {
 	LogPath      string
 	AuthkeysPath string
 	LogMaxBytes  int64
-	NoRefresh    bool
 	AssumeYes    bool
 }
 
@@ -69,11 +69,16 @@ func Load(cfg *Config) error {
 	if err := loadFile(cfg, cfg.ConfigPath); err != nil {
 		return err
 	}
-	applyEnv(cfg)
-	return nil
+	return applyEnv(cfg)
 }
 
 func loadFile(cfg *Config, path string) error {
+	if err := paths.RefuseSymlinkAncestry(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("config directory: %w", err)
+	}
+	if paths.IsSymlink(path) {
+		return fmt.Errorf("config file must not be a symlink: %s", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -86,8 +91,15 @@ func loadFile(cfg *Config, path string) error {
 	sc := bufio.NewScanner(f)
 	// Allow long lines without loading secrets into huge buffers unnecessarily.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	first := true
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := sc.Text()
+		if first {
+			// Strip a UTF-8 BOM so the first key is not silently dropped.
+			line = strings.TrimPrefix(line, "\ufeff")
+			first = false
+		}
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -118,8 +130,11 @@ func loadFile(cfg *Config, path string) error {
 	return sc.Err()
 }
 
-func applyEnv(cfg *Config) {
+func applyEnv(cfg *Config) error {
 	if v := os.Getenv("TAILARR_REPO_URL"); v != "" {
+		if err := names.ValidateRepoURL(v); err != nil {
+			return err
+		}
 		cfg.RepoURL = v
 	}
 	if v := os.Getenv("TAILARR_REPO_PATH"); v != "" {
@@ -142,6 +157,7 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("TAILARR_ASSUME_YES"); v == "1" || strings.EqualFold(v, "true") {
 		cfg.AssumeYes = true
 	}
+	return nil
 }
 
 // Save writes the config atomically as plain KEY=VALUE (mode 0600).
@@ -169,11 +185,6 @@ func format(cfg Config) string {
 	fmt.Fprintf(&b, "TAILARR_AUTHKEYS_PATH=%s\n", cfg.AuthkeysPath)
 	fmt.Fprintf(&b, "TAILARR_LOG_MAX_BYTES=%d\n", cfg.LogMaxBytes)
 	return b.String()
-}
-
-// BackupRoot returns the backup directory under the deploy path.
-func (c Config) BackupRoot() string {
-	return strings.TrimRight(c.DeployPath, string(os.PathSeparator)) + string(os.PathSeparator) + BackupDirName
 }
 
 // String returns a multi-line non-secret dump for display.

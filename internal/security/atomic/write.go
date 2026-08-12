@@ -61,6 +61,12 @@ func WriteFile(dest string, data []byte, mode os.FileMode) error {
 	if err := os.Chmod(dest, mode); err != nil {
 		return fmt.Errorf("chmod dest: %w", err)
 	}
+	// Best-effort durability: fsync the parent directory so the rename
+	// survives power loss.
+	if dir, err := os.Open(parent); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
 	return nil
 }
 
