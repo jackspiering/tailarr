@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/logging"
@@ -95,6 +97,71 @@ func TestLockReleaseDoesNotSteal(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("lock should still exist when ownership does not match")
+	}
+}
+
+// deadPID returns a PID that is guaranteed no longer running.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func TestStaleLockReclaimedForDeadPID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	// A fresh lock whose owner is gone must be reclaimed immediately,
+	// regardless of age (previously a dead-owner lock was only removed after
+	// 2*timeout, making the next run fail once).
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nstale-token\n", deadPID(t))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !tryRemoveStaleLock(path, DefaultLockTimeout) {
+		t.Fatal("expected fresh dead-PID lock to be reclaimed")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("lock file should be removed")
+	}
+}
+
+func TestStaleLockKeepsLiveOwner(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	// A live owner must never have its lock stolen, even when fresh.
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nlive-token\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tryRemoveStaleLock(path, DefaultLockTimeout) {
+		t.Fatal("live owner lock must not be stolen")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("lock file should remain")
+	}
+}
+
+func TestStaleLockUnparseableOnlyWhenOld(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	// Corrupt (unparseable) content is only reclaimed once older than maxAge.
+	if err := os.WriteFile(path, []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tryRemoveStaleLock(path, DefaultLockTimeout) {
+		t.Fatal("fresh corrupt lock must not be reclaimed")
+	}
+	old := time.Now().Add(-2 * DefaultLockTimeout)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if !tryRemoveStaleLock(path, DefaultLockTimeout) {
+		t.Fatal("old corrupt lock should be reclaimed")
 	}
 }
 
@@ -214,7 +281,7 @@ func TestRemoveFailsClosedOnComposeError(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.Remove("web", false)
+	err := m.RemoveWith("web", DeployOpts{})
 	if err == nil {
 		t.Fatal("expected remove to fail when compose down fails")
 	}
@@ -237,7 +304,7 @@ func TestRemoveRejectsUnmanaged(t *testing.T) {
 	}
 	// No Tailarr marker.
 	m := &Manager{Cfg: &config.Config{DeployPath: deployRoot}}
-	err := m.Remove("manual", true)
+	err := m.RemoveWith("manual", DeployOpts{})
 	if !errors.Is(err, ErrNotManaged) {
 		t.Fatalf("expected ErrNotManaged, got %v", err)
 	}
@@ -362,31 +429,6 @@ func TestDeployRejectsEmptyAuthkey(t *testing.T) {
 	}
 }
 
-func TestDeployUsesNamedAuthkey(t *testing.T) {
-	repo := t.TempDir()
-	deployRoot := t.TempDir()
-	setupTemplate(t, repo, "web", "TS_AUTHKEY=\nHOSTNAME=x\n")
-
-	keysPath := filepath.Join(deployRoot, "authkeys.conf")
-	if err := os.WriteFile(keysPath, []byte("prod=tskey-auth-FROMSTORE\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	withFakeCompose(t, func(dir string, args ...string) error { return nil })
-
-	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: keysPath}}
-	if err := m.DeployWith("web", DeployOpts{AuthKeyName: "prod"}); err != nil {
-		t.Fatal(err)
-	}
-	env, err := os.ReadFile(filepath.Join(deployRoot, "web", ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(env), "TS_AUTHKEY=tskey-auth-FROMSTORE") {
-		t.Fatalf("store key not applied: %s", env)
-	}
-}
-
 func TestScanComposeServiceNames(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "compose.yaml")
@@ -436,5 +478,72 @@ func TestLatestBackup(t *testing.T) {
 	}
 	if got != b2 {
 		t.Fatalf("got %s want %s", got, b2)
+	}
+}
+
+func TestPruneBackups(t *testing.T) {
+	root := t.TempDir()
+	backupDir := filepath.Join(root, config.BackupDirName)
+	// Include collision-suffixed entries (same second stamp) and a second
+	// service that must be left untouched.
+	names := []string{
+		"web-20200101T000000Z",
+		"web-20200101T000000Z-1",
+		"web-20200101T000000Z-2",
+		"web-20200102T000000Z",
+		"api-20200101T000000Z",
+	}
+	for _, name := range names {
+		if err := os.MkdirAll(filepath.Join(backupDir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pruneBackups(backupDir, "web", 2); err != nil {
+		t.Fatal(err)
+	}
+	// Newest two (string order) survive: the -2 collision and the later stamp.
+	for _, gone := range []string{"web-20200101T000000Z", "web-20200101T000000Z-1"} {
+		if _, err := os.Stat(filepath.Join(backupDir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be pruned", gone)
+		}
+	}
+	for _, kept := range []string{"web-20200101T000000Z-2", "web-20200102T000000Z"} {
+		if _, err := os.Stat(filepath.Join(backupDir, kept)); err != nil {
+			t.Fatalf("expected %s to be kept: %v", kept, err)
+		}
+	}
+	// Other services' backups are not pruned.
+	if _, err := os.Stat(filepath.Join(backupDir, "api-20200101T000000Z")); err != nil {
+		t.Fatalf("other service backup pruned: %v", err)
+	}
+}
+
+func TestBackupPrunesToNewest(t *testing.T) {
+	root := t.TempDir()
+	svc := filepath.Join(root, "demo")
+	if err := os.MkdirAll(filepath.Join(svc, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var backups []string
+	for i := 0; i < 3; i++ {
+		b, err := Backup(root, "demo", svc, BackupCopy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		backups = append(backups, b)
+	}
+	remaining, err := listServiceBackups(root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 backups after pruning, got %d: %v", len(remaining), remaining)
+	}
+	// The first (oldest) backup is gone; the newest is retained.
+	if _, err := os.Stat(backups[0]); !os.IsNotExist(err) {
+		t.Fatalf("oldest backup %s not pruned", backups[0])
+	}
+	if _, err := os.Stat(backups[2]); err != nil {
+		t.Fatalf("newest backup %s missing: %v", backups[2], err)
 	}
 }

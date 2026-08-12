@@ -44,7 +44,7 @@ func Load(path string) (*Store, error) {
 	// Tighten permissions if loose.
 	if info, err := f.Stat(); err == nil {
 		if info.Mode().Perm()&0o077 != 0 {
-			_ = os.Chmod(path, 0o600)
+			_ = f.Chmod(0o600)
 		}
 	}
 
@@ -81,7 +81,14 @@ func Ensure(path string) error {
 		return err
 	}
 	if _, err := os.Lstat(path); err == nil {
-		return os.Chmod(path, 0o600)
+		// Tighten permissions via the open descriptor, not the path, so a
+		// raced symlink swap cannot be chmod'd instead.
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		return f.Chmod(0o600)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -90,7 +97,20 @@ func Ensure(path string) error {
 	if err != nil {
 		return fmt.Errorf("create auth key store: %w", err)
 	}
-	return f.Close()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// Best-effort durability: fsync the parent directory so the new file's
+	// directory entry survives power loss.
+	if dir, err := os.Open(parent); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
 
 // Save writes all keys atomically with mode 600.
@@ -105,19 +125,6 @@ func (s *Store) Save() error {
 			continue
 		}
 		fmt.Fprintf(&b, "%s=%s\n", name, val)
-	}
-	// Also write any keys not in Order (defensive).
-	for name, val := range s.Keys {
-		found := false
-		for _, n := range s.Order {
-			if n == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Fprintf(&b, "%s=%s\n", name, val)
-		}
 	}
 	return atomic.WriteFileString(s.Path, b.String(), 0o600)
 }

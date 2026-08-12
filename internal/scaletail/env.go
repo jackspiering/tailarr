@@ -28,8 +28,15 @@ func ParseEnvFile(path string) (EnvMap, error) {
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	first := true
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := sc.Text()
+		if first {
+			// Strip a UTF-8 BOM so the first env key is not silently dropped.
+			line = strings.TrimPrefix(line, "\ufeff")
+			first = false
+		}
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -164,17 +171,6 @@ func DefaultForKey(key string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// LooksSecret reports whether an env key typically holds a secret.
-func LooksSecret(key string) bool {
-	k := strings.ToUpper(key)
-	for _, p := range []string{"PASSWORD", "SECRET", "TOKEN", "AUTHKEY", "PRIVATE", "API_KEY", "APIKEY"} {
-		if strings.Contains(k, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // PlaceholderKeys returns keys in order whose values are placeholders.

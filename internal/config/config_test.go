@@ -135,6 +135,74 @@ TAILARR_REPO_URL=https://github.com/tailscale-dev/ScaleTail.git
 	}
 }
 
+func TestLoadStripsBOM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(path, []byte("\ufeffTAILARR_REPO_URL=https://github.com/tailscale-dev/ScaleTail.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_REPO_URL", "")
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RepoURL != "https://github.com/tailscale-dev/ScaleTail.git" {
+		t.Fatalf("BOM dropped first key: %s", cfg.RepoURL)
+	}
+}
+
+func TestLoadRefusesSymlinkFile(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.conf")
+	if err := os.WriteFile(real, []byte("TAILARR_REPO_PATH=/tmp/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.conf")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.ConfigPath = link
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected symlink refusal")
+	}
+}
+
+func TestLoadRefusesSymlinkedDir(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "c.conf"), []byte("TAILARR_REPO_PATH=/tmp/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.ConfigPath = filepath.Join(link, "c.conf")
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected symlinked-dir refusal")
+	}
+}
+
+func TestApplyEnvRejectsInvalidRepoURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(path, []byte("# empty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_REPO_URL", "http://example.com/repo")
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected invalid env RepoURL to be rejected")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		(func() bool {

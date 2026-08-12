@@ -18,7 +18,8 @@ type UI interface {
 	Confirm(question string, defaultYes bool) (bool, error)
 	// Line reads a single line (echo on). Empty input returns defaultVal.
 	Line(label, defaultVal string) (string, error)
-	// Secret reads a single line with echo disabled when stdin is a TTY.
+	// Secret reads a single line with echo disabled when stdin is a TTY. It fails
+	// when stdin is not a TTY so secrets are never echoed back to the terminal.
 	Secret(label string) (string, error)
 	// Printf writes operator-facing messages.
 	Printf(format string, args ...any)
@@ -85,23 +86,20 @@ func (s *Std) Line(label, defaultVal string) (string, error) {
 	return line, nil
 }
 
-// Secret implements UI.
+// Secret implements UI. It reads with echo disabled on a TTY; on a non-TTY
+// stdin it fails rather than echoing the secret back to the terminal.
 func (s *Std) Secret(label string) (string, error) {
-	s.Printf("%s: ", label)
-	if stdinIsTTY() {
-		fd := int(os.Stdin.Fd())
-		raw, err := term.ReadPassword(fd)
-		s.Printf("\n")
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(raw)), nil
+	if !stdinIsTTY() {
+		return "", fmt.Errorf("secret input requires a terminal")
 	}
-	line, err := s.readLine()
+	s.Printf("%s: ", label)
+	fd := int(os.Stdin.Fd())
+	raw, err := term.ReadPassword(fd)
+	s.Printf("\n")
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(line), nil
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // Printf implements UI.

@@ -86,19 +86,8 @@ resolve_version() {
 			return
 		fi
 	fi
+	printf 'Warning: could not resolve the latest release from %s; falling back to %s\n' "$API_URL" "$DEFAULT_VERSION" >&2
 	printf '%s\n' "$DEFAULT_VERSION"
-}
-
-# is_go_tailarr reports whether path looks like this project's Go binary.
-# The TUI-only binary refuses to run without a TTY; that refusal is the probe.
-is_go_tailarr() {
-	path=$1
-	[ -x "$path" ] || return 1
-	out=$("$path" </dev/null 2>&1 || true)
-	case "$out" in
-	*"Tailarr is interactive"*) return 0 ;;
-	*) return 1 ;;
-	esac
 }
 
 resolve_install_dir() {
@@ -113,16 +102,12 @@ resolve_install_dir() {
 	existing=$(command -v "${BINARY_NAME}" 2>/dev/null || true)
 	if [ -n "$existing" ]; then
 		existing_dir=$(dirname "$existing")
-		if [ -w "$existing_dir" ] || { [ ! -e "$existing" ] && [ -w "$existing_dir" ]; }; then
-			if [ -w "$existing" ] || [ -w "$existing_dir" ]; then
-				if ! is_go_tailarr "$existing"; then
-					info "Found existing non-Go '${BINARY_NAME}' at ${existing}; replacing it" >&2
-				else
-					info "Upgrading existing Go Tailarr at ${existing}" >&2
-				fi
-				printf '%s\n' "$existing_dir"
-				return
-			fi
+		if [ -w "$existing_dir" ]; then
+			# We never run the existing file to classify it; if the PATH entry
+			# still differs after install, warn_path_shadow reports it.
+			info "Replacing existing '${BINARY_NAME}' at ${existing}" >&2
+			printf '%s\n' "$existing_dir"
+			return
 		fi
 	fi
 
@@ -172,7 +157,11 @@ main() {
 	info "Destination: ${install_dir}/${BINARY_NAME}"
 
 	tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t tailarr-install)
-	cleanup() { rm -rf "$tmpdir"; }
+	tmp_dest=
+	cleanup() {
+		rm -rf "$tmpdir"
+		rm -f "$tmp_dest"
+	}
 	trap cleanup EXIT INT TERM
 
 	info "Downloading ${asset} ..."
@@ -187,8 +176,11 @@ main() {
 		err "install directory is not writable: $install_dir (set INSTALL_DIR or run with permissions to write there)"
 	fi
 
-	# Atomic-ish install: write then rename into place.
-	tmp_dest="${install_dir}/.${BINARY_NAME}.install.$$"
+	# Atomic-ish install: write then rename into place. mktemp creates the
+	# temp file with O_EXCL (mode 0600), so a planted symlink at the fixed
+	# name cannot be followed; widen to 755 before the rename. The trap
+	# removes any leftover on failure.
+	tmp_dest=$(mktemp "${install_dir}/.${BINARY_NAME}.install.XXXXXX")
 	cp "${tmpdir}/${asset}" "$tmp_dest"
 	chmod 755 "$tmp_dest"
 	mv -f "$tmp_dest" "${install_dir}/${BINARY_NAME}"
@@ -269,21 +261,14 @@ warn_path_shadow() {
 	fi
 
 	if same_file "${resolved}" "${installed}"; then
-		# Confirm PATH entry is also the Go binary (not a wrapper that shells out elsewhere).
-		path_out=$("${resolved}" </dev/null 2>&1 || true)
-		case "${path_out}" in
-		*"Tailarr is interactive"*) return ;;
-		esac
+		# PATH entry is the binary we just installed; nothing to warn about.
+		return
 	fi
 
 	info ""
 	info "WARNING: another program named '${BINARY_NAME}' is first on your PATH."
 	info "  PATH resolves to: ${resolved}"
 	info "  Go Tailarr is at: ${installed}"
-	path_out=$("${resolved}" </dev/null 2>&1 | head -n 1 || true)
-	if [ -n "${path_out}" ]; then
-		info "  PATH binary output: ${path_out}"
-	fi
 	info ""
 	info "The Go install succeeded, but running bare 'tailarr' may invoke a legacy tool."
 	info "Fix (pick one):"

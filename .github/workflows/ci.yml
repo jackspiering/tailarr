@@ -104,7 +104,6 @@ jobs:
           cache: true
 
       - name: Derive version
-        id: version
         run: |
           # Dev/PR builds get "<tag>-<n>-g<sha>" so they stay distinguishable from releases.
           ver=$(git describe --tags 2>/dev/null | sed 's/^v//')

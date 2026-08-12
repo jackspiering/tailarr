@@ -7,8 +7,8 @@ import (
 
 func TestValidServiceName(t *testing.T) {
 	t.Parallel()
-	valid := []string{"app", "My-Service", "svc_1", "a.b", "X", "tailscale-nginx"}
-	invalid := []string{"", "../bad", "bad/name", ".hidden", "bad..name", "a/b", "foo/../bar", "-lead", " has space"}
+	valid := []string{"app", "My-Service", "svc_1", "a.b", "X", "tailscale-nginx", strings.Repeat("a", 64)}
+	invalid := []string{"", "../bad", "bad/name", ".hidden", "bad..name", "a/b", "foo/../bar", "-lead", " has space", strings.Repeat("a", 65)}
 
 	for _, name := range valid {
 		if !ValidServiceName(name) {
@@ -25,6 +25,29 @@ func TestValidServiceName(t *testing.T) {
 	}
 	if err := ValidateServiceName(""); err == nil {
 		t.Error("ValidateServiceName(\"\") expected error")
+	}
+}
+
+func TestValidAuthkeyName(t *testing.T) {
+	t.Parallel()
+	valid := []string{"prod", "My_Key-1", strings.Repeat("a", 64)}
+	invalid := []string{"", "a..b", "../x", "bad..name", "a/b", "-lead", strings.Repeat("a", 65)}
+
+	for _, name := range valid {
+		if !ValidAuthkeyName(name) {
+			t.Errorf("ValidAuthkeyName(%q) = false, want true", name)
+		}
+		if err := ValidateAuthkeyName(name); err != nil {
+			t.Errorf("ValidateAuthkeyName(%q) unexpected error: %v", name, err)
+		}
+	}
+	for _, name := range invalid {
+		if ValidAuthkeyName(name) {
+			t.Errorf("ValidAuthkeyName(%q) = true, want false", name)
+		}
+	}
+	if err := ValidateAuthkeyName(""); err == nil {
+		t.Error("ValidateAuthkeyName(\"\") expected error")
 	}
 }
 

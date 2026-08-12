@@ -16,6 +16,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/atomic"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
+	"github.com/jackspiering/tailarr/internal/security/redact"
 	"github.com/jackspiering/tailarr/internal/version"
 )
 
@@ -32,18 +33,11 @@ type DeployOpts struct {
 	// Force replaces an existing managed deployment (with backup).
 	// When false and UI is set, the operator is asked before replace.
 	Force bool
-	// AuthKeyName selects a named key from the auth key store when TS_AUTHKEY is empty.
-	// The secret itself is never accepted here or via flags.
-	AuthKeyName string
 	// Interactive prompts for empty/placeholder env values when UI is set.
 	// Default true when UI is non-nil unless set false via SkipInteractive.
 	SkipInteractive bool
 	// ReusableAuthKey is an already-resolved TS_AUTHKEY for batch deploys.
 	ReusableAuthKey string
-	// Volumes on remove.
-	Volumes bool
-	// SkipConfirm skips destructive confirmation prompts (CLI --force path).
-	SkipConfirm bool
 }
 
 // TailarrComposeLabel is applied via override so status can detect managed stacks.
@@ -52,12 +46,8 @@ const TailarrComposeLabel = "com.tailarr.managed=true"
 // overrideFilename is written next to the service compose file.
 const overrideFilename = ".tailarr.compose.yaml"
 
-// Deploy copies a template into the deploy path, merges env, and runs compose up.
-func (m *Manager) Deploy(service string, force bool) error {
-	return m.DeployWith(service, DeployOpts{Force: force})
-}
-
-// DeployWith is Deploy with extended options.
+// DeployWith deploys a service: copies the template into the deploy path,
+// merges env, and runs compose up.
 func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 	if err := names.ValidateServiceName(service); err != nil {
 		return err
@@ -109,8 +99,8 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 			return fmt.Errorf("%w: refusing to replace unmanaged path %s (no Tailarr marker)", ErrNotManaged, service)
 		}
 		if !opts.Force {
-			if m.UI == nil || opts.SkipConfirm {
-				return fmt.Errorf("%w: %s (use --force to replace)", ErrAlreadyDeployed, service)
+			if m.UI == nil {
+				return fmt.Errorf("%w: %s (replace requires confirmation)", ErrAlreadyDeployed, service)
 			}
 			ok, cerr := m.UI.Confirm(fmt.Sprintf("Deployment already exists for %s. Replace it?", service), true)
 			if cerr != nil {
@@ -120,17 +110,22 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 				return fmt.Errorf("%w: deployment canceled", prompt.ErrCanceled)
 			}
 		}
-		// Best-effort compose down before replace.
-		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		downArgs := append(append([]string{}, proj...), "down", "--remove-orphans")
-		if err := Compose(dest, downArgs...); err != nil {
-			m.log("warning: compose down before force replace of %s: %v", service, err)
-		}
+		// Back up the current deployment before any teardown so a failure below
+		// can always restore it. The backup is the source of truth until the
+		// new deployment is fully in place.
 		backupPath, err = Backup(m.Cfg.DeployPath, service, dest, BackupMove)
 		if err != nil {
 			return err
 		}
 		m.log("backup created for %s: %s", service, backupPath)
+		// Best-effort compose down after backup: composeProjectArgs derives the
+		// project name from deployPath+service so containers are still found,
+		// while cmd.Dir=backupPath makes docker compose read the moved file.
+		proj := composeProjectArgs(m.Cfg.DeployPath, service)
+		downArgs := append(append([]string{}, proj...), "down", "--remove-orphans")
+		if err := Compose(backupPath, downArgs...); err != nil {
+			m.log("warning: compose down before force replace of %s: %v", service, err)
+		}
 	}
 
 	// From here, if we moved the old deployment, failures must try to restore it.
@@ -233,13 +228,6 @@ func (m *Manager) mergeAndWriteEnv(service, templateDir, dest, backupPath string
 		merged["TS_AUTHKEY"] = opts.ReusableAuthKey
 	}
 
-	// Resolve empty TS_AUTHKEY from named store entry when requested.
-	if scaletail.IsPlaceholder(merged["TS_AUTHKEY"]) {
-		if err := m.applyAuthKeyFromStore(merged, opts.AuthKeyName); err != nil {
-			return err
-		}
-	}
-
 	// Interactive fill for remaining placeholders when a UI is available.
 	if m.UI != nil && !opts.SkipInteractive {
 		if err := m.promptMissingEnv(merged, keys); err != nil {
@@ -314,7 +302,7 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 		def, _ := scaletail.DefaultForKey(key)
 		var val string
 		var err error
-		if scaletail.LooksSecret(key) {
+		if redact.LooksSecret(key) {
 			val, err = m.UI.Secret(key)
 			if err != nil {
 				return err
@@ -329,25 +317,6 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 			}
 		}
 		merged[key] = val
-	}
-	return nil
-}
-
-func (m *Manager) applyAuthKeyFromStore(merged scaletail.EnvMap, authKeyName string) error {
-	if m.Cfg.AuthkeysPath == "" {
-		return nil
-	}
-	store, err := authkeys.Load(m.Cfg.AuthkeysPath)
-	if err != nil {
-		return err
-	}
-	if authKeyName != "" {
-		val, ok := store.Keys[authKeyName]
-		if !ok {
-			return fmt.Errorf("auth key %q not found in store", authKeyName)
-		}
-		merged["TS_AUTHKEY"] = val
-		return nil
 	}
 	return nil
 }
@@ -525,13 +494,8 @@ func (m *Manager) Restart(service string) error {
 	})
 }
 
-// Remove tears down a deployment. When volumes is true, passes -v.
-// Fails closed: directory is only deleted after compose down succeeds.
-func (m *Manager) Remove(service string, volumes bool) error {
-	return m.RemoveWith(service, DeployOpts{Volumes: volumes})
-}
-
-// RemoveWith is Remove with interactive options.
+// RemoveWith tears down a deployment. Fails closed: directory is only deleted
+// after compose down succeeds.
 func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 	if err := names.ValidateServiceName(service); err != nil {
 		return err
@@ -554,7 +518,7 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 		return err
 	}
 
-	if m.UI != nil && !opts.SkipConfirm {
+	if m.UI != nil {
 		ok, cerr := m.UI.Confirm(fmt.Sprintf("Remove %s and delete %s?", service, dest), true)
 		if cerr != nil {
 			return cerr
@@ -569,9 +533,6 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 	}
 	proj := composeProjectArgs(m.Cfg.DeployPath, service)
 	args := append(append([]string{}, proj...), "down", "--remove-orphans")
-	if opts.Volumes {
-		args = append(args, "--volumes")
-	}
 	if err := Compose(dest, args...); err != nil {
 		return fmt.Errorf("compose down failed; deployment directory left intact: %w", err)
 	}

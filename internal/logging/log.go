@@ -36,6 +36,10 @@ func (l *Logger) Event(message string) {
 	defer l.mu.Unlock()
 
 	dir := filepath.Dir(l.path)
+	// Refuse symlinked ancestors before creating anything.
+	if err := paths.RefuseSymlinkAncestry(dir); err != nil {
+		return
+	}
 	_ = os.MkdirAll(dir, 0o755)
 	if paths.IsSymlink(dir) || paths.IsSymlink(l.path) {
 		return

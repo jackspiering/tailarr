@@ -7,6 +7,24 @@ import (
 	"testing"
 )
 
+func TestRefusesSymlinkedAncestor(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(link, "logs", "t.log")
+	l := New(path, 100)
+	l.Event("should not be written")
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("log created under symlinked ancestor")
+	}
+}
+
 func TestRotateOnEveryEvent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "t.log")

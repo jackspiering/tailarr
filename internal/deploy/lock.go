@@ -65,7 +65,8 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("open lock: %w", err)
 		}
-		// Stale lock: only remove if owner process is dead and lock is old.
+		// Stale lock: reclaim if owner process is gone (regardless of age),
+		// or if content is corrupt and the lock is old.
 		if tryRemoveStaleLock(path, 2*timeout) {
 			continue
 		}
@@ -76,16 +77,12 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	}
 }
 
-// tryRemoveStaleLock removes path if it is older than maxAge and the recorded
-// owner PID is not running. Returns true if the lock was removed.
+// tryRemoveStaleLock removes path when the recorded owner PID is not running,
+// regardless of lock age, or when the content is unparseable and the lock is
+// older than maxAge (treat as corrupt). A live owner is never evicted, even an
+// old one: the authkeys lock is held across long interactive prompts. Returns
+// true if the lock was removed.
 func tryRemoveStaleLock(path string, maxAge time.Duration) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	if time.Since(info.ModTime()) <= maxAge {
-		return false
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -96,7 +93,15 @@ func tryRemoveStaleLock(path string, maxAge time.Duration) bool {
 	}
 	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
 	if err != nil || ownerPID <= 0 {
-		// Unparseable lock content after maxAge: remove as corrupt stale.
+		// Unparseable owner: reclaim only once the lock is old enough that a
+		// writer mid-creation is not clobbered.
+		info, err := os.Stat(path)
+		if err != nil {
+			return false
+		}
+		if time.Since(info.ModTime()) <= maxAge {
+			return false
+		}
 		_ = os.Remove(path)
 		return true
 	}

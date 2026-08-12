@@ -7,12 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-12
+
 ### Added
 
 - **Maintenance > Upgrade Tailarr**: self-update for release binaries;
   checks GitHub for a newer SemVer release, verifies the release asset
   SHA256 against the published SHA256SUMS, then atomically replaces the
   running binary.
+
+### Security
+
+- In-TUI prompts hand the terminal over to the prompt
+  (ReleaseTerminal/RestoreTerminal) so secrets are never raced or echoed by
+  the TUI input reader.
+- Redaction coverage extended to URL userinfo and JSON/colon secret forms.
+- Compose subprocess env filtering and redacted output.
+- Backup pruning: the newest 2 backups are kept.
+- Stale-lock reclaim when the owning PID is dead.
+- Atomic restore.
+- Git operation timeouts.
+- Config BOM/symlink/URL-validation hardening.
+- Authkeys fd-based chmod and parent-directory fsync.
+- Install script temp-file and PATH-probe hardening.
+- CI action SHA pinning and safe version interpolation.
 
 ### Fixed
 
@@ -88,6 +106,7 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
 - golangci-lint / misspell CI (errcheck, empty branches, US `Canceled` exit code name).
 
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jackspiering/tailarr/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0
