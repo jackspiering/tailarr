@@ -129,7 +129,11 @@ func (s *Std) reader() *bufio.Reader {
 
 func (s *Std) readLine() (string, error) {
 	line, err := s.reader().ReadString('\n')
-	if err != nil && !(errors.Is(err, io.EOF) && len(line) > 0) {
+	if err != nil {
+		// A final line without a trailing newline is still a valid answer.
+		if errors.Is(err, io.EOF) && len(line) > 0 {
+			return strings.TrimRight(line, "\r\n"), nil
+		}
 		if errors.Is(err, io.EOF) {
 			return "", io.EOF
 		}
