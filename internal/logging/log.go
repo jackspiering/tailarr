@@ -46,7 +46,7 @@ func (l *Logger) Event(message string) {
 	}
 	// Check size on every write so rotation keeps working for long-lived processes.
 	l.rotateIfNeeded()
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := paths.OpenFileNoFollow(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
@@ -68,5 +68,5 @@ func (l *Logger) rotateIfNeeded() {
 		return
 	}
 	_ = os.Rename(l.path, rotated)
-	_ = os.Chmod(rotated, 0o600)
+	_ = paths.ChmodNoFollow(rotated, 0o600)
 }

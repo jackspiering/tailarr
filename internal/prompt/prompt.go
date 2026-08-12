@@ -3,6 +3,7 @@ package prompt
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +32,9 @@ type Std struct {
 	Out       io.Writer
 	Err       io.Writer
 	AssumeYes bool
+
+	br   *bufio.Reader
+	brIn io.Reader
 }
 
 // NewStd builds a UI on os.Stdin/Stdout/Stderr.
@@ -111,20 +115,31 @@ func (s *Std) Printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(w, format, args...)
 }
 
-func (s *Std) readLine() (string, error) {
+func (s *Std) reader() *bufio.Reader {
 	in := s.In
 	if in == nil {
 		in = os.Stdin
 	}
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	if !sc.Scan() {
-		if err := sc.Err(); err != nil {
-			return "", err
-		}
-		return "", io.EOF
+	if s.br == nil || s.brIn != in {
+		s.br = bufio.NewReaderSize(in, 64*1024)
+		s.brIn = in
 	}
-	return sc.Text(), nil
+	return s.br
+}
+
+func (s *Std) readLine() (string, error) {
+	line, err := s.reader().ReadString('\n')
+	if err != nil {
+		// A final line without a trailing newline is still a valid answer.
+		if errors.Is(err, io.EOF) && len(line) > 0 {
+			return strings.TrimRight(line, "\r\n"), nil
+		}
+		if errors.Is(err, io.EOF) {
+			return "", io.EOF
+		}
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func stdinIsTTY() bool {

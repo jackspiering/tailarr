@@ -5,15 +5,24 @@ import (
 	"strings"
 )
 
+// Comparable reports whether both strings parse as SemVer (optional leading v).
+func Comparable(a, b string) bool {
+	_, aok := parse(a)
+	_, bok := parse(b)
+	return aok && bok
+}
+
 // Compare compares two SemVer strings using SemVer 2.0.0 precedence rules.
 // A leading "v" (or "V") is optional and ignored, as is build metadata.
 // Returns -1 when a < b, 0 when equal, +1 when a > b.
+// Non-SemVer inputs compare equal (0); use Comparable to detect that case.
 func Compare(a, b string) int {
 	pa, aok := parse(a)
 	pb, bok := parse(b)
 	if !aok || !bok {
-		// Fall back to plain string order for non-SemVer build tags.
-		return strings.Compare(a, b)
+		// Do not invent order for dirty build tags; callers should use
+		// Comparable and confirm before upgrading.
+		return 0
 	}
 	if c := cmpInt(pa.major, pb.major); c != 0 {
 		return c

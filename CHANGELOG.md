@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Force-replace restore no longer deletes a sibling service named
+  `{service}.old`; the partial tree is parked under `.tailarr_backups`.
+- Backup list/prune/latest match the exact timestamped name, so `web` cannot
+  pick up or delete `web-ui` backups (and cannot inherit the wrong
+  `TS_AUTHKEY`).
+- SIGTERM/SIGINT during `docker compose` returns an error so a force replace
+  can restore the previous deployment instead of killing Tailarr mid-swap.
+- Unix lock reclaim treats `EPERM` as a live owner and uses `flock` so a
+  shared deploy root cannot steal another operator's lock.
+- Compose YAML fallback no longer treats nested keys (`ports:`,
+  `environment:`) as service names.
+- Editing configuration in the TUI applies the new paths immediately, not
+  only after restart.
+- Interactive prompts reuse one `bufio.Reader` so pasted answers are not
+  dropped.
+- Compose output flushes a trailing partial line through the redactor.
+- Compose project names hash the deploy root so long service names cannot
+  collide across roots.
+- Catalog refresh runs off the TUI update loop.
+- Storing an auth key during deploy takes the same lock as the Authkeys menu.
+- Repair restores previous compose files when `compose up` fails.
+- Service health matches exact `app-`/`tailscale-` names or the
+  `tailarr.service` label (not a Docker substring filter).
+- `LooksSecret` matches `_`-delimited keywords so `TIMEOUT` is not treated
+  as a token.
+- Config files reject invalid `TAILARR_REPO_URL` values the same way env
+  overrides do.
+- First-run config save failures are returned instead of ignored.
+- Remove/replace confirms default to no.
+- Offline (non-git) catalog refresh reports that pull was skipped.
+- Self-upgrade validates release tags and caps download size.
+
 ## [0.3.0] - 2026-08-12
 
 ### Added

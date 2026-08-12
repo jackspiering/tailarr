@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/redact"
@@ -58,46 +59,64 @@ func scanComposeServiceNames(composePath string) ([]string, error) {
 	}
 	var names []string
 	inServices := false
+	indent := -1
 	for _, line := range strings.Split(string(data), "\n") {
 		trim := strings.TrimRight(line, " \t\r")
 		if strings.TrimSpace(trim) == "services:" {
 			inServices = true
+			indent = -1
 			continue
 		}
-		if inServices {
-			// Top-level key ends services block.
-			if len(trim) > 0 && trim[0] != ' ' && trim[0] != '\t' && !strings.HasPrefix(strings.TrimSpace(trim), "#") {
-				break
-			}
-			// 2 or 4 space indent service name
-			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "    ") {
-				s := strings.TrimSpace(line)
-				if strings.HasPrefix(s, "#") {
-					continue
-				}
-				if strings.HasSuffix(s, ":") && !strings.Contains(s, " ") {
-					name := strings.TrimSuffix(s, ":")
-					if name != "" && name != "services" {
-						names = append(names, name)
-					}
-				}
-			}
+		if !inServices {
+			continue
+		}
+		// Top-level key ends services block.
+		if len(trim) > 0 && trim[0] != ' ' && trim[0] != '\t' && !strings.HasPrefix(strings.TrimSpace(trim), "#") {
+			break
+		}
+		s := strings.TrimSpace(line)
+		if s == "" || strings.HasPrefix(s, "#") {
+			continue
+		}
+		if !strings.HasSuffix(s, ":") || strings.Contains(s, " ") {
+			continue
+		}
+		spaces := countLeadingSpaces(line)
+		if spaces == 0 {
+			continue
+		}
+		// First service key sets the indent; nested keys (ports:, image:) are deeper.
+		if indent < 0 {
+			indent = spaces
+		}
+		if spaces != indent {
+			continue
+		}
+		name := strings.TrimSuffix(s, ":")
+		if name != "" && name != "services" {
+			names = append(names, name)
 		}
 	}
 	return names, nil
+}
+
+func countLeadingSpaces(s string) int {
+	n := 0
+	for ; n < len(s) && s[n] == ' '; n++ {
+	}
+	return n
 }
 
 func defaultCompose(dir string, args ...string) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("%w: docker is required: %v", ErrComposeFailed, err)
 	}
-	// Forward SIGTERM (systemd stop, TUI quit) by canceling the context, which
-	// makes exec.CommandContext kill the docker compose child. If the run was
-	// aborted this way we then re-raise SIGTERM so the process exits with
-	// correct systemd semantics instead of returning into the TUI. SIGINT needs
-	// no handling here: terminal Ctrl-C reaches the child via the shared
-	// process group.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	// Catch SIGTERM/SIGINT so CommandContext can kill the docker child and we
+	// return to the caller. Do not re-raise: DeployWith must be allowed to
+	// restore a BackupMove dest before the process exits. NotifyContext also
+	// overrides the default SIGINT disposition so Ctrl-C during leaveTUI does
+	// not kill Tailarr before that restore runs.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	full := append([]string{"compose"}, args...)
@@ -105,8 +124,10 @@ func defaultCompose(dir string, args ...string) error {
 	cmd.Dir = dir
 	// Redact diagnostics: a compose error echoing the interpolated TS_AUTHKEY
 	// would otherwise print the raw secret to the terminal.
-	cmd.Stdout = redact.Writer(os.Stdout)
-	cmd.Stderr = redact.Writer(os.Stderr)
+	stdout := redact.Writer(os.Stdout)
+	stderr := redact.Writer(os.Stderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.Stdin = os.Stdin
 	// Compose interpolation prefers shell env over .env, so an exported
 	// TS_AUTHKEY (or any other secret-like var) would silently override the
@@ -121,16 +142,16 @@ func defaultCompose(dir string, args ...string) error {
 		env = append(env, e)
 	}
 	cmd.Env = env
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if f, ok := stdout.(interface{ Flush() error }); ok {
+		_ = f.Flush()
+	}
+	if f, ok := stderr.(interface{ Flush() error }); ok {
+		_ = f.Flush()
+	}
+	if err != nil {
 		if ctx.Err() != nil {
-			// SIGTERM received: CommandContext already killed the child. Reset
-			// the handler and re-raise SIGTERM so the default disposition
-			// terminates us; give the signal time to land rather than
-			// returning into the TUI. If we are somehow still alive after the
-			// sleep, fall through and return the wrapped error.
-			signal.Reset(syscall.SIGTERM)
-			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-			time.Sleep(time.Second)
+			return fmt.Errorf("%w: docker compose %s: %v", ErrInterrupted, strings.Join(args, " "), err)
 		}
 		return fmt.Errorf("%w: docker compose %s: %v", ErrComposeFailed, strings.Join(args, " "), err)
 	}
@@ -143,32 +164,21 @@ var projectNameRE = regexp.MustCompile(`[^a-z0-9_-]+`)
 // ProjectName returns a Compose project name unique to this Tailarr service
 // under a given deploy root fingerprint, reducing cross-root collisions.
 func ProjectName(deployPath, service string) string {
-	// Hash deploy root into a short stable prefix so two roots both hosting
-	// "web" do not share the same Compose project during down --remove-orphans.
-	root := strings.ToLower(strings.ReplaceAll(deployPath, string(os.PathSeparator), "-"))
-	root = projectNameRE.ReplaceAllString(root, "-")
-	root = strings.Trim(root, "-")
-	if len(root) > 24 {
-		// Keep last path segments for readability + uniqueness.
-		root = root[len(root)-24:]
-		root = strings.Trim(root, "-")
-	}
+	// Hash the deploy root so two roots hosting the same service never share a
+	// Compose project. Truncating a sanitized path can drop the root fingerprint
+	// when the service name is long (up to 64 chars).
+	sum := sha256.Sum256([]byte(filepath.Clean(deployPath)))
+	root := hex.EncodeToString(sum[:])[:8]
 	svc := strings.ToLower(service)
 	svc = projectNameRE.ReplaceAllString(svc, "-")
-	name := "tailarr"
-	if root != "" {
-		name += "-" + root
+	svc = strings.Trim(svc, "-")
+	if svc == "" {
+		svc = "svc"
 	}
-	name += "-" + svc
-	// Compose project names max ~63; keep conservative.
-	if len(name) > 60 {
-		name = name[len(name)-60:]
-		name = strings.Trim(name, "-")
+	if len(svc) > 40 {
+		svc = strings.Trim(svc[:40], "-")
 	}
-	if name == "" {
-		return "tailarr-" + svc
-	}
-	return name
+	return "tailarr-" + root + "-" + svc
 }
 
 // composeProjectArgs returns ["-p", projectName] for consistent project identity.

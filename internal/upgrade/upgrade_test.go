@@ -32,12 +32,21 @@ func TestCompare(t *testing.T) {
 		{"0.3.0-beta", "0.3.0-rc.1", -1},
 		{"0.3.0-dev", "0.2.0", 1},
 		{"0.2.0", "1.0.0", -1},
-		{"unknown", "0.2.0", 1},
+		{"unknown", "0.2.0", 0},
 	}
 	for _, tt := range tests {
 		if got := Compare(tt.a, tt.b); got != tt.want {
 			t.Errorf("Compare(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
+	}
+	if Comparable("unknown", "0.2.0") {
+		t.Fatal("unknown is not SemVer")
+	}
+	if !Comparable("v0.2.0", "0.3.0") {
+		t.Fatal("expected comparable SemVer")
+	}
+	if validReleaseTag("../evil") || validReleaseTag("v1/../x") || !validReleaseTag("v0.3.0") {
+		t.Fatal("validReleaseTag")
 	}
 }
 

@@ -25,7 +25,6 @@ func gitHardened(extra ...string) []string {
 
 // gitOpTimeout bounds every git invocation so a stalled network op cannot
 // freeze the TUI event loop indefinitely (no Ctrl-C escape, raw tty on kill).
-// ponytail: git ops bounded at 5m; full async UI off the tea loop when the TUI gains a busy state
 const gitOpTimeout = 5 * time.Minute
 
 // runGit runs git with hardened args under a gitOpTimeout deadline and returns
@@ -79,7 +78,7 @@ func Refresh(repoURL, repoPath string) (string, error) {
 		// Path exists but is not a git repo.
 		if _, err2 := os.Stat(filepath.Join(repoPath, "services")); err2 == nil {
 			// Local tree without .git: treat as OK for offline use.
-			return "", nil
+			return "Using local ScaleTail tree (not a git repository); skipped pull.", nil
 		}
 		return "", fmt.Errorf("%s exists but is not a git repository", repoPath)
 	}

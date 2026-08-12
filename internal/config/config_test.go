@@ -189,6 +189,20 @@ func TestLoadRefusesSymlinkedDir(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidFileRepoURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(path, []byte("TAILARR_REPO_URL=http://example.com/repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_REPO_URL", "")
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected invalid file RepoURL to be rejected")
+	}
+}
+
 func TestApplyEnvRejectsInvalidRepoURL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c.conf")

@@ -101,10 +101,11 @@ func ServiceHealth(service string) Health {
 	if !DockerOK() {
 		return HealthUnknown
 	}
-	// Look up containers whose name contains the service identifier.
+	// Do not use --filter name=: Docker treats it as a substring, so "web"
+	// would include "web-ui". Match the tailarr.service label or an exact
+	// app-/tailscale- container name.
 	cmd := exec.Command("docker", "ps", "-a",
-		"--filter", "name="+service,
-		"--format", "{{.Names}}\t{{.State}}\t{{.Status}}")
+		"--format", `{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "tailarr.service"}}`)
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
 		return HealthStopped
@@ -118,6 +119,14 @@ func ServiceHealth(service string) Health {
 		}
 		parts := strings.Split(line, "\t")
 		if len(parts) < 2 {
+			continue
+		}
+		name := parts[0]
+		label := ""
+		if len(parts) >= 4 {
+			label = parts[3]
+		}
+		if !containerMatchesService(name, label, service) {
 			continue
 		}
 		found = true
@@ -135,6 +144,16 @@ func ServiceHealth(service string) Health {
 		return HealthStopped
 	}
 	return worst
+}
+
+func containerMatchesService(container, label, service string) bool {
+	if label != "" && label == service {
+		return true
+	}
+	if container == "app-"+service || container == "tailscale-"+service {
+		return true
+	}
+	return scaleTailServiceFromContainer(container) == service
 }
 
 func classifyHealth(state, status string) Health {
