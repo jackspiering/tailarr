@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Markdown lint (rumdl)
         run: |
@@ -36,7 +36,7 @@ jobs:
           /tmp/rumdl/bin/rumdl check .
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -68,13 +68,13 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: govulncheck
-        uses: golang/govulncheck-action@v1.1.0
+        uses: golang/govulncheck-action@0b496e91ec7ae4428c3ed2eeb4c3a40df431f2cc # v1.1.0
         with:
           go-version-input: ${{ env.GO_VERSION }}
           go-package: ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m
@@ -90,25 +90,31 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Derive version
-        id: version
         run: |
           ver=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
           if [ -z "$ver" ]; then
             ver=$(sed -n 's/^var Version = "\([^"]*\)".*/\1/p' internal/version/version.go)
           fi
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          case "$ver" in
+          [0-9]*.[0-9]*.[0-9]*) ;;
+          *)
+            echo "error: invalid version '$ver'" >&2
+            exit 1
+            ;;
+          esac
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
 
       - name: Build
         env:
@@ -117,7 +123,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p bin
-          go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=${{ steps.version.outputs.version }}" \
+          go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=$VERSION" \
             -o "bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/tailarr
           ls -la bin/
 
@@ -132,7 +138,7 @@ jobs:
           esac
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: tailarr-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}
