@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `tailarr upgrade`: self-update to the latest release (SHA256-verified,
-  atomic replace); `--check`, `--force`, `--repo` / `TAILARR_UPGRADE_REPO`;
-  TUI Maintenance menu entry.
+- **Maintenance > Upgrade Tailarr**: self-update for release binaries;
+  checks GitHub for a newer SemVer release, verifies the release asset
+  SHA256 against the published SHA256SUMS, then atomically replaces the
+  running binary.
 
 ### Fixed
 

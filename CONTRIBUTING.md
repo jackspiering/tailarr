@@ -41,7 +41,11 @@ Tailarr is TUI-only; run `./bin/tailarr` inside a terminal.
 go test ./...
 go vet ./...
 gofmt -l .
+rumdl check .
 ```
+
+`rumdl` is a standalone binary, not a Go tool; install it from its releases
+and run `rumdl check .` as shown.
 
 Optional: `golangci-lint run` (version pinned in CI, includes staticcheck and gofmt checks).
 
