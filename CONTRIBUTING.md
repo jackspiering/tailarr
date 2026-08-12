@@ -33,14 +33,17 @@ Tailarr is TUI-only; run `./bin/tailarr` inside a terminal.
 
 - Fill out the PR template.
 - Keep PRs focused; bootstrap "initial project" PRs may be larger.
-- Paste verification output (`go test ./...`, and lint if you run it locally).
+- Paste verification output (`go test -race ./...`, and lint if you run it locally).
 
 ## Before you push
 
 ```bash
-go test ./...
+go test -race ./...
+go test -race -tags integration ./...
 go vet ./...
 gofmt -l .
+rumdl check .
+go mod tidy && git diff --exit-code go.mod go.sum
 ```
 
 Optional: `golangci-lint run` (version pinned in CI, includes staticcheck and gofmt checks).
