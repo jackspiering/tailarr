@@ -60,7 +60,48 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 	default:
 		return "", fmt.Errorf("unknown backup mode: %s", mode)
 	}
+	// Prune older backups: they accumulate unboundedly and hold plaintext
+	// secrets (e.g. TS_AUTHKEY in .env). Best-effort: a prune failure must not
+	// abort an operation that already moved/copied the deployment, and must
+	// never lose the backup just created (which is always the newest).
+	_ = pruneBackups(root, service, 2)
 	return backupPath, nil
+}
+
+// pruneBackups removes all but the newest keep backups for service under root.
+// Entries are matched by the "<service>-<stamp>" name prefix used by Backup
+// (collision-suffixed names such as "<stamp>-1" count as backups too).
+func pruneBackups(root, service string, keep int) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	prefix := service + "-"
+	var matches []string
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		if paths.IsSymlink(p) {
+			continue
+		}
+		matches = append(matches, p)
+	}
+	if len(matches) <= keep {
+		return nil
+	}
+	// Timestamped names sort chronologically, so the last keep are newest.
+	sort.Strings(matches)
+	for _, p := range matches[:len(matches)-keep] {
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // LatestBackup returns the newest backup directory for service, or "".
@@ -176,8 +217,11 @@ func RestorePersistentData(backupPath, servicePath string) error {
 	return nil
 }
 
-// restoreDeploymentFromBackup renames backup back to dest when dest is missing
-// or incomplete after a failed force redeploy.
+// restoreDeploymentFromBackup renames backup back to dest. Any existing dest
+// (a partial copy from a failed force redeploy) is first renamed aside, then
+// the backup is renamed into place, and only then is the partial tree removed.
+// Both renames are atomic, so dest is never left missing: the backup remains
+// the source of truth until the final cleanup step.
 func restoreDeploymentFromBackup(backupPath, dest string) error {
 	if backupPath == "" {
 		return fmt.Errorf("no backup to restore")
@@ -185,8 +229,7 @@ func restoreDeploymentFromBackup(backupPath, dest string) error {
 	if _, err := os.Stat(backupPath); err != nil {
 		return fmt.Errorf("backup missing: %w", err)
 	}
-	// If dest exists from a partial copy, remove it only if it has no symlinks
-	// and is clearly a half-written tree under the same parent.
+	// Refuse to restore over symlinks before touching anything.
 	if st, err := os.Lstat(dest); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: cannot restore over symlink: %s", ErrSymlink, dest)
@@ -196,12 +239,29 @@ func restoreDeploymentFromBackup(backupPath, dest string) error {
 		} else if found != "" {
 			return fmt.Errorf("%w: partial deploy has symlink: %s", ErrSymlink, found)
 		}
-		if err := os.RemoveAll(dest); err != nil {
-			return fmt.Errorf("clear partial deploy for restore: %w", err)
+	}
+	// Clear any leftover sibling from a previously interrupted restore.
+	partial := dest + ".old"
+	if err := os.RemoveAll(partial); err != nil {
+		return fmt.Errorf("clear previous partial for restore: %w", err)
+	}
+	// Move the partial dest aside so the backup can take its place atomically.
+	if _, err := os.Lstat(dest); err == nil {
+		if err := os.Rename(dest, partial); err != nil {
+			return fmt.Errorf("move partial deploy aside: %w", err)
 		}
 	}
 	if err := os.Rename(backupPath, dest); err != nil {
+		// Backup still exists; put the partial back so dest is not left missing.
+		if _, err2 := os.Lstat(partial); err2 == nil {
+			_ = os.Rename(partial, dest)
+		}
 		return fmt.Errorf("restore deployment from backup: %w", err)
+	}
+	if _, err := os.Lstat(partial); err == nil {
+		if err := os.RemoveAll(partial); err != nil {
+			return fmt.Errorf("remove partial deploy: %w", err)
+		}
 	}
 	return nil
 }
