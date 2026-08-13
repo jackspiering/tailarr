@@ -785,6 +785,29 @@ func TestWriteOverrideLabels(t *testing.T) {
 	}
 }
 
+func TestWriteOverrideSkipsInvalidServiceNames(t *testing.T) {
+	dir := t.TempDir()
+	// A service name the YAML scan fallback misreads as a key: the emitted
+	// override must never contain invalid YAML.
+	body := "services:\n  bad\"name:\n    image: alpine\n"
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("demo", dir); err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(dir) {
+		t.Fatal("managed marker must be written even when all names are invalid")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, overrideFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `bad"name`) {
+		t.Fatalf("invalid service name leaked into override: %s", data)
+	}
+}
+
 func TestLatestBackup(t *testing.T) {
 	root := t.TempDir()
 	b1 := filepath.Join(root, config.BackupDirName, "web-20200101T000000Z")
