@@ -675,6 +675,36 @@ func TestHealthFromOutputUnhealthyWins(t *testing.T) {
 	}
 }
 
+func TestRepairKeepsComposeWhenTemplateMissing(t *testing.T) {
+	repo := t.TempDir() // services directory never created
+	deployRoot := t.TempDir()
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composeBody := "services:\n  app:\n    image: original\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(composeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	if err != nil || string(data) != composeBody {
+		t.Fatalf("compose file must survive repair with a missing template: %v %q", err, data)
+	}
+}
+
 func TestContainerMatchesService(t *testing.T) {
 	if !containerMatchesService("app-web", "", "web") {
 		t.Fatal("app-web should match web")

@@ -465,15 +465,25 @@ func (m *Manager) Repair(service string) error {
 	// old compose.yaml left in dest would otherwise shadow a newer
 	// compose.yml (ComposeFileIn prefers compose.yaml) and `up` would keep
 	// running the old stack. The backup taken above restores these files if
-	// the repair later fails.
+	// the repair later fails. Only prune when the template actually ships a
+	// compose file so a missing template cannot wipe the deployment.
+	hasTemplate := false
 	for _, name := range scaletail.ComposeCandidates {
-		if _, err := os.Stat(filepath.Join(templateDir, name)); err == nil {
-			continue
+		if st, err := os.Stat(filepath.Join(templateDir, name)); err == nil && !st.IsDir() && !paths.IsSymlink(filepath.Join(templateDir, name)) {
+			hasTemplate = true
+			break
 		}
-		stale := filepath.Join(dest, name)
-		if st, err := os.Lstat(stale); err == nil && !st.IsDir() && !paths.IsSymlink(stale) {
-			if err := os.Remove(stale); err != nil {
-				return fmt.Errorf("remove stale compose file %s: %w", name, err)
+	}
+	if hasTemplate {
+		for _, name := range scaletail.ComposeCandidates {
+			if _, err := os.Stat(filepath.Join(templateDir, name)); err == nil {
+				continue
+			}
+			stale := filepath.Join(dest, name)
+			if st, err := os.Lstat(stale); err == nil && !st.IsDir() && !paths.IsSymlink(stale) {
+				if err := os.Remove(stale); err != nil {
+					return fmt.Errorf("remove stale compose file %s: %w", name, err)
+				}
 			}
 		}
 	}
