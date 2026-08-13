@@ -631,6 +631,50 @@ func TestRestorePersistentDataKeepsFreshTemplateFiles(t *testing.T) {
 	}
 }
 
+func TestHealthFromOutput(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\trunning\tUp 2 hours (healthy)\t",
+		"tailscale-web\trunning\tUp 2 hours\t",
+		"other-container\trunning\tUp (health: starting)\tapi",
+		"app-api\texited\tExited (0) 1 hour ago\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web", "api", "none"})
+	// Worst container wins: the tailscale sidecar has no healthcheck, so the
+	// service reports running/no-healthcheck rather than healthy.
+	if got["web"] != HealthRunning {
+		t.Fatalf("web: got %s", got["web"])
+	}
+	// api has a starting container and an exited one; exited is worse.
+	if got["api"] != HealthExited {
+		t.Fatalf("api: got %s", got["api"])
+	}
+	// Service with no matching container is stopped, not unknown.
+	if got["none"] != HealthStopped {
+		t.Fatalf("none: got %s", got["none"])
+	}
+}
+
+func TestHealthFromOutputHealthy(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\trunning\tUp 2 hours (healthy)\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web"})
+	if got["web"] != HealthHealthy {
+		t.Fatalf("web: got %s", got["web"])
+	}
+}
+
+func TestHealthFromOutputUnhealthyWins(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\trunning\tUp (healthy)\t",
+		"tailscale-web\trunning\tUp (unhealthy)\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web"})
+	if got["web"] != HealthUnhealthy {
+		t.Fatalf("worst health should win: got %s", got["web"])
+	}
+}
+
 func TestContainerMatchesService(t *testing.T) {
 	if !containerMatchesService("app-web", "", "web") {
 		t.Fatal("app-web should match web")

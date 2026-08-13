@@ -422,14 +422,18 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 			m.status = "No deployed services."
 			return m, nil
 		}
+		names := make([]string, 0, len(svcs))
+		for _, s := range svcs {
+			names = append(names, s.Name)
+		}
+		health := deploy.ServiceHealthMap(names)
 		var b strings.Builder
 		for _, s := range svcs {
 			tag := "other"
 			if deploy.IsManaged(s.Dir) {
 				tag = "managed"
 			}
-			h := deploy.ServiceHealth(s.Name)
-			fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, h)
+			fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, health[s.Name])
 		}
 		m.status = b.String()
 		return m, nil
