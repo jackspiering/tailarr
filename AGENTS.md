@@ -33,6 +33,7 @@ live in this tree unless they are added as explicit reference material.
 | `internal/upgrade` | Release self-update |
 | `testdata/` | Fixtures for unit tests |
 | `.github/` | CI and templates |
+| `.grok/rules/` | Agent writing rules |
 
 Module path: `github.com/jackspiering/tailarr`.
 
@@ -47,6 +48,9 @@ Module path: `github.com/jackspiering/tailarr`.
 - ScaleTail git clone is trusted input; still harden git protocol flags where
   practical.
 - Plain ASCII in Markdown (no curly quotes, em dashes, decorative unicode).
+- Write `README.md` in ASD-STE100 and Zinsser's four principles
+  (simplicity, brevity, clarity, humanity). Follow
+  [.grok/rules/readme-writing.md](.grok/rules/readme-writing.md).
 - Do not add a web UI or encrypt auth keys at rest unless the owner asks.
 - Do not create GitHub releases/tags unless the owner asks.
 

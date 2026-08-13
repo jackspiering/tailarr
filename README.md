@@ -1,6 +1,6 @@
 # Tailarr
 
-Deploy and manage [ScaleTail](https://github.com/tailscale-dev/ScaleTail) Docker
+Tailarr deploys and manages [ScaleTail](https://github.com/tailscale-dev/ScaleTail)
 Compose services from a TUI.
 
 [![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
@@ -26,10 +26,17 @@ TAILARR_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/jackspiering
 INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
 ```
 
-The script detects OS/arch, downloads the matching release asset, verifies
-`SHA256SUMS`, and installs `tailarr` into the directory of the first `tailarr`
-on `PATH` when writable (replacing a legacy install), else `/usr/local/bin`,
-else `~/.local/bin`. Re-running it upgrades an existing install.
+The script detects your OS and architecture.
+It downloads the matching release asset.
+It verifies `SHA256SUMS`.
+It then installs `tailarr` in this order:
+
+- The directory of the first `tailarr` on `PATH`, if that directory is writable
+  (this replaces a legacy install)
+- `/usr/local/bin`
+- `~/.local/bin`
+
+Run the script again to upgrade an existing install.
 
 Then:
 
@@ -37,13 +44,19 @@ Then:
 tailarr    # interactive TUI (requires a TTY)
 ```
 
-If you see a Python-style `usage: tailarr [-h]` or a "Packet Wizard" TUI
-instead, another older `tailarr` is earlier on your `PATH` (often
-`~/.local/bin/tailarr` ahead of `/usr/local/bin/tailarr`). Check with
-`type -a tailarr`. The installer replaces the first `tailarr` on `PATH` when
-its directory is writable, so re-running the one-liner upgrades the binary you
-actually invoke. To retire a legacy install and invoke the Go binary by full
-path:
+If you see a Python-style `usage: tailarr [-h]`, another `tailarr` is first on
+your `PATH`.
+If you see a "Packet Wizard" TUI, the same problem applies.
+The older binary is often `~/.local/bin/tailarr`, ahead of
+`/usr/local/bin/tailarr`.
+Check with `type -a tailarr`.
+
+The installer replaces the first `tailarr` on `PATH` when that directory is
+writable.
+Run the one-liner again to upgrade the binary that you invoke.
+
+To retire a legacy install, move it aside.
+Then run the Go binary by full path:
 
 ```bash
 mv ~/.local/bin/tailarr ~/.local/bin/tailarr.legacy
@@ -53,22 +66,24 @@ hash -r
 
 ## Upgrade
 
-Re-run the install one-liner from [Quick start](#quick-start); it replaces an
-existing install in place.
+Run the install one-liner again. See [Quick start](#quick-start).
+The script replaces an existing install in place.
 
-Release-binary installs can also self-upgrade from the TUI. **Maintenance >
-Upgrade Tailarr** checks GitHub for a newer release (SemVer comparison),
-verifies the release asset's SHA256 against the published `SHA256SUMS`, then
-atomically replaces the running binary. Installs from `go install` are not
-upgraded in place; rebuild instead (see
-[Other install methods](#other-install-methods)).
+A release-binary install can also upgrade from the TUI.
+Open **Maintenance > Upgrade Tailarr**.
+Tailarr checks GitHub for a newer release (SemVer).
+It verifies the release asset SHA256 against the published `SHA256SUMS`.
+It then replaces the running binary with an atomic write.
+
+`go install` builds do not upgrade in place.
+Rebuild them. See [Other install methods](#other-install-methods).
 
 ## Other install methods
 
 ### Manual release binary
 
-Download a release asset for your OS/arch from
-[releases](https://github.com/jackspiering/tailarr/releases), then:
+Download a release asset for your OS and architecture from
+[releases](https://github.com/jackspiering/tailarr/releases). Then:
 
 ```bash
 chmod +x tailarr-linux-amd64   # example
@@ -94,25 +109,25 @@ go build -o bin/tailarr ./cmd/tailarr
 
 ## Requirements
 
-- Interactive TUI: needs a terminal; the binary refuses to run without a TTY.
-- Deploy and lifecycle operations: Docker with Compose (Docker Compose v2);
-  **Maintenance > Run doctor checks** verifies host, paths, and
-  Docker/Compose reachability.
-- No root required: `INSTALL_DIR` overrides the install location (see
-  [Quick start](#quick-start)).
+- The TUI needs a terminal. Tailarr does not run without a TTY.
+- Deploy and lifecycle actions need Docker with Compose v2.
+  **Maintenance > Run doctor checks** verifies the host, paths, and
+  Docker/Compose.
+- Root is not required. Set `INSTALL_DIR` to choose the install path.
+  See [Quick start](#quick-start).
 
 ## Features
 
 | Area | Description |
 | --- | --- |
-| Catalog | Lists ScaleTail services with `compose.yaml`, `compose.yml`, `docker-compose.yml`, or `docker-compose.yaml` plus `.env` |
-| Lifecycle | Deploy, update, stop, restart, repair, remove (Compose-backed, confirmations, backups) |
-| Auth keys | Named `TS_AUTHKEY` store (add/rename/replace/remove, mode `600`, redacted listings) |
-| Status | Overview, deployed services, running services, Docker and config summary |
-| Deploy env | Interactive prompts for empty/placeholder env values; reusable stored keys for multi-service deploys |
-| Safety | Name checks, symlink refusal, backups, mode-600 secrets, path bounds, ownership-bound locks |
-| Doctor | Host, paths, Docker/Compose reachability |
-| UI | Hierarchical TUI menus (Status / Services / Tailscale Authentication Keys / Configuration / Maintenance); multi-select batch ops |
+| Catalog | Lists ScaleTail services that have a Compose file and a `.env` file. Names: `compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml`. |
+| Lifecycle | Deploy, update, stop, restart, repair, and remove. Compose runs the actions. Tailarr asks for confirmation. It makes backups. |
+| Auth keys | A named `TS_AUTHKEY` store. You can add, rename, replace, or remove a key. The file mode is `600`. Listings are redacted. |
+| Status | Shows deployed services, running services, Docker, and config. |
+| Deploy env | Tailarr prompts for empty or placeholder env values. You can reuse a stored auth key on more than one service. |
+| Safety | Includes name checks, symlink refusal, backups, mode-600 secrets, path bounds, and ownership-bound locks. |
+| Doctor | Checks the host, paths, and Docker/Compose reachability. |
+| UI | Menus: Status, Services, Tailscale Authentication Keys, Configuration, Maintenance. You can multi-select for batch deploy and lifecycle actions. |
 
 ## Usage
 
@@ -120,30 +135,55 @@ go build -o bin/tailarr ./cmd/tailarr
 tailarr
 ```
 
-Tailarr is a TUI-only application: run it inside a terminal. Without a TTY it
-prints `Tailarr is interactive; run inside a terminal.` to stderr and exits 1.
+Tailarr is a TUI-only program. Run it inside a terminal.
+Without a TTY, Tailarr prints
+`Tailarr is interactive; run inside a terminal.`
+to stderr.
+It then exits 1.
 
-Main menu: **Status**, **Services**, **Tailscale Authentication Keys**,
-**Configuration**, **Maintenance**. Arrow keys move, Enter selects, `q` or Esc
-backs out or quits. Number keys jump to items. Multi-select deploy and
-lifecycle actions use space to toggle, `a` for all, then Run.
+Main menu:
+
+- **Status**
+- **Services**
+- **Tailscale Authentication Keys**
+- **Configuration**
+- **Maintenance**
+
+Keys:
+
+- Arrow keys move.
+- Enter selects.
+- `q` or Esc goes back or quits.
+- Number keys jump to an item.
+
+For multi-select deploy and lifecycle actions:
+
+- Space toggles a row.
+- `a` selects all.
+- Run starts the action.
+
+Catalog and maintenance:
 
 - **Services > Search available services** lists the ScaleTail catalog.
 - **Services > Refresh catalog** clones or pulls the ScaleTail templates.
-- **Maintenance > Run doctor checks** verifies host, paths, and
-  Docker/Compose reachability.
-- **Maintenance > Upgrade Tailarr** self-upgrades a release binary.
+- **Maintenance > Run doctor checks** verifies the host, paths, and
+  Docker/Compose.
+- **Maintenance > Upgrade Tailarr** upgrades a release binary.
 
-On first run, when no config file exists, Tailarr offers to create one from
-defaults and optionally edit it.
+On first run, Tailarr offers to create a config file if none exists.
+You can edit that file before you continue.
 
 ## Configuration
 
 <details>
 <summary>Paths, environment variables, permissions</summary>
 
-Config is plain text (`KEY=VALUE`). The parser reads lines; it never shells
-or evaluates the file. Conventional default paths:
+Config is plain text (`KEY=VALUE`).
+The parser reads lines.
+It never runs a shell.
+It never evaluates the file.
+
+Default paths:
 
 | Path | Default |
 | --- | --- |
@@ -165,19 +205,28 @@ or evaluates the file. Conventional default paths:
 | `TAILARR_LOG_MAX_BYTES` | Log rotation size (default `5242880`, 5 MiB) |
 | `TAILARR_ASSUME_YES` | `1` = auto-confirm default-yes prompts |
 
-Precedence: defaults, then config file, then environment.
+Precedence, from lowest to highest:
+
+1. Built-in defaults
+2. Config file
+3. Environment
 
 On first real deploy, create the directories under `/opt/tailarr` and
-`/opt/docker/stacks`, or override the paths above.
+`/opt/docker/stacks`.
+Or set the path overrides above.
 
-Safety notes:
+Safety:
 
-- Service names: `^[A-Za-z0-9][A-Za-z0-9_.-]*$` without `..`
-- Refuse symlink config/auth/deploy/template write boundaries
-- Atomic writes for config, auth keys, and `.env` (secrets mode `600`)
-- Backups before destructive replace/repair/remove
-- Ownership-bound per-service locks and a repo lock for git refresh
-- ScaleTail clone is **trusted input** (Compose runs on your host)
+- A service name must match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`.
+- A service name must not contain `..`.
+- Tailarr refuses a write that crosses a symlink at a config, auth, deploy, or
+  template boundary.
+- Tailarr writes config, auth keys, and `.env` files atomically.
+- Secret files use mode `600`.
+- Tailarr makes a backup before replace, repair, or remove.
+- Each service has an ownership-bound lock.
+- Git refresh uses a repo lock.
+- Treat the ScaleTail clone as trusted input. Compose runs on your host.
 
 </details>
 
