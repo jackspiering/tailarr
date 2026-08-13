@@ -51,6 +51,44 @@ and run `rumdl check .` as shown.
 
 Optional: `golangci-lint run` (version pinned in CI, includes staticcheck and gofmt checks).
 
+## Releases
+
+Releases are cut from `main` only after the release change has been reviewed and
+merged. Release metadata must agree before the tag is created:
+
+- `internal/version/version.go` contains the release version.
+- The README version badge and `CHANGELOG.md` entry use that version.
+- `scripts/install.sh` has the matching installer fallback version.
+
+Use a strict SemVer tag in one of these forms: `vMAJOR.MINOR.PATCH`,
+`vMAJOR.MINOR.PATCH-PRERELEASE`, `vMAJOR.MINOR.PATCH+BUILD`, or
+`vMAJOR.MINOR.PATCH-PRERELEASE+BUILD`. Suffix identifiers are dot-separated
+ASCII alphanumerics or hyphens; numeric prerelease identifiers must not have
+leading zeroes. Do not use other tag names or a `v`-less version.
+
+The tag must name a commit already reachable from the default branch (`main`),
+not an unmerged branch commit. Creating or pushing a release tag is a separate
+operation from creating or publishing a GitHub release. An AI coding agent must
+not create or push a tag, dispatch a release, or publish a release without
+explicit approval from the repository owner for that action.
+
+After an approved tag is pushed, the release workflow runs the full repository
+CI gates before publication. Its verification job builds and checks the
+platform binaries, checksums, release metadata, installer fallback, and
+extracted release notes, then uploads one bundle containing the validated
+artifacts and notes. The publication job downloads that bundle, creates the
+provenance attestations for the release assets, and, after the protected
+`release` environment gate, creates a draft GitHub release. A human must review
+the draft assets, notes, checksums, and attestations, then manually publish the
+draft.
+
+The `release` environment and its required reviewers are repository
+configuration: an owner must create or select `release` in Settings >
+Environments and configure required reviewers (and any other protection rules)
+there. Referencing an environment in workflow YAML does not create reviewers
+or protection rules. Keep the release draft until that human review is
+complete; do not treat a successful tag workflow as permission to publish.
+
 ## Project layout
 
 See [AGENTS.md](AGENTS.md).

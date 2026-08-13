@@ -56,6 +56,39 @@ Module path: `github.com/jackspiering/tailarr`.
 - Override at build: `-ldflags "-X github.com/jackspiering/tailarr/internal/version.Version=X.Y.Z"`.
 - Keep README version badge (when present) and CHANGELOG in sync for releases.
 
+## Release safety
+
+Release tags use strict SemVer with a leading `v`: `vMAJOR.MINOR.PATCH`,
+optionally followed by a standard SemVer prerelease suffix, build suffix, or
+both (`-PRERELEASE`, `+BUILD`, or `-PRERELEASE+BUILD`). Suffix identifiers are
+dot-separated ASCII alphanumerics or hyphens, and numeric prerelease
+identifiers cannot have leading zeroes. No other tag names are supported.
+
+The tagged commit must already be merged into and reachable from the default
+branch, `main`. Do not tag a feature branch, an unmerged commit, or a commit
+that merely appears in a pull request. Tag creation/push and GitHub release
+creation/publication are different operations. The safe default for an AI
+coding agent is read-only: prepare the metadata and a pull request, but never
+create or push a release tag, dispatch the release workflow, approve its
+environment, or publish a release. Each such action requires explicit owner
+approval; approval to create a tag does not by itself approve publication.
+
+Before a tag is approved, check that `internal/version/version.go`, the README
+version badge, `CHANGELOG.md`, and the `scripts/install.sh` fallback all carry
+the intended version. The release workflow then runs the full repository CI
+gates, verifies the binaries and release notes, and uploads a bundle containing
+the validated assets and notes. Its publication job downloads that bundle,
+expects SHA256 checksums and provenance attestations for release assets, and,
+after the protected `release` environment gate, creates a draft release. A
+human must review the draft and manually publish it only after that review.
+
+The protected `release` environment is configured in repository Settings, not
+created by workflow YAML. An owner must create/select that environment and set
+required reviewers and any other protection rules there. The workflow's
+environment reference only invokes those repository protections; it cannot
+invent the reviewer list. See [CONTRIBUTING.md](CONTRIBUTING.md#releases) for
+the step-by-step release procedure.
+
 ## Testing
 
 ```bash
