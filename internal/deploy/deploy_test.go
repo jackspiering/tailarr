@@ -496,6 +496,52 @@ func TestRepairRestoresComposeOnUpFailure(t *testing.T) {
 	}
 }
 
+func TestRepairRemovesStaleComposeFile(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+
+	// Template now ships only compose.yml.
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(tpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing managed deployment still carries the old compose.yaml.
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte("services:\n  app:\n    image: old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "compose.yaml")); !os.IsNotExist(err) {
+		t.Fatal("stale compose.yaml should be removed by repair")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
+	if err != nil || !strings.Contains(string(data), "image: new") {
+		t.Fatalf("template compose.yml not installed: %v %q", err, data)
+	}
+}
+
 func TestContainerMatchesService(t *testing.T) {
 	if !containerMatchesService("app-web", "", "web") {
 		t.Fatal("app-web should match web")

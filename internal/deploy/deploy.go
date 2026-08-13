@@ -92,7 +92,9 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
 		}
-		if found, err := paths.ContainsSymlinks(dest); err == nil && found != "" {
+		if found, err := paths.ContainsSymlinks(dest); err != nil {
+			return fmt.Errorf("deployment: %w", err)
+		} else if found != "" {
 			return fmt.Errorf("%w: deployment contains unsupported symlink: %s", ErrSymlink, found)
 		}
 		if !IsManaged(dest) {
@@ -441,6 +443,22 @@ func (m *Manager) Repair(service string) error {
 	}
 
 	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
+	// Remove stale compose candidates that the template no longer ships. An
+	// old compose.yaml left in dest would otherwise shadow a newer
+	// compose.yml (ComposeFileIn prefers compose.yaml) and `up` would keep
+	// running the old stack. The backup taken above restores these files if
+	// the repair later fails.
+	for _, name := range scaletail.ComposeCandidates {
+		if _, err := os.Stat(filepath.Join(templateDir, name)); err == nil {
+			continue
+		}
+		stale := filepath.Join(dest, name)
+		if st, err := os.Lstat(stale); err == nil && !st.IsDir() && !paths.IsSymlink(stale) {
+			if err := os.Remove(stale); err != nil {
+				return fmt.Errorf("remove stale compose file %s: %w", name, err)
+			}
+		}
+	}
 	for _, name := range scaletail.ComposeCandidates {
 		src := filepath.Join(templateDir, name)
 		if st, err := os.Stat(src); err == nil && !st.IsDir() && !paths.IsSymlink(src) {
