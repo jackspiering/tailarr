@@ -89,6 +89,12 @@ there. Referencing an environment in workflow YAML does not create reviewers
 or protection rules. Keep the release draft until that human review is
 complete; do not treat a successful tag workflow as permission to publish.
 
+## Documentation
+
+Write `README.md` in ASD-STE100 Simplified Technical English and follow
+Zinsser's four principles: simplicity, brevity, clarity, and humanity.
+The full rule is [.grok/rules/readme-writing.md](.grok/rules/readme-writing.md).
+
 ## Project layout
 
 See [AGENTS.md](AGENTS.md).
