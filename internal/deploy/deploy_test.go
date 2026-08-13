@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -159,6 +160,52 @@ func TestAcquireLockReclaimsDeadPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = l.Release()
+}
+
+func TestAcquireLockReclaimsReusedPID(t *testing.T) {
+	// PID reuse: the recorded owner PID is alive but belongs to an unrelated
+	// process, so the flock-verified free lock must be reclaimable. Requires
+	// /proc/<pid>/comm (Linux).
+	if runtime.GOOS != "linux" {
+		t.Skip("pid/comm detection is Linux-only; other platforms stay conservative")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nreused-token\n", cmd.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Release()
+}
+
+func TestAcquireLockKeepsLiveTailarrOwner(t *testing.T) {
+	// The test binary itself stands in for a live Tailarr process: its comm
+	// matches os.Executable(), so the lock must not be stolen.
+	if runtime.GOOS != "linux" {
+		t.Skip("pid/comm detection is Linux-only; other platforms stay conservative")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nlive-token\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireLock(path, time.Second); err == nil {
+		t.Fatal("live Tailarr owner lock must not be stolen")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("lock file should remain")
+	}
 }
 
 func TestStaleLockReclaimedForDeadPID(t *testing.T) {

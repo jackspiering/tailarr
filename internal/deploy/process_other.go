@@ -8,3 +8,9 @@ import "os"
 func processAliveSignal(p *os.Process) bool {
 	return p != nil
 }
+
+// processIsTailarr conservatively treats every live owner as a Tailarr
+// process on non-Unix platforms so a live lock holder is never evicted.
+func processIsTailarr(pid int) bool {
+	return true
+}
