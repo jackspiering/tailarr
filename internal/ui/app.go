@@ -304,6 +304,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.goBack(), nil
 			}
 			n := int(msg.String()[0] - '0')
+			if m.screen == screenMultiSelect {
+				// Digits index the option list; activating an option toggles
+				// it (same as space).
+				if n >= 1 && n <= len(m.opts) {
+					m.cursor = n - 1
+					return m.activate()
+				}
+				return m, nil
+			}
 			if n >= 1 && n <= len(m.items) {
 				m.cursor = n - 1
 				return m.activate()
