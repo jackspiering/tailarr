@@ -6,32 +6,125 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to build (e.g. v0.3.0). Must exist on the remote; that commit is built and released.
+        description: Release tag to verify and publish as a draft (for example, v0.4.0)
         required: true
         type: string
 
+# Verification is deliberately read-only. The publish job grants the minimum
+# write permissions only after every verification gate has succeeded.
 permissions:
-  contents: write
+  contents: read
+
+env:
+  # Keep these tool versions in sync with the CI workflow.
+  GO_VERSION: "1.26.5"
+  GOLANGCI_LINT_VERSION: v2.12.2
+  RUMDL_VERSION: "0.2.54"
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  # Dispatch uses its requested tag; tag pushes use the effective ref name.
+  # Never cancel an active publication.
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    name: Release ${{ inputs.tag || github.ref_name }}
+  verify:
+    name: Verify ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.release-context.outputs.release_tag }}
+      version: ${{ steps.release-context.outputs.version }}
     env:
-      # Tag push: the pushed tag. Dispatch: the operator-provided tag (never the branch name).
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+
     steps:
-      - name: Checkout
+      - name: Validate release tag
+        id: release-context
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: release tag validation failed at line $LINENO" >&2' ERR
+
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            echo "error: release tag is empty" >&2
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "push" && "$EVENT_REF" != "refs/tags/$tag" ]]; then
+            echo "error: push ref $EVENT_REF is not the requested tag $tag" >&2
+            exit 1
+          fi
+          if ! git check-ref-format "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "error: release tag is not a valid Git tag: $tag" >&2
+            exit 1
+          fi
+          # vMAJOR.MINOR.PATCH with optional standard SemVer prerelease/build metadata.
+          # Numeric prerelease identifiers may not contain leading zeroes.
+          # Reject this input before writing either GITHUB_OUTPUT or GITHUB_ENV.
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          if [[ ! "$tag" =~ $semver ]]; then
+            echo "error: release tag must be strict SemVer with a v prefix: $tag" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          printf 'release_tag=%s\nversion=%s\n' "$tag" "$version" >> "$GITHUB_OUTPUT"
+          printf 'RELEASE_TAG=%s\nVERSION=%s\n' "$tag" "$version" >> "$GITHUB_ENV"
+
+      - name: Checkout tagged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ steps.release-context.outputs.release_tag }}
+          persist-credentials: false
+
+      - name: Verify tag and default-branch provenance
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: tag provenance verification failed at line $LINENO" >&2' ERR
+
+          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            echo "error: remote tag $RELEASE_TAG was not checked out" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          checked_commit=$(git rev-parse HEAD)
+          if [[ "$tag_commit" != "$checked_commit" ]]; then
+            echo "error: checkout $checked_commit does not match tag $RELEASE_TAG target $tag_commit" >&2
+            exit 1
+          fi
+
+          default_branch=$(gh api "repos/$GH_REPO" --jq '.default_branch')
+          if [[ -z "$default_branch" ]] || ! git check-ref-format --branch "$default_branch" >/dev/null 2>&1; then
+            echo "error: repository returned an invalid default branch: $default_branch" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "refs/heads/$default_branch:refs/remotes/origin/$default_branch"
+          default_ref="refs/remotes/origin/$default_branch"
+          if ! git show-ref --verify --quiet "$default_ref"; then
+            echo "error: could not fetch default branch $default_branch" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" "$default_ref"; then
+            echo "error: tag $RELEASE_TAG ($tag_commit) is not reachable from $default_branch" >&2
+            exit 1
+          fi
+
+      - name: Markdown lint (rumdl)
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: rumdl failed at line $LINENO" >&2' ERR
+          python3 -m venv /tmp/rumdl
+          /tmp/rumdl/bin/pip install --quiet "rumdl==$RUMDL_VERSION"
+          /tmp/rumdl/bin/rumdl check .
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -39,68 +132,242 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Derive version
-        id: version
+      - name: Download modules
         run: |
-          version="${RELEASE_TAG#v}"
-          if [ -z "$version" ]; then
-            echo "error: cannot derive version from RELEASE_TAG=$RELEASE_TAG" >&2
+          set -Eeuo pipefail
+          trap 'echo "error: Go module download failed at line $LINENO" >&2' ERR
+          go mod download
+
+      - name: gofmt
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: gofmt gate failed at line $LINENO" >&2' ERR
+          unformatted=$(gofmt -l .)
+          if [[ -n "$unformatted" ]]; then
+            echo "error: gofmt needed on:" >&2
+            printf '%s\n' "$unformatted" >&2
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_ENV"
 
-      - name: Build assets
+      - name: go vet
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: go vet gate failed at line $LINENO" >&2' ERR
+          go vet ./...
+
+      - name: go test (race and integration)
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: race/integration test gate failed at line $LINENO" >&2' ERR
+          go test -race -tags integration ./...
+
+      - name: go mod tidy check
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: go mod tidy check failed at line $LINENO" >&2' ERR
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+          # git diff omits untracked files; also reject a newly-created go.sum.
+          test -z "$(git status --porcelain -- go.mod go.sum)"
+
+      - name: govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-input: ${{ env.GO_VERSION }}
+          go-package: ./...
+          repo-checkout: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m
+
+      - name: Verify release metadata and extract notes
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: release metadata verification failed at line $LINENO" >&2' ERR
+          python3 - "$VERSION" <<'PY'
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          readme = Path("README.md").read_text(encoding="utf-8")
+          version_go = Path("internal/version/version.go").read_text(encoding="utf-8")
+          installer = Path("scripts/install.sh").read_text(encoding="utf-8")
+
+          def outside_fence_lines(lines):
+              in_fence = False
+              fence_char = ""
+              fence_length = 0
+              for line in lines:
+                  match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+                  if match:
+                      marker = match.group(1)
+                      if not in_fence:
+                          in_fence = True
+                          fence_char = marker[0]
+                          fence_length = len(marker)
+                      elif marker[0] == fence_char and len(marker) >= fence_length:
+                          in_fence = False
+                      yield line, not in_fence
+                  else:
+                      yield line, not in_fence
+
+          escaped = re.escape(version)
+          heading_re = re.compile(rf"^## \[{escaped}\](?: - [0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})?$")
+          link_re = re.compile(rf"^\[{escaped}\]:\s+(\S+)\s*$")
+          visible = list(outside_fence_lines(changelog))
+          headings = [i for i, (line, outside) in enumerate(visible) if outside and heading_re.fullmatch(line)]
+          links = [line for line, outside in visible if outside and link_re.fullmatch(line)]
+          if len(headings) != 1:
+              raise SystemExit(f"error: expected exactly one CHANGELOG heading for [{version}], found {len(headings)}")
+          if len(links) != 1:
+              raise SystemExit(f"error: expected exactly one CHANGELOG link for [{version}], found {len(links)}")
+
+          start = headings[0] + 1
+          notes = []
+          in_fence = False
+          fence_char = ""
+          fence_length = 0
+          for line in changelog[start:]:
+              match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+              if match:
+                  marker = match.group(1)
+                  if not in_fence:
+                      in_fence = True
+                      fence_char = marker[0]
+                      fence_length = len(marker)
+                  elif marker[0] == fence_char and len(marker) >= fence_length:
+                      in_fence = False
+              if not in_fence and re.match(r"^## ", line):
+                  break
+              notes.append(line)
+          notes_text = "\n".join(notes).strip()
+          if not notes_text:
+              raise SystemExit(f"error: release notes for [{version}] are empty or whitespace-only")
+          Path("release-notes.md").write_text(notes_text + "\n", encoding="utf-8")
+
+          declarations = re.findall(r'^var Version = "([^"]+)"\s*$', version_go, re.MULTILINE)
+          if declarations != [version]:
+              raise SystemExit(f"error: internal/version/version.go must declare Version exactly once as {version!r}")
+
+          badges = re.findall(r"https://img\.shields\.io/badge/version-([^)]*)-informational", readme)
+          if badges != [version]:
+              raise SystemExit(f"error: README must contain exactly one version badge for {version}")
+
+          defaults = re.findall(r'^DEFAULT_VERSION="([^"]+)"\s*$', installer, re.MULTILINE)
+          if defaults != [f"v{version}"]:
+              raise SystemExit(f"error: scripts/install.sh DEFAULT_VERSION must be exactly v{version}")
+          subprocess.run(["sh", "-n", "scripts/install.sh"], check=True)
+          PY
+
+      - name: Build release assets
         env:
           CGO_ENABLED: "0"
         run: |
-          mkdir -p dist
+          set -Eeuo pipefail
+          trap 'echo "error: release asset build failed at line $LINENO" >&2' ERR
+          rm -rf dist release-bundle
+          mkdir -p dist release-bundle
           for goos in linux darwin; do
             for goarch in amd64 arm64; do
-              GOOS=$goos GOARCH=$goarch go build -trimpath \
-                -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=$version" \
+              GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+                -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=$VERSION" \
                 -o "dist/tailarr-$goos-$goarch" ./cmd/tailarr
             done
           done
+          cp scripts/install.sh dist/install.sh
+          chmod 0755 dist/install.sh
           (cd dist && sha256sum tailarr-* > SHA256SUMS)
-          ls -la dist/
 
-      - name: Verify built binaries
+      - name: Verify release assets
         run: |
-          # TUI-only binary refuses non-TTY runs; that refusal is the identity probe.
-          out=$(dist/tailarr-linux-amd64 </dev/null 2>&1 || true)
-          case "$out" in
-          *"Tailarr is interactive"*) ;;
-          *) echo "unexpected output: $out"; exit 1 ;;
-          esac
-          # Every binary must embed the injected Version (-X on a wrong symbol path
-          # fails silently) and record the tagged commit in its build info.
-          rev=$(git rev-parse HEAD)
-          for bin in dist/tailarr-*; do
-            go version -m "$bin" | grep -F "vcs.revision=${rev}" >/dev/null || { echo "build info mismatch in $bin"; exit 1; }
-            strings "$bin" | grep -Fxq "$version" || { echo "version $version missing from $bin"; exit 1; }
-            file "$bin"
+          set -Eeuo pipefail
+          trap 'echo "error: release asset verification failed at line $LINENO" >&2' ERR
+          expected_revision=$(git rev-parse HEAD)
+          expected_targets=(linux-amd64 linux-arm64 darwin-amd64 darwin-arm64)
+          for target in "${expected_targets[@]}"; do
+            bin="dist/tailarr-$target"
+            test -f "$bin" || { echo "error: missing binary $bin" >&2; exit 1; }
+            test -x "$bin" || { echo "error: binary is not executable: $bin" >&2; exit 1; }
+            go version -m "$bin" | grep -F "vcs.revision=$expected_revision" >/dev/null || {
+              echo "error: build revision mismatch in $bin" >&2
+              exit 1
+            }
+            strings -a "$bin" | grep -F -q "$VERSION" || {
+              echo "error: build version $VERSION missing from $bin" >&2
+              exit 1
+            }
+            kind=$(file -b "$bin")
+            case "$target" in
+              linux-*) [[ "$kind" == ELF* ]] || { echo "error: $bin is not an ELF binary: $kind" >&2; exit 1; } ;;
+              darwin-*) [[ "$kind" == Mach-O* ]] || { echo "error: $bin is not a Mach-O binary: $kind" >&2; exit 1; } ;;
+            esac
           done
+          (cd dist && sha256sum -c SHA256SUMS)
+          test -s dist/install.sh
+          test -s release-notes.md
+          cp dist/tailarr-* dist/SHA256SUMS dist/install.sh release-notes.md release-bundle/
 
-      - name: Verify release metadata
-        run: |
-          grep -qE "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no section for [$version]"; exit 1; }
-          grep -q "Version = \"$version\"" internal/version/version.go || { echo "internal/version/version.go does not declare Version $version"; exit 1; }
-          grep -q "version-$version-informational" README.md || { echo "README version badge is not $version"; exit 1; }
+      - name: Upload verified release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle
+          path: release-bundle
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Extract release notes
-        id: notes
-        run: |
-          start=$(grep -nE "^## \[$version\]" CHANGELOG.md | cut -d: -f1 | head -1)
-          test -n "$start" || { echo "CHANGELOG.md has no section for [$version]"; exit 1; }
-          tail -n +"$start" CHANGELOG.md | awk 'NR == 1 { next } /^## / { exit } { print }' > /tmp/release-notes.md
-          test -s /tmp/release-notes.md || { echo "no notes extracted for [$version]"; exit 1; }
+  publish:
+    name: Publish draft ${{ needs.verify.outputs.release_tag }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: release
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
 
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: release-bundle
+
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-bundle/tailarr-*
+            release-bundle/SHA256SUMS
+            release-bundle/install.sh
+
+      - name: Create draft GitHub release
         run: |
+          set -Eeuo pipefail
+          trap 'echo "error: draft release publication failed at line $LINENO" >&2' ERR
+          for asset in release-bundle/tailarr-* release-bundle/SHA256SUMS release-bundle/install.sh; do
+            test -f "$asset" || { echo "error: verified release asset is missing: $asset" >&2; exit 1; }
+          done
+          test -s release-bundle/release-notes.md || {
+            echo "error: verified release notes are missing or empty" >&2
+            exit 1
+          }
           gh release create "$RELEASE_TAG" \
-            dist/tailarr-* dist/SHA256SUMS scripts/install.sh \
+            release-bundle/tailarr-* release-bundle/SHA256SUMS release-bundle/install.sh \
+            --repo "$GH_REPO" \
             --title "$RELEASE_TAG" \
-            --notes-file /tmp/release-notes.md \
-            --verify-tag
+            --notes-file release-bundle/release-notes.md \
+            --verify-tag \
+            --draft
