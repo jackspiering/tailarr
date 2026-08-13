@@ -262,6 +262,14 @@ func RestorePersistentData(backupPath, servicePath string) error {
 			}
 			continue
 		}
+		// A file the fresh template already ships is template material, not
+		// persistent data: keep the fresh copy instead of reverting it to
+		// the old deployment's version.
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 		info, err := e.Info()
 		if err != nil {
 			return err

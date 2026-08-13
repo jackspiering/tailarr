@@ -140,7 +140,9 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 			return fmt.Errorf("deploy failed; previous deployment restored: %w", err)
 		}
 		// Partial fresh deploy: clean up dest if we created it.
-		_ = safeRemoveTree(dest, m.Cfg.DeployPath)
+		if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
+			m.log("warning: could not remove partial deployment %s: %v", dest, err)
+		}
 		return err
 	}
 	m.log("deployed service %s", service)

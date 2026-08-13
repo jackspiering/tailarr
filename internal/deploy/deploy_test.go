@@ -542,6 +542,48 @@ func TestRepairRemovesStaleComposeFile(t *testing.T) {
 	}
 }
 
+func TestRestorePersistentDataKeepsFreshTemplateFiles(t *testing.T) {
+	backup := t.TempDir()
+	fresh := t.TempDir()
+	// Template ships an updated .env.example; the old deployment's copy is stale.
+	if err := os.WriteFile(filepath.Join(backup, ".env.example"), []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fresh, ".env.example"), []byte("NEW"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Operator-created top-level data file not shipped by the template.
+	if err := os.WriteFile(filepath.Join(backup, "custom.txt"), []byte("KEEP"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Data directory contents must still win over the fresh template.
+	if err := os.MkdirAll(filepath.Join(backup, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(fresh, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "data", "db"), []byte("BACKUP"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fresh, "data", "db"), []byte("TEMPLATE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestorePersistentData(backup, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh, ".env.example")); err != nil || string(data) != "NEW" {
+		t.Fatalf("fresh template file was reverted: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh, "custom.txt")); err != nil || string(data) != "KEEP" {
+		t.Fatalf("operator file not restored: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh, "data", "db")); err != nil || string(data) != "BACKUP" {
+		t.Fatalf("data directory not restored: %v %q", err, data)
+	}
+}
+
 func TestContainerMatchesService(t *testing.T) {
 	if !containerMatchesService("app-web", "", "web") {
 		t.Fatal("app-web should match web")
