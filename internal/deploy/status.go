@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -67,7 +68,9 @@ func RunningServiceNames() ([]string, error) {
 	if !DockerOK() {
 		return nil, nil
 	}
-	cmd := exec.Command("docker", "ps", "--format", "{{.Names}}")
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "ps", "--format", "{{.Names}}")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -121,7 +124,9 @@ func ServiceHealthMap(services []string) map[string]Health {
 	// Do not use --filter name=: Docker treats it as a substring, so "web"
 	// would include "web-ui". Match the tailarr.service label or an exact
 	// app-/tailscale- container name.
-	cmd := exec.Command("docker", "ps", "-a",
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-a",
 		"--format", `{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "tailarr.service"}}`)
 	raw, err := cmd.Output()
 	if err != nil {

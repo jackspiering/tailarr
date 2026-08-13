@@ -426,7 +426,7 @@ func storeAuthkey(path, name, value string) error {
 }
 
 // Repair refreshes template files while preserving local .env secrets.
-func (m *Manager) Repair(service string) error {
+func (m *Manager) Repair(service string) (retErr error) {
 	if err := names.ValidateServiceName(service); err != nil {
 		return err
 	}
@@ -452,8 +452,23 @@ func (m *Manager) Repair(service string) error {
 	if err != nil {
 		return err
 	}
+	restore := true
+	defer func() {
+		if !restore {
+			return
+		}
+		if rerr := restoreRepairFromBackup(backupPath, dest); rerr != nil {
+			retErr = fmt.Errorf("repair failed (%v); also failed to restore compose files from %s: %w", retErr, backupPath, rerr)
+			return
+		}
+		if retErr != nil {
+			m.log("restored previous compose files for %s after failed repair", service)
+			retErr = fmt.Errorf("repair failed; previous compose files restored: %w", retErr)
+		}
+	}()
 
-	// Preserve .env
+	// Keep the current tree backed up until every repair step succeeds. Compose
+	// prefers compose.yaml, so stale candidates must be removed before copying.
 	envPath := filepath.Join(dest, ".env")
 	var envBackup []byte
 	if data, err := os.ReadFile(envPath); err == nil {
@@ -461,38 +476,46 @@ func (m *Manager) Repair(service string) error {
 	}
 
 	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
-	// Remove stale compose candidates that the template no longer ships. An
-	// old compose.yaml left in dest would otherwise shadow a newer
-	// compose.yml (ComposeFileIn prefers compose.yaml) and `up` would keep
-	// running the old stack. The backup taken above restores these files if
-	// the repair later fails. Only prune when the template actually ships a
-	// compose file so a missing template cannot wipe the deployment.
+	templateCandidates := make(map[string]bool, len(scaletail.ComposeCandidates))
 	hasTemplate := false
 	for _, name := range scaletail.ComposeCandidates {
-		if st, err := os.Stat(filepath.Join(templateDir, name)); err == nil && !st.IsDir() && !paths.IsSymlink(filepath.Join(templateDir, name)) {
-			hasTemplate = true
-			break
+		usable, err := repairComposeCandidate(filepath.Join(templateDir, name))
+		if err != nil {
+			return fmt.Errorf("inspect template compose file %s: %w", name, err)
 		}
+		templateCandidates[name] = usable
+		hasTemplate = hasTemplate || usable
 	}
 	if hasTemplate {
 		for _, name := range scaletail.ComposeCandidates {
-			if _, err := os.Stat(filepath.Join(templateDir, name)); err == nil {
+			if templateCandidates[name] {
 				continue
 			}
 			stale := filepath.Join(dest, name)
-			if st, err := os.Lstat(stale); err == nil && !st.IsDir() && !paths.IsSymlink(stale) {
-				if err := os.Remove(stale); err != nil {
-					return fmt.Errorf("remove stale compose file %s: %w", name, err)
-				}
+			st, err := os.Lstat(stale)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("inspect stale compose file %s: %w", name, err)
+			}
+			if st.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%w: stale compose file is a symlink: %s", ErrSymlink, stale)
+			}
+			if st.IsDir() {
+				continue
+			}
+			if err := os.Remove(stale); err != nil {
+				return fmt.Errorf("remove stale compose file %s: %w", name, err)
 			}
 		}
 	}
 	for _, name := range scaletail.ComposeCandidates {
-		src := filepath.Join(templateDir, name)
-		if st, err := os.Stat(src); err == nil && !st.IsDir() && !paths.IsSymlink(src) {
-			if err := copyFileMode(src, filepath.Join(dest, name), 0o644); err != nil {
-				return err
-			}
+		if !templateCandidates[name] {
+			continue
+		}
+		if err := copyFileMode(filepath.Join(templateDir, name), filepath.Join(dest, name), 0o644); err != nil {
+			return err
 		}
 	}
 	if len(envBackup) > 0 {
@@ -507,34 +530,79 @@ func (m *Manager) Repair(service string) error {
 	upArgs := append(append([]string{}, proj...),
 		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
 	if err := Compose(dest, upArgs...); err != nil {
-		if backupPath != "" {
-			if rerr := restoreRepairFromBackup(backupPath, dest); rerr != nil {
-				return fmt.Errorf("repair failed (%v); also failed to restore compose files from %s: %w", err, backupPath, rerr)
-			}
-			m.log("restored previous compose files for %s after failed repair", service)
-			return fmt.Errorf("repair failed; previous compose files restored: %w", err)
-		}
 		return err
 	}
+	restore = false
 	m.log("repaired service %s", service)
+	return nil
+}
+
+func repairComposeCandidate(path string) (bool, error) {
+	st, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !st.IsDir() && st.Mode()&os.ModeSymlink == 0, nil
+}
+
+func restoreRepairPath(src, dst string) error {
+	srcInfo, err := os.Lstat(src)
+	if os.IsNotExist(err) {
+		srcInfo = nil
+	} else if err != nil {
+		return fmt.Errorf("inspect backup path %s: %w", src, err)
+	} else if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: backup path is a symlink: %s", ErrSymlink, src)
+	}
+
+	dstInfo, err := os.Lstat(dst)
+	if os.IsNotExist(err) {
+		dstInfo = nil
+	} else if err != nil {
+		return fmt.Errorf("inspect restore path %s: %w", dst, err)
+	} else if dstInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: restore path is a symlink: %s", ErrSymlink, dst)
+	}
+	if dstInfo != nil {
+		if dstInfo.IsDir() {
+			found, err := paths.ContainsSymlinks(dst)
+			if err != nil {
+				return err
+			}
+			if found != "" {
+				return fmt.Errorf("%w: restore path contains symlink: %s", ErrSymlink, found)
+			}
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return fmt.Errorf("remove restore path %s: %w", dst, err)
+		}
+	}
+	if srcInfo == nil {
+		return nil
+	}
+	if srcInfo.IsDir() {
+		if err := copyTree(src, dst); err != nil {
+			return fmt.Errorf("restore directory %s: %w", dst, err)
+		}
+		return nil
+	}
+	if err := copyFileMode(src, dst, srcInfo.Mode().Perm()); err != nil {
+		return fmt.Errorf("restore file %s: %w", dst, err)
+	}
 	return nil
 }
 
 func restoreRepairFromBackup(backupPath, dest string) error {
 	for _, name := range scaletail.ComposeCandidates {
-		src := filepath.Join(backupPath, name)
-		if st, err := os.Stat(src); err != nil || st.IsDir() || paths.IsSymlink(src) {
-			continue
-		}
-		if err := copyFileMode(src, filepath.Join(dest, name), 0o644); err != nil {
-			return err
+		if err := restoreRepairPath(filepath.Join(backupPath, name), filepath.Join(dest, name)); err != nil {
+			return fmt.Errorf("restore compose file %s: %w", name, err)
 		}
 	}
-	ov := filepath.Join(backupPath, overrideFilename)
-	if st, err := os.Stat(ov); err == nil && !st.IsDir() && !paths.IsSymlink(ov) {
-		if err := copyFileMode(ov, filepath.Join(dest, overrideFilename), 0o644); err != nil {
-			return err
-		}
+	if err := restoreRepairPath(filepath.Join(backupPath, overrideFilename), filepath.Join(dest, overrideFilename)); err != nil {
+		return fmt.Errorf("restore override: %w", err)
 	}
 	return nil
 }

@@ -217,7 +217,5 @@ func DaemonOK() bool {
 	return cmd.Run() == nil
 }
 
-// probeTimeout bounds doctor readiness probes so a stalled docker command
-// (for example a context pointing at an unreachable host) cannot freeze the
-// TUI indefinitely.
-const probeTimeout = 10 * time.Second
+// probeTimeout bounds Docker probes so a stalled context cannot freeze the TUI.
+var probeTimeout = 10 * time.Second

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/scaletail"
 )
 
 func TestBackupPathForCollision(t *testing.T) {
@@ -542,6 +543,99 @@ func TestRepairRestoresComposeOnUpFailure(t *testing.T) {
 		t.Fatalf("compose not restored: %v %q", err, data)
 	}
 }
+func TestRepairRestoresComposeCandidatesOnUpFailure(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(tpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := "services:\n  app:\n    image: old\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yml"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error {
+		return fmt.Errorf("%w: up failed", ErrComposeFailed)
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err == nil {
+		t.Fatal("expected repair failure")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "compose.yaml")); !os.IsNotExist(err) {
+		t.Fatal("failed repair left newly introduced compose.yaml")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
+	if err != nil || string(data) != old {
+		t.Fatalf("old compose.yml was not restored: %v %q", err, data)
+	}
+	if p, ok := scaletail.ComposeFileIn(dest); !ok || filepath.Base(p) != "compose.yml" {
+		t.Fatalf("rollback selected wrong compose file: %s", p)
+	}
+}
+func TestRepairRestoresAfterCopyFailure(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(tpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(filepath.Join(dest, "compose.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml", "old-marker"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := "services:\n  app:\n    image: old\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yml"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err == nil {
+		t.Fatal("expected compose copy failure")
+	}
+	marker, err := os.ReadFile(filepath.Join(dest, "compose.yaml", "old-marker"))
+	if err != nil || string(marker) != "old\n" {
+		t.Fatalf("old compose directory was not restored: %v %q", err, marker)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
+	if err != nil || string(data) != old {
+		t.Fatalf("old compose.yml was not restored: %v %q", err, data)
+	}
+}
 
 func TestRepairRemovesStaleComposeFile(t *testing.T) {
 	repo := t.TempDir()
@@ -672,6 +766,28 @@ func TestHealthFromOutputUnhealthyWins(t *testing.T) {
 	got := healthFromOutput(raw, []string{"web"})
 	if got["web"] != HealthUnhealthy {
 		t.Fatalf("worst health should win: got %s", got["web"])
+	}
+}
+func TestDockerStatusCommandsTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldTimeout := probeTimeout
+	probeTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { probeTimeout = oldTimeout })
+
+	if _, err := RunningServiceNames(); err == nil {
+		t.Fatal("expected running-service probe timeout")
+	}
+	health := ServiceHealthMap([]string{"web"})
+	if health["web"] != HealthUnknown {
+		t.Fatalf("timed-out health probe = %s", health["web"])
 	}
 }
 
