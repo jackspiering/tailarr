@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -40,16 +41,21 @@ func CollectOverview(deployPath string) (OverviewStats, error) {
 	if err != nil {
 		return st, err
 	}
+	var managedNames []string
 	for _, s := range deployed {
 		st.DeployedNames = append(st.DeployedNames, s.Name)
 		if IsManaged(s.Dir) {
 			st.ManagedCount++
-			st.ManagedHealth[s.Name] = ServiceHealth(s.Name)
+			managedNames = append(managedNames, s.Name)
 		} else {
 			st.OtherCount++
 		}
 	}
 	sort.Strings(st.DeployedNames)
+
+	for name, h := range ServiceHealthMap(managedNames) {
+		st.ManagedHealth[name] = h
+	}
 
 	running, _ := RunningServiceNames()
 	st.RunningNames = running
@@ -62,7 +68,9 @@ func RunningServiceNames() ([]string, error) {
 	if !DockerOK() {
 		return nil, nil
 	}
-	cmd := exec.Command("docker", "ps", "--format", "{{.Names}}")
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "ps", "--format", "{{.Names}}")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -98,21 +106,47 @@ func scaleTailServiceFromContainer(container string) string {
 
 // ServiceHealth returns health for a named ScaleTail-style service.
 func ServiceHealth(service string) Health {
+	return ServiceHealthMap([]string{service})[service]
+}
+
+// ServiceHealthMap returns health for each requested service from a single
+// `docker ps -a` pass. Services with no matching container are "stopped";
+// services whose state cannot be read (for example the daemon is down) are
+// "unknown" so failures are not misreported as a stopped stack.
+func ServiceHealthMap(services []string) map[string]Health {
+	out := make(map[string]Health, len(services))
 	if !DockerOK() {
-		return HealthUnknown
+		for _, s := range services {
+			out[s] = HealthUnknown
+		}
+		return out
 	}
 	// Do not use --filter name=: Docker treats it as a substring, so "web"
 	// would include "web-ui". Match the tailarr.service label or an exact
 	// app-/tailscale- container name.
-	cmd := exec.Command("docker", "ps", "-a",
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-a",
 		"--format", `{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "tailarr.service"}}`)
-	out, err := cmd.Output()
-	if err != nil || len(out) == 0 {
-		return HealthStopped
+	raw, err := cmd.Output()
+	if err != nil {
+		for _, s := range services {
+			out[s] = HealthUnknown
+		}
+		return out
 	}
-	worst := HealthUnknown
-	found := false
-	for _, line := range strings.Split(string(out), "\n") {
+	return healthFromOutput(string(raw), services)
+}
+
+// healthFromOutput parses `docker ps -a` output for the requested services.
+// Separated from ServiceHealthMap so the parser is testable without Docker.
+func healthFromOutput(raw string, services []string) map[string]Health {
+	worst := make(map[string]Health, len(services))
+	for _, s := range services {
+		worst[s] = HealthStopped
+	}
+	set := make(map[string]bool, len(services))
+	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -126,24 +160,29 @@ func ServiceHealth(service string) Health {
 		if len(parts) >= 4 {
 			label = parts[3]
 		}
-		if !containerMatchesService(name, label, service) {
-			continue
-		}
-		found = true
 		state := strings.ToLower(parts[1])
 		status := ""
 		if len(parts) >= 3 {
 			status = strings.ToLower(parts[2])
 		}
 		h := classifyHealth(state, status)
-		if healthRank(h) > healthRank(worst) || worst == HealthUnknown {
-			worst = h
+		for _, service := range services {
+			if !containerMatchesService(name, label, service) {
+				continue
+			}
+			if !set[service] {
+				worst[service] = h
+				set[service] = true
+			} else if healthRank(h) > healthRank(worst[service]) {
+				worst[service] = h
+			}
 		}
 	}
-	if !found {
-		return HealthStopped
+	out := make(map[string]Health, len(services))
+	for _, s := range services {
+		out[s] = worst[s]
 	}
-	return worst
+	return out
 }
 
 func containerMatchesService(container, label, service string) bool {

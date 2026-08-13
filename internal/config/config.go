@@ -125,9 +125,10 @@ func loadFile(cfg *Config, path string) error {
 			cfg.AuthkeysPath = value
 		case "TAILARR_LOG_MAX_BYTES":
 			n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-			if err == nil && n > 0 {
-				cfg.LogMaxBytes = n
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid TAILARR_LOG_MAX_BYTES %q: want a positive integer", strings.TrimSpace(value))
 			}
+			cfg.LogMaxBytes = n
 		}
 	}
 	return sc.Err()
@@ -153,10 +154,14 @@ func applyEnv(cfg *Config) error {
 		cfg.AuthkeysPath = v
 	}
 	if v := os.Getenv("TAILARR_LOG_MAX_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.LogMaxBytes = n
+		value := strings.TrimSpace(v)
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("invalid TAILARR_LOG_MAX_BYTES %q: want a positive integer", value)
 		}
+		cfg.LogMaxBytes = n
 	}
+
 	if v := os.Getenv("TAILARR_ASSUME_YES"); v == "1" || strings.EqualFold(v, "true") {
 		cfg.AssumeYes = true
 	}

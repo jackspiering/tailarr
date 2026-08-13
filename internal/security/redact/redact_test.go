@@ -16,8 +16,21 @@ func TestText(t *testing.T) {
 	if !strings.Contains(out, Redacted) {
 		t.Fatalf("expected redaction: %s", out)
 	}
-	if !strings.Contains(out, "ok=1") {
-		t.Fatalf("non-secret mangled: %s", out)
+	// Values redact to end of line so whitespace-containing secrets cannot
+	// partially leak; trailing diagnostics on the same line are sacrificed.
+	if strings.Contains(out, "ok=1") {
+		t.Fatalf("text after a secret on the same line must be redacted: %s", out)
+	}
+}
+
+func TestTextRedactsMultiWordValue(t *testing.T) {
+	t.Parallel()
+	out := Text("failed: DB_PASSWORD=correct horse battery staple")
+	if strings.Contains(out, "correct") || strings.Contains(out, "staple") {
+		t.Fatalf("multi-word secret leaked: %s", out)
+	}
+	if !strings.Contains(out, "DB_PASSWORD="+Redacted) {
+		t.Fatalf("expected redaction: %s", out)
 	}
 }
 

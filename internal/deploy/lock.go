@@ -116,8 +116,9 @@ func tryReclaimExisting(path string, pid int, token string) (*Lock, bool) {
 		_ = f.Close()
 		return nil, false
 	}
-	if lockOwnerAlive(data) {
-		// Old Tailarr without flock is still running; do not steal.
+	if lockOwnerAlive(data) && ownerIsTailarr(data) {
+		// A live Tailarr owner still blocks reclaim; a different live process
+		// means PID reuse after flock succeeded, so reclaim the lock in place.
 		releaseFlock(f)
 		_ = f.Close()
 		return nil, false
@@ -140,6 +141,25 @@ func lockOwnerAlive(data []byte) bool {
 		return false
 	}
 	return processAlive(ownerPID)
+}
+
+// ownerIsTailarr reports whether the recorded owner PID appears to be a
+// running Tailarr process. When the PID was reused by an unrelated process
+// after a crash, this returns false so the flock-verified free lock can be
+// reclaimed in place.
+func ownerIsTailarr(data []byte) bool {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 1 {
+		return false
+	}
+	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || ownerPID <= 0 {
+		return false
+	}
+	if !processAlive(ownerPID) {
+		return false
+	}
+	return processIsTailarr(ownerPID)
 }
 
 // tryRemoveStaleLock removes path when the recorded owner PID is not running,

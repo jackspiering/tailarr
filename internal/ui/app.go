@@ -304,6 +304,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.goBack(), nil
 			}
 			n := int(msg.String()[0] - '0')
+			if m.screen == screenMultiSelect {
+				// Digits address the same rows shown in View.
+				idx := n - 1
+				if idx >= 0 && idx < len(m.opts)+len(m.items) {
+					m.cursor = idx
+					return m.activate()
+				}
+				return m, nil
+			}
+
 			if n >= 1 && n <= len(m.items) {
 				m.cursor = n - 1
 				return m.activate()
@@ -422,14 +432,18 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 			m.status = "No deployed services."
 			return m, nil
 		}
+		names := make([]string, 0, len(svcs))
+		for _, s := range svcs {
+			names = append(names, s.Name)
+		}
+		health := deploy.ServiceHealthMap(names)
 		var b strings.Builder
 		for _, s := range svcs {
 			tag := "other"
 			if deploy.IsManaged(s.Dir) {
 				tag = "managed"
 			}
-			h := deploy.ServiceHealth(s.Name)
-			fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, h)
+			fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, health[s.Name])
 		}
 		m.status = b.String()
 		return m, nil
@@ -889,7 +903,7 @@ func (m model) View() string {
 			if m.picked[i] {
 				mark = "[x]"
 			}
-			line := fmt.Sprintf("%s %s", mark, name)
+			line := fmt.Sprintf("%d  %s %s", i+1, mark, name)
 			if i == m.cursor {
 				b += styleOrPlain(selStyle, "> "+line) + "\n"
 			} else {
@@ -901,11 +915,11 @@ func (m model) View() string {
 
 	for i, item := range m.items {
 		cursor := "  "
-		line := fmt.Sprintf("%d  %s", i+1, item.label)
 		idx := i
 		if m.screen == screenMultiSelect {
 			idx = len(m.opts) + i
 		}
+		line := fmt.Sprintf("%d  %s", idx+1, item.label)
 		if idx == m.cursor {
 			cursor = "> "
 			b += styleOrPlain(selStyle, cursor+line) + "\n"
@@ -914,7 +928,7 @@ func (m model) View() string {
 			b += styleOrPlain(itemStyle, cursor+line) + "\n"
 		}
 	}
-	b += "\n" + styleOrPlain(dimStyle, "arrows move  enter select  space toggle  a all  q/esc back") + "\n"
+	b += "\n" + styleOrPlain(dimStyle, "arrows move  digits 1-9 select/run  enter select  space toggle  a all  q/esc back") + "\n"
 	if m.status != "" {
 		b += "\n" + styleOrPlain(border, strings.Repeat("-", 48)) + "\n"
 		b += m.status

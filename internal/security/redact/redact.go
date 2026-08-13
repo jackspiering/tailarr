@@ -27,8 +27,11 @@ var secretKeywords = []string{
 // key names (with and without underscore variants) inside redaction patterns.
 const secretKeyPattern = `(?:TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE(?:_?KEY)?|API_?KEY)`
 
-// lineSecretRE matches KEY=value forms where KEY looks sensitive.
-var lineSecretRE = regexp.MustCompile(`(?i)([A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*)=([^\s]+)`)
+// lineSecretRE matches KEY=value forms where KEY looks sensitive. The value
+// runs to end of line so whitespace-containing secrets are fully redacted
+// (redaction over-covers by design; a partial secret is worse than losing
+// trailing text from a diagnostic line).
+var lineSecretRE = regexp.MustCompile(`(?i)([A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*)=([^\n]*)`)
 
 // jsonSecretRE matches "KEY":"value" JSON object members.
 var jsonSecretRE = regexp.MustCompile(`(?i)("` + secretKeyPattern + `"\s*:\s*")[^"]*(")`)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,7 +14,42 @@ import (
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/scaletail"
 )
+
+func TestBackupPathForCollision(t *testing.T) {
+	root := t.TempDir()
+	stamp := "20200101T000000Z"
+	first, err := backupPathFor(root, "web", stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "web-"+stamp+"-1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	next, err := backupPathFor(root, "web", stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != filepath.Join(root, "web-"+stamp+"-2") {
+		t.Fatalf("got %s", next)
+	}
+}
+
+func TestBackupPathForAbortsOnStatError(t *testing.T) {
+	// A regular file as the "root" makes Lstat fail with ENOTDIR for every
+	// candidate, which must surface as an error instead of looping forever.
+	fileRoot := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(fileRoot, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backupPathFor(fileRoot, "web", "20200101T000000Z"); err == nil {
+		t.Fatal("expected an error when candidate inspection fails")
+	}
+}
 
 func TestBackupAndRestore(t *testing.T) {
 	deployRoot := t.TempDir()
@@ -125,6 +161,52 @@ func TestAcquireLockReclaimsDeadPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = l.Release()
+}
+
+func TestAcquireLockReclaimsReusedPID(t *testing.T) {
+	// PID reuse: the recorded owner PID is alive but belongs to an unrelated
+	// process, so the flock-verified free lock must be reclaimable. Requires
+	// /proc/<pid>/comm (Linux).
+	if runtime.GOOS != "linux" {
+		t.Skip("pid/comm detection is Linux-only; other platforms stay conservative")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nreused-token\n", cmd.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Release()
+}
+
+func TestAcquireLockKeepsLiveTailarrOwner(t *testing.T) {
+	// The test binary itself stands in for a live Tailarr process: its comm
+	// matches os.Executable(), so the lock must not be stolen.
+	if runtime.GOOS != "linux" {
+		t.Skip("pid/comm detection is Linux-only; other platforms stay conservative")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\nlive-token\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireLock(path, time.Second); err == nil {
+		t.Fatal("live Tailarr owner lock must not be stolen")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("lock file should remain")
+	}
 }
 
 func TestStaleLockReclaimedForDeadPID(t *testing.T) {
@@ -461,6 +543,283 @@ func TestRepairRestoresComposeOnUpFailure(t *testing.T) {
 		t.Fatalf("compose not restored: %v %q", err, data)
 	}
 }
+func TestRepairRestoresComposeCandidatesOnUpFailure(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(tpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := "services:\n  app:\n    image: old\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yml"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error {
+		return fmt.Errorf("%w: up failed", ErrComposeFailed)
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err == nil {
+		t.Fatal("expected repair failure")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "compose.yaml")); !os.IsNotExist(err) {
+		t.Fatal("failed repair left newly introduced compose.yaml")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
+	if err != nil || string(data) != old {
+		t.Fatalf("old compose.yml was not restored: %v %q", err, data)
+	}
+	if p, ok := scaletail.ComposeFileIn(dest); !ok || filepath.Base(p) != "compose.yml" {
+		t.Fatalf("rollback selected wrong compose file: %s", p)
+	}
+}
+func TestRepairRestoresAfterCopyFailure(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(tpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(filepath.Join(dest, "compose.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml", "old-marker"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := "services:\n  app:\n    image: old\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yml"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err == nil {
+		t.Fatal("expected compose copy failure")
+	}
+	marker, err := os.ReadFile(filepath.Join(dest, "compose.yaml", "old-marker"))
+	if err != nil || string(marker) != "old\n" {
+		t.Fatalf("old compose directory was not restored: %v %q", err, marker)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
+	if err != nil || string(data) != old {
+		t.Fatalf("old compose.yml was not restored: %v %q", err, data)
+	}
+}
+
+func TestRepairRemovesStaleComposeFile(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+
+	// Template now ships only compose.yml.
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(tpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing managed deployment still carries the old compose.yaml.
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte("services:\n  app:\n    image: old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "compose.yaml")); !os.IsNotExist(err) {
+		t.Fatal("stale compose.yaml should be removed by repair")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
+	if err != nil || !strings.Contains(string(data), "image: new") {
+		t.Fatalf("template compose.yml not installed: %v %q", err, data)
+	}
+}
+
+func TestRestorePersistentDataKeepsFreshTemplateFiles(t *testing.T) {
+	backup := t.TempDir()
+	fresh := t.TempDir()
+	// Template ships an updated .env.example; the old deployment's copy is stale.
+	if err := os.WriteFile(filepath.Join(backup, ".env.example"), []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fresh, ".env.example"), []byte("NEW"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Operator-created top-level data file not shipped by the template.
+	if err := os.WriteFile(filepath.Join(backup, "custom.txt"), []byte("KEEP"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Data directory contents must still win over the fresh template.
+	if err := os.MkdirAll(filepath.Join(backup, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(fresh, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "data", "db"), []byte("BACKUP"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fresh, "data", "db"), []byte("TEMPLATE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestorePersistentData(backup, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh, ".env.example")); err != nil || string(data) != "NEW" {
+		t.Fatalf("fresh template file was reverted: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh, "custom.txt")); err != nil || string(data) != "KEEP" {
+		t.Fatalf("operator file not restored: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh, "data", "db")); err != nil || string(data) != "BACKUP" {
+		t.Fatalf("data directory not restored: %v %q", err, data)
+	}
+}
+
+func TestHealthFromOutput(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\trunning\tUp 2 hours (healthy)\t",
+		"tailscale-web\trunning\tUp 2 hours\t",
+		"other-container\trunning\tUp (health: starting)\tapi",
+		"app-api\texited\tExited (0) 1 hour ago\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web", "api", "none"})
+	// Worst container wins: the tailscale sidecar has no healthcheck, so the
+	// service reports running/no-healthcheck rather than healthy.
+	if got["web"] != HealthRunning {
+		t.Fatalf("web: got %s", got["web"])
+	}
+	// api has a starting container and an exited one; exited is worse.
+	if got["api"] != HealthExited {
+		t.Fatalf("api: got %s", got["api"])
+	}
+	// Service with no matching container is stopped, not unknown.
+	if got["none"] != HealthStopped {
+		t.Fatalf("none: got %s", got["none"])
+	}
+}
+
+func TestHealthFromOutputHealthy(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\trunning\tUp 2 hours (healthy)\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web"})
+	if got["web"] != HealthHealthy {
+		t.Fatalf("web: got %s", got["web"])
+	}
+}
+
+func TestHealthFromOutputUnhealthyWins(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\trunning\tUp (healthy)\t",
+		"tailscale-web\trunning\tUp (unhealthy)\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web"})
+	if got["web"] != HealthUnhealthy {
+		t.Fatalf("worst health should win: got %s", got["web"])
+	}
+}
+func TestDockerStatusCommandsTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldTimeout := probeTimeout
+	probeTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { probeTimeout = oldTimeout })
+
+	if _, err := RunningServiceNames(); err == nil {
+		t.Fatal("expected running-service probe timeout")
+	}
+	health := ServiceHealthMap([]string{"web"})
+	if health["web"] != HealthUnknown {
+		t.Fatalf("timed-out health probe = %s", health["web"])
+	}
+}
+
+func TestRepairKeepsComposeWhenTemplateMissing(t *testing.T) {
+	repo := t.TempDir() // services directory never created
+	deployRoot := t.TempDir()
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composeBody := "services:\n  app:\n    image: original\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(composeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Repair("web"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	if err != nil || string(data) != composeBody {
+		t.Fatalf("compose file must survive repair with a missing template: %v %q", err, data)
+	}
+}
 
 func TestContainerMatchesService(t *testing.T) {
 	if !containerMatchesService("app-web", "", "web") {
@@ -569,6 +928,29 @@ func TestWriteOverrideLabels(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(dir, overrideFilename))
 	if !strings.Contains(string(data), "tailarr.managed") {
 		t.Fatalf("%s", data)
+	}
+}
+
+func TestWriteOverrideSkipsInvalidServiceNames(t *testing.T) {
+	dir := t.TempDir()
+	// A service name the YAML scan fallback misreads as a key: the emitted
+	// override must never contain invalid YAML.
+	body := "services:\n  bad\"name:\n    image: alpine\n"
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("demo", dir); err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(dir) {
+		t.Fatal("managed marker must be written even when all names are invalid")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, overrideFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `bad"name`) {
+		t.Fatalf("invalid service name leaked into override: %s", data)
 	}
 }
 
