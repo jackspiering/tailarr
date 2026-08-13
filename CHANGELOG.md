@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-13
+
 ### Fixed
 
 - Force-replace restore no longer deletes a sibling service named
@@ -140,7 +142,7 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
 - golangci-lint / misspell CI (errcheck, empty branches, US `Canceled` exit code name).
 
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/jackspiering/tailarr/compare/v0.2.0...v0.3.0
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0
