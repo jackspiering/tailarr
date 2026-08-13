@@ -217,6 +217,34 @@ func TestApplyEnvRejectsInvalidRepoURL(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidLogMaxBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(path, []byte("TAILARR_LOG_MAX_BYTES=garbage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_LOG_MAX_BYTES", "")
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected invalid TAILARR_LOG_MAX_BYTES to be rejected")
+	}
+}
+
+func TestLoadRejectsInvalidEnvLogMaxBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(path, []byte("# empty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_LOG_MAX_BYTES", "-5")
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected invalid env TAILARR_LOG_MAX_BYTES to be rejected")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		(func() bool {
