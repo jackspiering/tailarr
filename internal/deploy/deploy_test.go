@@ -15,6 +15,40 @@ import (
 	"github.com/jackspiering/tailarr/internal/logging"
 )
 
+func TestBackupPathForCollision(t *testing.T) {
+	root := t.TempDir()
+	stamp := "20200101T000000Z"
+	first, err := backupPathFor(root, "web", stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "web-"+stamp+"-1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	next, err := backupPathFor(root, "web", stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != filepath.Join(root, "web-"+stamp+"-2") {
+		t.Fatalf("got %s", next)
+	}
+}
+
+func TestBackupPathForAbortsOnStatError(t *testing.T) {
+	// A regular file as the "root" makes Lstat fail with ENOTDIR for every
+	// candidate, which must surface as an error instead of looping forever.
+	fileRoot := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(fileRoot, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backupPathFor(fileRoot, "web", "20200101T000000Z"); err == nil {
+		t.Fatal("expected an error when candidate inspection fails")
+	}
+}
+
 func TestBackupAndRestore(t *testing.T) {
 	deployRoot := t.TempDir()
 	svc := filepath.Join(deployRoot, "demo")

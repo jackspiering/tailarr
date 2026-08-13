@@ -40,12 +40,9 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 	_ = os.Chmod(root, 0o700)
 
 	stamp := time.Now().UTC().Format("20060102T150405Z")
-	backupPath := filepath.Join(root, fmt.Sprintf("%s-%s", service, stamp))
-	for i := 1; ; i++ {
-		if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-			break
-		}
-		backupPath = filepath.Join(root, fmt.Sprintf("%s-%s-%d", service, stamp, i))
+	backupPath, err := backupPathFor(root, service, stamp)
+	if err != nil {
+		return "", err
 	}
 
 	switch mode {
@@ -66,6 +63,21 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 	// never lose the backup just created (which is always the newest).
 	_ = pruneBackups(root, service, 2)
 	return backupPath, nil
+}
+
+// backupPathFor returns a free "<service>-<stamp>" directory path under root,
+// appending a numeric suffix on same-second collisions. Stat errors other than
+// IsNotExist abort instead of looping forever.
+func backupPathFor(root, service, stamp string) (string, error) {
+	base := filepath.Join(root, fmt.Sprintf("%s-%s", service, stamp))
+	for i := 1; ; i++ {
+		if _, err := os.Lstat(base); os.IsNotExist(err) {
+			return base, nil
+		} else if err != nil {
+			return "", fmt.Errorf("inspect backup path: %w", err)
+		}
+		base = filepath.Join(root, fmt.Sprintf("%s-%s-%d", service, stamp, i))
+	}
 }
 
 // pruneBackups removes all but the newest keep backups for service under root.
