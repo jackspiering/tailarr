@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/redact"
@@ -197,7 +198,9 @@ func ComposeOK() bool {
 	if !DockerOK() {
 		return false
 	}
-	cmd := exec.Command("docker", "compose", "version")
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "compose", "version")
 	return cmd.Run() == nil
 }
 
@@ -206,8 +209,15 @@ func DaemonOK() bool {
 	if !DockerOK() {
 		return false
 	}
-	cmd := exec.Command("docker", "info")
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
 }
+
+// probeTimeout bounds doctor readiness probes so a stalled docker command
+// (for example a context pointing at an unreachable host) cannot freeze the
+// TUI indefinitely.
+const probeTimeout = 10 * time.Second
