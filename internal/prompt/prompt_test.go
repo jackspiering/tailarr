@@ -33,3 +33,12 @@ func TestReadLineAcceptsFinalLineWithoutNewline(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestSecretRequiresTerminal(t *testing.T) {
+	// A non-terminal input stream must fail rather than echo the secret or
+	// fall back to the real stdin of the test process.
+	s := &Std{In: strings.NewReader("tskey-auth-x"), Err: io.Discard}
+	if _, err := s.Secret("TS_AUTHKEY"); err == nil {
+		t.Fatal("expected an error for non-terminal secret input")
+	}
+}

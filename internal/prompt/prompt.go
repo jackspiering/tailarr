@@ -93,17 +93,36 @@ func (s *Std) Line(label, defaultVal string) (string, error) {
 // Secret implements UI. It reads with echo disabled on a TTY; on a non-TTY
 // stdin it fails rather than echoing the secret back to the terminal.
 func (s *Std) Secret(label string) (string, error) {
-	if !stdinIsTTY() {
+	f, ok := s.stdinFile()
+	if !ok {
 		return "", fmt.Errorf("secret input requires a terminal")
 	}
 	s.Printf("%s: ", label)
-	fd := int(os.Stdin.Fd())
-	raw, err := term.ReadPassword(fd)
+	raw, err := term.ReadPassword(int(f.Fd()))
 	s.Printf("\n")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// stdinFile returns the configured input stream when it is a terminal,
+// falling back to os.Stdin. Secret input must never come from a pipe or
+// redirect that would echo the value.
+func (s *Std) stdinFile() (*os.File, bool) {
+	in := s.In
+	if in == nil {
+		in = os.Stdin
+	}
+	f, ok := in.(*os.File)
+	if !ok {
+		return nil, false
+	}
+	fi, err := f.Stat()
+	if err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+		return nil, false
+	}
+	return f, true
 }
 
 // Printf implements UI.
