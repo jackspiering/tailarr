@@ -17,7 +17,7 @@ permissions:
 
 env:
   # Keep these tool versions in sync with the CI workflow.
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.6"
   GOLANGCI_LINT_VERSION: v2.12.2
   RUMDL_VERSION: "0.2.54"
 
