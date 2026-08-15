@@ -7,20 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-15
+
+### Added
+
+- **Services > Apply catalog** copies catalog template files onto a managed
+  stack. It then pulls images and starts the containers. It keeps files that
+  exist only in that directory, including `.env`.
+
 ### Changed
 
-- The TUI uses Bubble Tea v2 and Lip Gloss v2.
-  Menus, keys, and drop-to-terminal prompts stay the same.
-- Lifecycle verbs are now deploy, apply, stop, restart, and remove.
-  Apply copies catalog template files onto a managed stack.
-  It then pulls images and starts the containers.
-  It keeps files that exist only in that directory, including `.env`.
 - Deploy creates only. It refuses an existing service directory and tells you
   to use Apply.
-- Update, repair, and replace are no longer operator verbs.
+- The TUI uses Bubble Tea v2 and Lip Gloss v2.
+  Menus, keys, and drop-to-terminal prompts stay the same.
 - `TAILARR_ASSUME_YES` auto-accepts default-yes prompts only.
   Default-no prompts (such as remove) still require an answer.
+- Tailarr now requires Go 1.25 or newer.
 - Rewrote README prose to the project ASD-STE100 and Zinsser writing rule.
+
+### Removed
+
+- Update, repair, and replace are no longer operator verbs.
 
 ## [0.4.0] - 2026-08-13
 
@@ -157,7 +165,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
 - golangci-lint / misspell CI (errcheck, empty branches, US `Canceled` exit code name).
 
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0

@@ -6,7 +6,7 @@
 #   curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.2.0/install.sh | sh
 #
 # Environment:
-#   TAILARR_VERSION  Release tag (e.g. v0.2.0). Default: latest via GitHub API, else v0.4.0
+#   TAILARR_VERSION  Release tag (e.g. v0.2.0). Default: latest via GitHub API, else v0.5.0
 #   INSTALL_DIR      Install directory. Default: directory of the first `tailarr` on
 #                    PATH if writable (replaces legacy installs), else /usr/local/bin
 #                    if writable, else ~/.local/bin
@@ -18,7 +18,7 @@ set -eu
 
 REPO="${GITHUB_REPO:-jackspiering/tailarr}"
 BINARY_NAME="tailarr"
-DEFAULT_VERSION="v0.4.0"
+DEFAULT_VERSION="v0.5.0"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 RELEASES_URL="https://github.com/${REPO}/releases/download"
 
