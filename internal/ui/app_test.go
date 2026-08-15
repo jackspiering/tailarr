@@ -4,8 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
+
+func digitKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
 
 func TestServicesMenuUsesApply(t *testing.T) {
 	ids := map[string]bool{}
@@ -36,7 +40,7 @@ func TestMultiSelectNumericShortcutsMatchView(t *testing.T) {
 		},
 		picked: map[int]bool{},
 	}
-	view := base.View()
+	view := base.render()
 	for _, want := range []string{
 		"1  [ ] web",
 		"2  Run on selection",
@@ -48,7 +52,7 @@ func TestMultiSelectNumericShortcutsMatchView(t *testing.T) {
 		}
 	}
 
-	next, _ := base.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	next, _ := base.Update(digitKey('1'))
 	selected := next.(model)
 	if !selected.picked[0] {
 		t.Fatal("digit 1 should toggle the first service")
@@ -56,7 +60,7 @@ func TestMultiSelectNumericShortcutsMatchView(t *testing.T) {
 
 	actionBase := base
 	actionBase.picked = map[int]bool{}
-	next, _ = actionBase.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	next, _ = actionBase.Update(digitKey('2'))
 	action := next.(model)
 	if action.cursor != 1 || action.status != "No services selected." {
 		t.Fatalf("digit 2 should activate Run on selection: cursor=%d status=%q", action.cursor, action.status)
