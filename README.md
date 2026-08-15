@@ -121,7 +121,7 @@ go build -o bin/tailarr ./cmd/tailarr
 | Area | Description |
 | --- | --- |
 | Catalog | Lists ScaleTail services that have a Compose file and a `.env` file. Names: `compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml`. |
-| Lifecycle | Deploy, update, stop, restart, repair, and remove. Compose runs the actions. Tailarr asks for confirmation. It makes backups. |
+| Lifecycle | Deploy, apply, stop, restart, and remove. Compose runs the actions. Tailarr asks for confirmation. It makes backups. |
 | Auth keys | A named `TS_AUTHKEY` store. You can add, rename, replace, or remove a key. The file mode is `600`. Listings are redacted. |
 | Status | Shows deployed services, running services, Docker, and config. |
 | Deploy env | Tailarr prompts for empty or placeholder env values. You can reuse a stored auth key on more than one service. |
@@ -161,6 +161,11 @@ For multi-select deploy and lifecycle actions:
 - Space toggles a row.
 - `a` selects all.
 - Run starts the action.
+
+**Apply** copies catalog template files onto a managed service directory.
+It then pulls images and starts the containers.
+It keeps files that exist only in that directory, including `.env`.
+**Deploy** only creates a new service directory.
 
 Catalog and maintenance:
 
@@ -223,7 +228,7 @@ Safety:
   template boundary.
 - Tailarr writes config, auth keys, and `.env` files atomically.
 - Secret files use mode `600`.
-- Tailarr makes a backup before replace, repair, or remove.
+- Tailarr makes a backup before apply or remove.
 - Each service has an ownership-bound lock.
 - Git refresh uses a repo lock.
 - Treat the ScaleTail clone as trusted input. Compose runs on your host.

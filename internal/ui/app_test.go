@@ -7,6 +7,24 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestServicesMenuUsesApply(t *testing.T) {
+	ids := map[string]bool{}
+	for _, item := range servicesMenuItems() {
+		ids[item.id] = true
+	}
+	if !ids["apply"] {
+		t.Fatal("services menu must include apply")
+	}
+	if ids["update"] {
+		t.Fatal("update is not an operator verb")
+	}
+	for _, item := range maintenanceMenuItems() {
+		if item.id == "repair" {
+			t.Fatal("repair is not an operator verb")
+		}
+	}
+}
+
 func TestMultiSelectNumericShortcutsMatchView(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	base := model{

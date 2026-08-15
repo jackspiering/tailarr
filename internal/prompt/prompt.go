@@ -15,7 +15,8 @@ import (
 // UI is the interactive surface used by deploy and lifecycle operations.
 type UI interface {
 	// Confirm asks a yes/no question. defaultYes controls empty-answer behavior.
-	// When AssumeYes is true, returns true without reading.
+	// When AssumeYes is true, default-yes prompts return true without reading.
+	// Default-no prompts still require an answer.
 	Confirm(question string, defaultYes bool) (bool, error)
 	// Line reads a single line (echo on). Empty input returns defaultVal.
 	Line(label, defaultVal string) (string, error)
@@ -48,7 +49,7 @@ func (s *Std) Confirm(question string, defaultYes bool) (bool, error) {
 	if !defaultYes {
 		suffix = "[y/N]"
 	}
-	if s.AssumeYes {
+	if s.AssumeYes && defaultYes {
 		s.Printf("%s %s: (auto-yes)\n", question, suffix)
 		return true, nil
 	}

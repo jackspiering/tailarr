@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Lifecycle verbs are now deploy, apply, stop, restart, and remove.
+  Apply copies catalog template files onto a managed stack.
+  It then pulls images and starts the containers.
+  It keeps files that exist only in that directory, including `.env`.
+- Deploy creates only. It refuses an existing service directory and tells you
+  to use Apply.
+- Update, repair, and replace are no longer operator verbs.
+- `TAILARR_ASSUME_YES` auto-accepts default-yes prompts only.
+  Default-no prompts (such as remove) still require an answer.
 - Rewrote README prose to the project ASD-STE100 and Zinsser writing rule.
 
 ## [0.4.0] - 2026-08-13

@@ -2,9 +2,10 @@ package deploy
 
 import "errors"
 
-// Sentinel errors for lifecycle operations. CLI maps these via errors.Is.
+// Sentinel errors for lifecycle operations.
 var (
-	// ErrAlreadyDeployed is returned when deploy finds an existing service without --force.
+	// ErrAlreadyDeployed is returned when Deploy finds an existing dest.
+	// Create is Deploy only; use Apply on a managed stack.
 	ErrAlreadyDeployed = errors.New("service already deployed")
 	// ErrNotDeployed is returned when a lifecycle op targets a missing deployment.
 	ErrNotDeployed = errors.New("service not deployed")

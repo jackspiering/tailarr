@@ -14,7 +14,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
-// BackupMode selects move (redeploy) or copy (repair snapshot).
+// BackupMode selects move (full-tree swap) or copy (apply/remove snapshot).
 type BackupMode string
 
 const (

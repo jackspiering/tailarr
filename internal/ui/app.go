@@ -102,10 +102,9 @@ const (
 	multiNone multiMode = iota
 	multiDeploy
 	multiRemove
-	multiUpdate
+	multiApply
 	multiStop
 	multiRestart
-	multiRepair
 )
 
 type model struct {
@@ -184,7 +183,7 @@ func FirstRunSetup(cfg *config.Config) error {
 func mainMenuItems() []menuItem {
 	return []menuItem{
 		{id: "status", label: "Status", desc: "Health, counts, and deployment status"},
-		{id: "services", label: "Services", desc: "Deploy, repair, and control services"},
+		{id: "services", label: "Services", desc: "Deploy, apply, and control services"},
 		{id: "authkeys", label: "Tailscale Authentication Keys", desc: "Manage stored Tailscale authentication keys"},
 		{id: "config", label: "Configuration", desc: "View or edit Tailarr configuration"},
 		{id: "maintenance", label: "Maintenance", desc: "Doctor checks and maintenance tools"},
@@ -206,9 +205,9 @@ func servicesMenuItems() []menuItem {
 	return []menuItem{
 		{id: "search", label: "Search available services", desc: "Find available ScaleTail templates"},
 		{id: "refresh", label: "Refresh catalog", desc: "Clone or pull the ScaleTail templates"},
-		{id: "deploy", label: "Deploy services", desc: "Create or replace deployments"},
+		{id: "deploy", label: "Deploy services", desc: "Create new deployments from the catalog"},
+		{id: "apply", label: "Apply catalog", desc: "Sync template files, pull images, and recreate"},
 		{id: "remove", label: "Remove services", desc: "Stop and remove deployments"},
-		{id: "update", label: "Check for container updates", desc: "Pull images and recreate services"},
 		{id: "stop", label: "Stop services", desc: "Stop selected deployments"},
 		{id: "restart", label: "Restart services", desc: "Restart selected deployments"},
 		{id: "back", label: "Back", desc: "Return to main menu"},
@@ -237,7 +236,6 @@ func configMenuItems() []menuItem {
 func maintenanceMenuItems() []menuItem {
 	return []menuItem{
 		{id: "doctor", label: "Run doctor checks", desc: "Host, path, Docker, and health checks"},
-		{id: "repair", label: "Repair a service", desc: "Refresh files while preserving local data"},
 		{id: "upgrade", label: "Upgrade Tailarr", desc: "Replace this binary with the latest release"},
 		{id: "back", label: "Back", desc: "Return to main menu"},
 	}
@@ -496,10 +494,10 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 		})
 	case "deploy":
 		return m.beginMulti(multiDeploy)
+	case "apply":
+		return m.beginMulti(multiApply)
 	case "remove":
 		return m.beginMulti(multiRemove)
-	case "update":
-		return m.beginMulti(multiUpdate)
 	case "stop":
 		return m.beginMulti(multiStop)
 	case "restart":
@@ -691,8 +689,6 @@ func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
 		}
 		m.status = b.String()
 		return m, nil
-	case "repair":
-		return m.beginMulti(multiRepair)
 	case "upgrade":
 		// Leave the TUI: the running binary may be replaced, and prompts/download
 		// progress need the normal terminal. ReleaseTerminal/RestoreTerminal
@@ -867,16 +863,14 @@ func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services [
 		switch mode {
 		case multiDeploy:
 			err = mgr.DeployWith(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
+		case multiApply:
+			err = mgr.Apply(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
 		case multiRemove:
 			err = mgr.RemoveWith(svc, deploy.DeployOpts{})
-		case multiUpdate:
-			err = mgr.Update(svc)
 		case multiStop:
 			err = mgr.Stop(svc)
 		case multiRestart:
 			err = mgr.Restart(svc)
-		case multiRepair:
-			err = mgr.Repair(svc)
 		}
 		if err != nil {
 			fmt.Fprintf(&b, "  error: %s\n", redact.Text(err.Error()))
