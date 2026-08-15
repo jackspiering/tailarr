@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
@@ -134,7 +134,7 @@ func Run(cfg config.Config, log *logging.Logger) error {
 		items:  mainMenuItems(),
 		picked: map[int]bool{},
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
 	prog = p
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrInterrupted) {
@@ -258,7 +258,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The binary was replaced; leave the TUI so the new version takes over.
 		m.quitting = true
 		return m, tea.Quit
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			m.quitting = true
@@ -281,7 +281,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < max {
 				m.cursor++
 			}
-		case " ":
+		case "space":
 			if m.screen == screenMultiSelect && m.cursor < len(m.opts) {
 				m.picked[m.cursor] = !m.picked[m.cursor]
 			}
@@ -881,10 +881,16 @@ func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services [
 	return b.String()
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
 	if m.quitting {
-		return ""
+		return tea.View{}
 	}
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+func (m model) render() string {
 	var b string
 	b += styleOrPlain(titleStyle, fmt.Sprintf("Tailarr %s", version.Version)) + "\n"
 	b += styleOrPlain(dimStyle, "Deploy and manage ScaleTail services") + "\n"

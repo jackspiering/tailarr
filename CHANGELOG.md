@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The TUI uses Bubble Tea v2 and Lip Gloss v2.
+  Menus, keys, and drop-to-terminal prompts stay the same.
 - Lifecycle verbs are now deploy, apply, stop, restart, and remove.
   Apply copies catalog template files onto a managed stack.
   It then pulls images and starts the containers.
