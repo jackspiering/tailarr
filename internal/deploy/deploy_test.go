@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/logging"
-	"github.com/jackspiering/tailarr/internal/scaletail"
 )
 
 func TestBackupPathForCollision(t *testing.T) {
@@ -414,17 +413,68 @@ func TestRemoveRejectsUnmanaged(t *testing.T) {
 	}
 }
 
-func TestForceDeployPreservesEnvSecrets(t *testing.T) {
+func TestDeployRejectsExistingManaged(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
-	setupTemplate(t, repo, "web", "TS_AUTHKEY=\nHOSTNAME=template\n")
-
-	// Existing managed deployment with secrets.
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
 	dest := filepath.Join(deployRoot, "web")
 	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOverride("svc", dest); err != nil {
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.DeployWith("web", DeployOpts{})
+	if !errors.Is(err, ErrAlreadyDeployed) {
+		t.Fatalf("expected ErrAlreadyDeployed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "use Apply") {
+		t.Fatalf("expected Apply hint, got %v", err)
+	}
+}
+
+func TestApplyRejectsMissingDest(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if !errors.Is(err, ErrNotDeployed) {
+		t.Fatalf("expected ErrNotDeployed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "use Deploy") {
+		t.Fatalf("expected Deploy hint, got %v", err)
+	}
+}
+
+func TestApplyRejectsUnmanaged(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
+		t.Fatal(err)
+	}
+	// No Tailarr marker.
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("expected ErrNotManaged, got %v", err)
+	}
+}
+
+func TestApplyPreservesEnvAndDestOnlyFiles(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "TS_AUTHKEY=\nHOSTNAME=template\nNEWKEY=\n")
+
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=tskey-auth-SECRET\nHOSTNAME=local\n"), 0o600); err != nil {
@@ -436,11 +486,26 @@ func TestForceDeployPreservesEnvSecrets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "data", "keep"), []byte("yes\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dest, "custom.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "services", "web", "compose.yaml"), []byte("services:\n  app:\n    image: alpine:new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "services", "web", "extra.conf"), []byte("from-template\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
+	var sawPull, sawDown bool
 	var upCount atomic.Int32
 	withFakeCompose(t, func(dir string, args ...string) error {
-		// down then up
 		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "pull") {
+			sawPull = true
+		}
+		if strings.Contains(joined, "down") {
+			sawDown = true
+		}
 		if strings.Contains(joined, "up") {
 			upCount.Add(1)
 		}
@@ -448,8 +513,14 @@ func TestForceDeployPreservesEnvSecrets(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.DeployWith("web", DeployOpts{Force: true}); err != nil {
+	if err := m.Apply("web", DeployOpts{}); err != nil {
 		t.Fatal(err)
+	}
+	if !sawPull {
+		t.Fatal("expected compose pull")
+	}
+	if sawDown {
+		t.Fatal("apply must not compose down")
 	}
 	if upCount.Load() < 1 {
 		t.Fatal("expected compose up")
@@ -459,18 +530,26 @@ func TestForceDeployPreservesEnvSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(env), "TS_AUTHKEY=tskey-auth-SECRET") {
-		t.Fatalf("secret lost on force redeploy: %s", env)
+		t.Fatalf("secret lost on apply: %s", env)
 	}
 	if !strings.Contains(string(env), "HOSTNAME=local") {
 		t.Fatalf("local env lost: %s", env)
 	}
-	// Data dir restored.
 	if data, err := os.ReadFile(filepath.Join(dest, "data", "keep")); err != nil || string(data) != "yes\n" {
-		t.Fatalf("data not restored: %v %q", err, data)
+		t.Fatalf("dest-only data lost: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(dest, "custom.txt")); err != nil || string(data) != "mine\n" {
+		t.Fatalf("dest-only file lost: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(dest, "compose.yaml")); err != nil || !strings.Contains(string(data), "alpine:new") {
+		t.Fatalf("template compose not synced: %v %q", err, data)
+	}
+	if data, err := os.ReadFile(filepath.Join(dest, "extra.conf")); err != nil || string(data) != "from-template\n" {
+		t.Fatalf("new template file not copied: %v %q", err, data)
 	}
 }
 
-func TestForceDeployRestoresOnInterrupt(t *testing.T) {
+func TestApplyRestoresOnInterrupt(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
 	setupTemplate(t, repo, "web", "TS_AUTHKEY=tskey-auth-from-template\nHOSTNAME=t\n")
@@ -479,11 +558,18 @@ func TestForceDeployRestoresOnInterrupt(t *testing.T) {
 	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeOverride("svc", dest); err != nil {
+	if err := writeOverride("web", dest); err != nil {
 		t.Fatal(err)
 	}
 	marker := "ORIGINAL-DEPLOYMENT"
 	if err := os.WriteFile(filepath.Join(dest, "marker.txt"), []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origCompose := "services:\n  app:\n    image: original\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(origCompose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "services", "web", "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -496,9 +582,9 @@ func TestForceDeployRestoresOnInterrupt(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.DeployWith("web", DeployOpts{Force: true})
+	err := m.Apply("web", DeployOpts{})
 	if err == nil {
-		t.Fatal("expected deploy failure")
+		t.Fatal("expected apply failure")
 	}
 	if !errors.Is(err, ErrInterrupted) {
 		t.Fatalf("expected ErrInterrupted, got %v", err)
@@ -507,12 +593,16 @@ func TestForceDeployRestoresOnInterrupt(t *testing.T) {
 	if err != nil || string(data) != marker {
 		t.Fatalf("previous deployment not restored after interrupt: %v %q", err, data)
 	}
+	compose, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	if err != nil || string(compose) != origCompose {
+		t.Fatalf("compose not restored: %v %q", err, compose)
+	}
 }
 
-func TestRepairRestoresComposeOnUpFailure(t *testing.T) {
+func TestApplyRestoresOnComposeUpFailure(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
-	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
+	setupTemplate(t, repo, "web", "TS_AUTHKEY=tskey-auth-from-template\nHOSTNAME=t\n")
 
 	dest := filepath.Join(deployRoot, "web")
 	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
@@ -521,89 +611,41 @@ func TestRepairRestoresComposeOnUpFailure(t *testing.T) {
 	if err := writeOverride("web", dest); err != nil {
 		t.Fatal(err)
 	}
-	orig := "services:\n  app:\n    image: original\n"
-	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(orig), 0o644); err != nil {
+	marker := "ORIGINAL-DEPLOYMENT"
+	if err := os.WriteFile(filepath.Join(dest, "marker.txt"), []byte(marker), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "services", "web", "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=tskey-auth-OLD\nHOSTNAME=old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	withFakeCompose(t, func(dir string, args ...string) error {
-		return fmt.Errorf("%w: up failed", ErrComposeFailed)
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "up") {
+			return fmt.Errorf("%w: up failed", ErrComposeFailed)
+		}
+		return nil
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.Repair("web")
+	err := m.Apply("web", DeployOpts{})
 	if err == nil {
-		t.Fatal("expected repair failure")
+		t.Fatal("expected apply failure")
 	}
-	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
-	if err != nil || string(data) != orig {
-		t.Fatalf("compose not restored: %v %q", err, data)
+	data, err := os.ReadFile(filepath.Join(dest, "marker.txt"))
+	if err != nil || string(data) != marker {
+		t.Fatalf("previous deployment not restored: %v %q", err, data)
 	}
-}
-func TestRepairRestoresComposeCandidatesOnUpFailure(t *testing.T) {
-	repo := t.TempDir()
-	deployRoot := t.TempDir()
-	tpl := filepath.Join(repo, "services", "web")
-	if err := os.MkdirAll(tpl, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	dest := filepath.Join(deployRoot, "web")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := "services:\n  app:\n    image: old\n"
-	if err := os.WriteFile(filepath.Join(dest, "compose.yml"), []byte(old), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeOverride("web", dest); err != nil {
-		t.Fatal(err)
-	}
-
-	withFakeCompose(t, func(dir string, args ...string) error {
-		return fmt.Errorf("%w: up failed", ErrComposeFailed)
-	})
-
-	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.Repair("web"); err == nil {
-		t.Fatal("expected repair failure")
-	}
-	if _, err := os.Stat(filepath.Join(dest, "compose.yaml")); !os.IsNotExist(err) {
-		t.Fatal("failed repair left newly introduced compose.yaml")
-	}
-	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
-	if err != nil || string(data) != old {
-		t.Fatalf("old compose.yml was not restored: %v %q", err, data)
-	}
-	if p, ok := scaletail.ComposeFileIn(dest); !ok || filepath.Base(p) != "compose.yml" {
-		t.Fatalf("rollback selected wrong compose file: %s", p)
+	env, err := os.ReadFile(filepath.Join(dest, ".env"))
+	if err != nil || !strings.Contains(string(env), "tskey-auth-OLD") {
+		t.Fatalf("old env not restored: %v %q", err, env)
 	}
 }
-func TestRepairRestoresAfterCopyFailure(t *testing.T) {
+
+func TestApplyRestoresAfterTypeMismatch(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
-	tpl := filepath.Join(repo, "services", "web")
-	if err := os.MkdirAll(tpl, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tpl, ".env"), []byte("HOSTNAME=x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
 
 	dest := filepath.Join(deployRoot, "web")
 	if err := os.MkdirAll(filepath.Join(dest, "compose.yaml"), 0o755); err != nil {
@@ -624,8 +666,8 @@ func TestRepairRestoresAfterCopyFailure(t *testing.T) {
 	}
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.Repair("web"); err == nil {
-		t.Fatal("expected compose copy failure")
+	if err := m.Apply("web", DeployOpts{}); err == nil {
+		t.Fatal("expected type mismatch")
 	}
 	marker, err := os.ReadFile(filepath.Join(dest, "compose.yaml", "old-marker"))
 	if err != nil || string(marker) != "old\n" {
@@ -637,11 +679,10 @@ func TestRepairRestoresAfterCopyFailure(t *testing.T) {
 	}
 }
 
-func TestRepairRemovesStaleComposeFile(t *testing.T) {
+func TestApplyKeepsVanishedTemplateFile(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
 
-	// Template now ships only compose.yml.
 	tpl := filepath.Join(repo, "services", "web")
 	if err := os.MkdirAll(tpl, 0o755); err != nil {
 		t.Fatal(err)
@@ -653,12 +694,12 @@ func TestRepairRemovesStaleComposeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Existing managed deployment still carries the old compose.yaml.
 	dest := filepath.Join(deployRoot, "web")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte("services:\n  app:\n    image: old\n"), 0o644); err != nil {
+	old := "services:\n  app:\n    image: old\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(old), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
@@ -668,18 +709,56 @@ func TestRepairRemovesStaleComposeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+	var used []string
+	withFakeCompose(t, func(dir string, args ...string) error {
+		used = append(used, strings.Join(args, " "))
+		return nil
+	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.Repair("web"); err != nil {
+	if err := m.Apply("web", DeployOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dest, "compose.yaml")); !os.IsNotExist(err) {
-		t.Fatal("stale compose.yaml should be removed by repair")
+	if data, err := os.ReadFile(filepath.Join(dest, "compose.yaml")); err != nil || string(data) != old {
+		t.Fatalf("dest-only compose.yaml must stay: %v %q", err, data)
 	}
-	data, err := os.ReadFile(filepath.Join(dest, "compose.yml"))
-	if err != nil || !strings.Contains(string(data), "image: new") {
+	if data, err := os.ReadFile(filepath.Join(dest, "compose.yml")); err != nil || !strings.Contains(string(data), "image: new") {
 		t.Fatalf("template compose.yml not installed: %v %q", err, data)
+	}
+	joined := strings.Join(used, "\n")
+	if !strings.Contains(joined, "-f compose.yml pull") {
+		t.Fatalf("apply must pull the template compose file, got %q", joined)
+	}
+	if !strings.Contains(joined, "-f compose.yml -f "+overrideFilename+" up") {
+		t.Fatalf("apply must up the template compose file, got %q", joined)
+	}
+}
+
+func TestApplyFailsWhenTemplateMissing(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composeBody := "services:\n  app:\n    image: original\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(composeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("web", dest); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Apply("web", DeployOpts{}); err == nil {
+		t.Fatal("expected apply to fail when the template is missing")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	if err != nil || string(data) != composeBody {
+		t.Fatalf("compose file must survive a failed apply: %v %q", err, data)
 	}
 }
 
@@ -791,36 +870,6 @@ func TestDockerStatusCommandsTimeout(t *testing.T) {
 	}
 }
 
-func TestRepairKeepsComposeWhenTemplateMissing(t *testing.T) {
-	repo := t.TempDir() // services directory never created
-	deployRoot := t.TempDir()
-	dest := filepath.Join(deployRoot, "web")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	composeBody := "services:\n  app:\n    image: original\n"
-	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(composeBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("HOSTNAME=x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeOverride("web", dest); err != nil {
-		t.Fatal(err)
-	}
-
-	withFakeCompose(t, func(dir string, args ...string) error { return nil })
-
-	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.Repair("web"); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
-	if err != nil || string(data) != composeBody {
-		t.Fatalf("compose file must survive repair with a missing template: %v %q", err, data)
-	}
-}
-
 func TestContainerMatchesService(t *testing.T) {
 	if !containerMatchesService("app-web", "", "web") {
 		t.Fatal("app-web should match web")
@@ -830,50 +879,6 @@ func TestContainerMatchesService(t *testing.T) {
 	}
 	if !containerMatchesService("other", "web", "web") {
 		t.Fatal("tailarr.service label should match")
-	}
-}
-
-func TestForceDeployRestoresOnComposeUpFailure(t *testing.T) {
-	repo := t.TempDir()
-	deployRoot := t.TempDir()
-	setupTemplate(t, repo, "web", "TS_AUTHKEY=tskey-auth-from-template\nHOSTNAME=t\n")
-
-	dest := filepath.Join(deployRoot, "web")
-	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeOverride("svc", dest); err != nil {
-		t.Fatal(err)
-	}
-	marker := "ORIGINAL-DEPLOYMENT"
-	if err := os.WriteFile(filepath.Join(dest, "marker.txt"), []byte(marker), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=tskey-auth-OLD\nHOSTNAME=old\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	withFakeCompose(t, func(dir string, args ...string) error {
-		joined := strings.Join(args, " ")
-		if strings.Contains(joined, "up") {
-			return fmt.Errorf("%w: up failed", ErrComposeFailed)
-		}
-		return nil // down ok
-	})
-
-	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.DeployWith("web", DeployOpts{Force: true})
-	if err == nil {
-		t.Fatal("expected deploy failure")
-	}
-	// Previous deployment restored.
-	data, err := os.ReadFile(filepath.Join(dest, "marker.txt"))
-	if err != nil || string(data) != marker {
-		t.Fatalf("previous deployment not restored: %v %q", err, data)
-	}
-	env, err := os.ReadFile(filepath.Join(dest, ".env"))
-	if err != nil || !strings.Contains(string(env), "tskey-auth-OLD") {
-		t.Fatalf("old env not restored: %v %q", err, env)
 	}
 }
 

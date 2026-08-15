@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
@@ -29,9 +28,12 @@ func Compose(dir string, args ...string) error {
 // ComposeServiceNames returns Compose service names for a deployment directory.
 // Prefers `docker compose config --services`; falls back to a simple YAML scan.
 func ComposeServiceNames(dir string) ([]string, error) {
-	base := "compose.yaml"
-	if p, ok := scaletail.ComposeFileIn(dir); ok {
-		base = filepath.Base(p)
+	return composeServiceNames(dir, composeBaseName(dir))
+}
+
+func composeServiceNames(dir, base string) ([]string, error) {
+	if base == "" {
+		base = "compose.yaml"
 	}
 	if DockerOK() && ComposeOK() {
 		cmd := exec.Command("docker", "compose", "-f", base, "config", "--services")

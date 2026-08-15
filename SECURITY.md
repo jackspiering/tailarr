@@ -32,7 +32,7 @@ Include:
   run on your host.
 - Review backups under `.tailarr_backups` (they may contain secrets).
 - Only Tailarr-managed deployments (identified by the `.tailarr.compose.yaml`
-  marker) are updated, stopped, or removed.
+  marker) are applied, stopped, or removed.
 - Prefer a pinned install script URL or `TAILARR_VERSION=...` when using
   `curl | sh`. The install script verifies release asset checksums.
 - The install script and the built-in upgrade verify each release asset's

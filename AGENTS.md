@@ -44,7 +44,7 @@ Module path: `github.com/jackspiering/tailarr`.
 - Config is plain `KEY=VALUE`. Parse with a scanner; never `source`/`eval`
   user-controlled files (and do not shell out to interpret them).
 - Prefer safe filesystem ops: atomic writes, refuse symlink write escapes,
-  validate service names, back up before destructive replace/repair.
+  validate service names, back up before destructive apply/remove.
 - ScaleTail git clone is trusted input; still harden git protocol flags where
   practical.
 - Plain ASCII in Markdown (no curly quotes, em dashes, decorative unicode).

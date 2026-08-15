@@ -21,7 +21,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/version"
 )
 
-// Manager coordinates deploy/update/stop/restart/remove/repair.
+// Manager coordinates deploy/apply/stop/restart/remove.
 type Manager struct {
 	Cfg *config.Config
 	Log *logging.Logger
@@ -29,11 +29,8 @@ type Manager struct {
 	UI prompt.UI
 }
 
-// DeployOpts controls optional deploy behavior.
+// DeployOpts controls optional deploy and apply behavior.
 type DeployOpts struct {
-	// Force replaces an existing managed deployment (with backup).
-	// When false and UI is set, the operator is asked before replace.
-	Force bool
 	// Interactive prompts for empty/placeholder env values when UI is set.
 	// Default true when UI is non-nil unless set false via SkipInteractive.
 	SkipInteractive bool
@@ -88,7 +85,6 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		return err
 	}
 
-	var backupPath string
 	if st, err := os.Lstat(dest); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
@@ -101,48 +97,14 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		if !IsManaged(dest) {
 			return fmt.Errorf("%w: refusing to replace unmanaged path %s (no Tailarr marker)", ErrNotManaged, service)
 		}
-		if !opts.Force {
-			if m.UI == nil {
-				return fmt.Errorf("%w: %s (replace requires confirmation)", ErrAlreadyDeployed, service)
-			}
-			ok, cerr := m.UI.Confirm(fmt.Sprintf("Deployment already exists for %s. Replace it?", service), false)
-			if cerr != nil {
-				return cerr
-			}
-			if !ok {
-				return fmt.Errorf("%w: deployment canceled", prompt.ErrCanceled)
-			}
-		}
-		// Back up the current deployment before any teardown so a failure below
-		// can always restore it. The backup is the source of truth until the
-		// new deployment is fully in place.
-		backupPath, err = Backup(m.Cfg.DeployPath, service, dest, BackupMove)
-		if err != nil {
-			return err
-		}
-		m.log("backup created for %s: %s", service, backupPath)
-		// Best-effort compose down after backup: composeProjectArgs derives the
-		// project name from deployPath+service so containers are still found,
-		// while cmd.Dir=backupPath makes docker compose read the moved file.
-		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		downArgs := append(append([]string{}, proj...), "down", "--remove-orphans")
-		if err := Compose(backupPath, downArgs...); err != nil {
-			m.log("warning: compose down before force replace of %s: %v", service, err)
-		}
+		return fmt.Errorf("%w: %s (use Apply)", ErrAlreadyDeployed, service)
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
-	// From here, if we moved the old deployment, failures must try to restore it.
-	if err := m.finishDeploy(service, templateDir, dest, backupPath, opts); err != nil {
-		if backupPath != "" {
-			if rerr := restoreDeploymentFromBackup(m.Cfg.DeployPath, service, backupPath, dest); rerr != nil {
-				return fmt.Errorf("deploy failed (%v); also failed to restore previous deployment from %s: %w", err, backupPath, rerr)
-			}
-			m.log("restored previous deployment for %s after failed force replace", service)
-			return fmt.Errorf("deploy failed; previous deployment restored: %w", err)
-		}
-		// Partial fresh deploy: clean up dest if we created it.
-		if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
-			m.log("warning: could not remove partial deployment %s: %v", dest, err)
+	if err := m.finishDeploy(service, templateDir, dest, opts); err != nil {
+		if rerr := safeRemoveTree(dest, m.Cfg.DeployPath); rerr != nil {
+			m.log("warning: could not remove partial deployment %s: %v", dest, rerr)
 		}
 		return err
 	}
@@ -150,17 +112,11 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 	return nil
 }
 
-func (m *Manager) finishDeploy(service, templateDir, dest, backupPath string, opts DeployOpts) error {
+func (m *Manager) finishDeploy(service, templateDir, dest string, opts DeployOpts) error {
 	if err := copyTemplate(templateDir, dest); err != nil {
 		return err
 	}
-	if backupPath != "" {
-		if err := RestorePersistentData(backupPath, dest); err != nil {
-			return fmt.Errorf("restore persistent data: %w", err)
-		}
-	}
-
-	if err := m.mergeAndWriteEnv(service, templateDir, dest, backupPath, opts); err != nil {
+	if err := m.mergeAndWriteEnv(service, templateDir, dest, "", opts); err != nil {
 		return err
 	}
 	if err := writeOverride(service, dest); err != nil {
@@ -170,13 +126,167 @@ func (m *Manager) finishDeploy(service, templateDir, dest, backupPath string, op
 	proj := composeProjectArgs(m.Cfg.DeployPath, service)
 	upArgs := append(append([]string{}, proj...),
 		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
+	return Compose(dest, upArgs...)
+}
+
+// Apply syncs catalog template files onto an existing managed deployment, then
+// pulls images and runs compose up. Dest-only paths and dest .env are kept.
+// Create is Deploy only.
+func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
+	if err := names.ValidateServiceName(service); err != nil {
+		return err
+	}
+	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+
+	if err := paths.RefuseSymlinkAncestry(m.Cfg.DeployPath); err != nil {
+		return fmt.Errorf("deployment root: %w", err)
+	}
+
+	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
+	if err != nil {
+		return err
+	}
+	if st, err := os.Lstat(dest); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: %s (use Deploy)", ErrNotDeployed, service)
+		}
+		return err
+	} else if st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
+	}
+	if err := requireManagedDeploy(dest, service); err != nil {
+		return err
+	}
+
+	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
+	if paths.IsSymlink(templateDir) {
+		return fmt.Errorf("%w: template must not be a symlink: %s", ErrSymlink, templateDir)
+	}
+	if found, err := paths.ContainsSymlinks(templateDir); err != nil {
+		return fmt.Errorf("template: %w", err)
+	} else if found != "" {
+		return fmt.Errorf("%w: template contains unsupported symlink: %s", ErrSymlink, found)
+	}
+	if !scaletail.HasComposeFile(templateDir) {
+		return fmt.Errorf("template has no compose file: %s", service)
+	}
+
+	if m.UI != nil {
+		ok, cerr := m.UI.Confirm(fmt.Sprintf("Apply catalog to %s? This overwrites template files and pulls images.", service), true)
+		if cerr != nil {
+			return cerr
+		}
+		if !ok {
+			return fmt.Errorf("%w: apply canceled", prompt.ErrCanceled)
+		}
+	}
+
+	backupPath, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy)
+	if err != nil {
+		return err
+	}
+	m.log("backup created for %s: %s", service, backupPath)
+
+	restore := true
+	defer func() {
+		if !restore || backupPath == "" {
+			return
+		}
+		if rerr := restoreDeploymentFromBackup(m.Cfg.DeployPath, service, backupPath, dest); rerr != nil {
+			retErr = fmt.Errorf("apply failed (%v); also failed to restore previous deployment from %s: %w", retErr, backupPath, rerr)
+			return
+		}
+		if retErr != nil {
+			m.log("restored previous deployment for %s after failed apply", service)
+			retErr = fmt.Errorf("apply failed; previous deployment restored: %w", retErr)
+		}
+	}()
+
+	if err := syncTemplateFiles(templateDir, dest); err != nil {
+		return err
+	}
+	if err := m.mergeAndWriteEnv(service, templateDir, dest, "", opts); err != nil {
+		return err
+	}
+	composeFile := composeBaseName(templateDir)
+	if err := writeOverrideUsing(service, dest, composeFile); err != nil {
+		return err
+	}
+
+	proj := composeProjectArgs(m.Cfg.DeployPath, service)
+	pullArgs := append(append([]string{}, proj...), "-f", composeFile, "pull")
+	if err := Compose(dest, pullArgs...); err != nil {
+		return err
+	}
+	upArgs := append(append([]string{}, proj...),
+		"-f", composeFile, "-f", overrideFilename, "up", "-d", "--remove-orphans")
 	if err := Compose(dest, upArgs...); err != nil {
 		return err
 	}
-	if backupPath != "" {
-		m.log("backup retained for rollback: %s", backupPath)
-	}
+	restore = false
+	m.log("applied catalog to service %s", service)
 	return nil
+}
+
+// syncTemplateFiles copies template files onto dest without deleting dest-only
+// paths and without overwriting dest .env. A file/directory type mismatch fails closed.
+func syncTemplateFiles(templateDir, dest string) error {
+	destClean := filepath.Clean(dest)
+	return filepath.Walk(templateDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(templateDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if rel == ".env" {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: refusing to copy symlink: %s", ErrSymlink, path)
+		}
+		target := filepath.Join(dest, rel)
+		targetClean := filepath.Clean(target)
+		if targetClean != destClean && !strings.HasPrefix(targetClean, destClean+string(os.PathSeparator)) {
+			return fmt.Errorf("sync path escaped destination: %s", rel)
+		}
+
+		destInfo, err := os.Lstat(target)
+		if os.IsNotExist(err) {
+			if info.IsDir() {
+				return os.MkdirAll(target, 0o755)
+			}
+			return copyFileMode(path, target, info.Mode().Perm())
+		}
+		if err != nil {
+			return err
+		}
+		if destInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: dest path is a symlink: %s", ErrSymlink, target)
+		}
+		if info.IsDir() {
+			if !destInfo.IsDir() {
+				return fmt.Errorf("apply type mismatch: template %s is a directory, dest is a file", rel)
+			}
+			return nil
+		}
+		if destInfo.IsDir() {
+			return fmt.Errorf("apply type mismatch: template %s is a file, dest is a directory", rel)
+		}
+		return copyFileMode(path, target, info.Mode().Perm())
+	})
 }
 
 func composeBaseName(dir string) string {
@@ -325,7 +435,11 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 var composeServiceNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 func writeOverride(service, dest string) error {
-	services, err := ComposeServiceNames(dest)
+	return writeOverrideUsing(service, dest, composeBaseName(dest))
+}
+
+func writeOverrideUsing(service, dest, composeFile string) error {
+	services, err := composeServiceNames(dest, composeFile)
 	if err != nil {
 		// Fall back to a marker-only file so IsManaged still works.
 		return writeMarkerOnly(dest)
@@ -423,206 +537,6 @@ func storeAuthkey(path, name, value string) error {
 		return err
 	}
 	return s.Save()
-}
-
-// Repair refreshes template files while preserving local .env secrets.
-func (m *Manager) Repair(service string) (retErr error) {
-	if err := names.ValidateServiceName(service); err != nil {
-		return err
-	}
-	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
-	if err != nil {
-		return err
-	}
-	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Release() }()
-
-	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
-	if err != nil {
-		return err
-	}
-	if err := requireManagedDeploy(dest, service); err != nil {
-		return err
-	}
-
-	backupPath, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy)
-	if err != nil {
-		return err
-	}
-	restore := true
-	defer func() {
-		if !restore {
-			return
-		}
-		if rerr := restoreRepairFromBackup(backupPath, dest); rerr != nil {
-			retErr = fmt.Errorf("repair failed (%v); also failed to restore compose files from %s: %w", retErr, backupPath, rerr)
-			return
-		}
-		if retErr != nil {
-			m.log("restored previous compose files for %s after failed repair", service)
-			retErr = fmt.Errorf("repair failed; previous compose files restored: %w", retErr)
-		}
-	}()
-
-	// Keep the current tree backed up until every repair step succeeds. Compose
-	// prefers compose.yaml, so stale candidates must be removed before copying.
-	envPath := filepath.Join(dest, ".env")
-	var envBackup []byte
-	if data, err := os.ReadFile(envPath); err == nil {
-		envBackup = data
-	}
-
-	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
-	templateCandidates := make(map[string]bool, len(scaletail.ComposeCandidates))
-	hasTemplate := false
-	for _, name := range scaletail.ComposeCandidates {
-		usable, err := repairComposeCandidate(filepath.Join(templateDir, name))
-		if err != nil {
-			return fmt.Errorf("inspect template compose file %s: %w", name, err)
-		}
-		templateCandidates[name] = usable
-		hasTemplate = hasTemplate || usable
-	}
-	if hasTemplate {
-		for _, name := range scaletail.ComposeCandidates {
-			if templateCandidates[name] {
-				continue
-			}
-			stale := filepath.Join(dest, name)
-			st, err := os.Lstat(stale)
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("inspect stale compose file %s: %w", name, err)
-			}
-			if st.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("%w: stale compose file is a symlink: %s", ErrSymlink, stale)
-			}
-			if st.IsDir() {
-				continue
-			}
-			if err := os.Remove(stale); err != nil {
-				return fmt.Errorf("remove stale compose file %s: %w", name, err)
-			}
-		}
-	}
-	for _, name := range scaletail.ComposeCandidates {
-		if !templateCandidates[name] {
-			continue
-		}
-		if err := copyFileMode(filepath.Join(templateDir, name), filepath.Join(dest, name), 0o644); err != nil {
-			return err
-		}
-	}
-	if len(envBackup) > 0 {
-		if err := atomic.WriteFile(envPath, envBackup, 0o600); err != nil {
-			return err
-		}
-	}
-	if err := writeOverride(service, dest); err != nil {
-		return err
-	}
-	proj := composeProjectArgs(m.Cfg.DeployPath, service)
-	upArgs := append(append([]string{}, proj...),
-		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
-	if err := Compose(dest, upArgs...); err != nil {
-		return err
-	}
-	restore = false
-	m.log("repaired service %s", service)
-	return nil
-}
-
-func repairComposeCandidate(path string) (bool, error) {
-	st, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return !st.IsDir() && st.Mode()&os.ModeSymlink == 0, nil
-}
-
-func restoreRepairPath(src, dst string) error {
-	srcInfo, err := os.Lstat(src)
-	if os.IsNotExist(err) {
-		srcInfo = nil
-	} else if err != nil {
-		return fmt.Errorf("inspect backup path %s: %w", src, err)
-	} else if srcInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: backup path is a symlink: %s", ErrSymlink, src)
-	}
-
-	dstInfo, err := os.Lstat(dst)
-	if os.IsNotExist(err) {
-		dstInfo = nil
-	} else if err != nil {
-		return fmt.Errorf("inspect restore path %s: %w", dst, err)
-	} else if dstInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: restore path is a symlink: %s", ErrSymlink, dst)
-	}
-	if dstInfo != nil {
-		if dstInfo.IsDir() {
-			found, err := paths.ContainsSymlinks(dst)
-			if err != nil {
-				return err
-			}
-			if found != "" {
-				return fmt.Errorf("%w: restore path contains symlink: %s", ErrSymlink, found)
-			}
-		}
-		if err := os.RemoveAll(dst); err != nil {
-			return fmt.Errorf("remove restore path %s: %w", dst, err)
-		}
-	}
-	if srcInfo == nil {
-		return nil
-	}
-	if srcInfo.IsDir() {
-		if err := copyTree(src, dst); err != nil {
-			return fmt.Errorf("restore directory %s: %w", dst, err)
-		}
-		return nil
-	}
-	if err := copyFileMode(src, dst, srcInfo.Mode().Perm()); err != nil {
-		return fmt.Errorf("restore file %s: %w", dst, err)
-	}
-	return nil
-}
-
-func restoreRepairFromBackup(backupPath, dest string) error {
-	for _, name := range scaletail.ComposeCandidates {
-		if err := restoreRepairPath(filepath.Join(backupPath, name), filepath.Join(dest, name)); err != nil {
-			return fmt.Errorf("restore compose file %s: %w", name, err)
-		}
-	}
-	if err := restoreRepairPath(filepath.Join(backupPath, overrideFilename), filepath.Join(dest, overrideFilename)); err != nil {
-		return fmt.Errorf("restore override: %w", err)
-	}
-	return nil
-}
-
-// Update pulls images and recreates containers.
-func (m *Manager) Update(service string) error {
-	return m.withManagedServiceDir(service, func(dir string) error {
-		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		pullArgs := append(append([]string{}, proj...), "-f", composeBaseName(dir), "pull")
-		if err := Compose(dir, pullArgs...); err != nil {
-			return err
-		}
-		upArgs := append(append([]string{}, proj...),
-			"-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans")
-		if err := Compose(dir, upArgs...); err != nil {
-			return err
-		}
-		m.log("updated service %s", service)
-		return nil
-	})
 }
 
 // Stop stops a deployment.
