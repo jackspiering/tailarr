@@ -41,10 +41,12 @@ func Load(path string) (*Store, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	// Tighten permissions if loose.
+	// Tighten permissions if loose. Fail closed if chmod errors (e.g. read-only FS).
 	if info, err := f.Stat(); err == nil {
 		if info.Mode().Perm()&0o077 != 0 {
-			_ = f.Chmod(0o600)
+			if err := f.Chmod(0o600); err != nil {
+				return nil, fmt.Errorf("tighten authkeys permissions: %w", err)
+			}
 		}
 	}
 
@@ -81,9 +83,9 @@ func Ensure(path string) error {
 		return err
 	}
 	if _, err := os.Lstat(path); err == nil {
-		// Tighten permissions via the open descriptor, not the path, so a
-		// raced symlink swap cannot be chmod'd instead.
-		f, err := os.Open(path)
+		// Tighten permissions via descriptor with O_NOFOLLOW where available,
+		// so a raced symlink swap cannot be chmod'd instead.
+		f, err := paths.OpenFileNoFollow(path, os.O_RDWR, 0)
 		if err != nil {
 			return err
 		}

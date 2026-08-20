@@ -53,7 +53,7 @@ func (s *Std) Confirm(question string, defaultYes bool) (bool, error) {
 		s.Printf("%s %s: (auto-yes)\n", question, suffix)
 		return true, nil
 	}
-	if !stdinIsTTY() {
+	if !s.isTerminal() {
 		return false, fmt.Errorf("stdin is not a terminal: %s", question)
 	}
 	s.Printf("%s %s: ", question, suffix)
@@ -160,6 +160,22 @@ func (s *Std) readLine() (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+func (s *Std) isTerminal() bool {
+	in := s.In
+	if in == nil {
+		in = os.Stdin
+	}
+	f, ok := in.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func stdinIsTTY() bool {

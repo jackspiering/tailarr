@@ -20,7 +20,7 @@ func OpenFileNoFollow(path string, flag int, perm os.FileMode) (*os.File, error)
 
 // ChmodNoFollow sets mode on path after refusing a raced symlink.
 func ChmodNoFollow(path string, mode os.FileMode) error {
-	f, err := OpenFileNoFollow(path, unix.O_WRONLY, 0)
+	f, err := OpenFileNoFollow(path, unix.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open for chmod: %w", err)
 	}

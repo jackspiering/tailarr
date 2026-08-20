@@ -87,7 +87,7 @@ func ValidateRepoURL(raw string) error {
 	case strings.HasPrefix(raw, "https://"):
 		u, err := url.Parse(raw)
 		if err != nil {
-			return fmt.Errorf("invalid ScaleTail repository URL: %w", err)
+			return fmt.Errorf("invalid ScaleTail repository URL")
 		}
 		if u.User != nil {
 			return fmt.Errorf("repository URL must not contain credentials; use SSH agent or a credential helper")
@@ -99,7 +99,7 @@ func ValidateRepoURL(raw string) error {
 	case strings.HasPrefix(raw, "ssh://"):
 		u, err := url.Parse(raw)
 		if err != nil {
-			return fmt.Errorf("invalid ScaleTail repository URL: %w", err)
+			return fmt.Errorf("invalid ScaleTail repository URL")
 		}
 		// ssh://user@host/path is common and not a secret; reject password userinfo.
 		if u.User != nil {
@@ -114,26 +114,63 @@ func ValidateRepoURL(raw string) error {
 	case strings.HasPrefix(raw, "git@"):
 		// git@host:path form — no password embedded in standard SCP-like syntax.
 		if strings.Contains(raw, "://") {
-			return fmt.Errorf("unsupported ScaleTail repository URL: %s", raw)
+			return fmt.Errorf("unsupported ScaleTail repository URL")
+		}
+		rest := strings.TrimPrefix(raw, "git@")
+		if rest == "" || strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "/") {
+			return fmt.Errorf("invalid ScaleTail repository URL: missing host")
+		}
+		if idx := strings.Index(rest, ":"); idx >= 0 {
+			if idx == 0 {
+				return fmt.Errorf("invalid ScaleTail repository URL: missing host")
+			}
+		} else if idx := strings.Index(rest, "/"); idx >= 0 {
+			if idx == 0 {
+				return fmt.Errorf("invalid ScaleTail repository URL: missing host")
+			}
+		}
+		host := rest
+		if idx := strings.IndexAny(rest, ":/"); idx >= 0 {
+			host = rest[:idx]
+		}
+		if host == "" {
+			return fmt.Errorf("invalid ScaleTail repository URL: missing host")
 		}
 		return nil
 	default:
-		return fmt.Errorf("unsupported ScaleTail repository URL (expected https://, ssh://, or git@): %s", raw)
+		return fmt.Errorf("unsupported ScaleTail repository URL (expected https://, ssh://, or git@)")
 	}
 }
 
 // RedactRepoURL strips userinfo from a URL for display/logs. Non-URL forms
 // (git@...) are returned unchanged.
 func RedactRepoURL(raw string) string {
-	if strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "ssh://") {
+	if strings.HasPrefix(raw, "https://") {
 		u, err := url.Parse(raw)
 		if err != nil {
-			return raw
+			// Fallback: never return raw credential URL on parse failure.
+			return regexp.MustCompile(`(?i)(https://)[^\s/@]+@`).ReplaceAllString(raw, `${1}redacted@`)
 		}
 		if u.User != nil {
 			u.User = nil
 			return u.String()
 		}
+		return raw
+	}
+	if strings.HasPrefix(raw, "ssh://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return regexp.MustCompile(`(?i)(ssh://)[^\s/@]+@`).ReplaceAllString(raw, `${1}redacted@`)
+		}
+		if u.User != nil {
+			if _, hasPass := u.User.Password(); hasPass {
+				u.User = nil
+				return u.String()
+			}
+			// Username-only ssh URL is not a secret; preserve it.
+			return raw
+		}
+		return raw
 	}
 	return raw
 }

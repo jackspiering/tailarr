@@ -118,6 +118,10 @@ func (r *Result) checkPath(label, path string, wantWrite bool) {
 		r.add(Fail, label, "must not be a symlink: "+path)
 		return
 	}
+	if err := paths.RefuseSymlinkAncestry(path); err != nil {
+		r.add(Fail, label, err.Error())
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -134,14 +138,13 @@ func (r *Result) checkPath(label, path string, wantWrite bool) {
 	// Probe write access with O_EXCL unique file; never follow/overwrite via symlink.
 	if wantWrite {
 		if err := probeWritable(path); err != nil {
-			r.add(Warn, label, "not writable by this user: "+path)
+			r.add(Warn, label, fmt.Sprintf("not writable: %s (%v)", path, err))
 			return
 		}
 	}
 	r.add(OK, label, path)
 }
 
-// probeWritable creates an exclusive probe file and removes it.
 // Refuses to write if a probe path already exists (including as a symlink).
 func probeWritable(dir string) error {
 	name := fmt.Sprintf(".tailarr-doctor-write-probe-%d-%d", os.Getpid(), time.Now().UnixNano())

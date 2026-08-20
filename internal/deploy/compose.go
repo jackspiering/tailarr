@@ -36,7 +36,9 @@ func composeServiceNames(dir, base string) ([]string, error) {
 		base = "compose.yaml"
 	}
 	if DockerOK() && ComposeOK() {
-		cmd := exec.Command("docker", "compose", "-f", base, "config", "--services")
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "config", "--services")
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		if err == nil {

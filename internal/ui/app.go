@@ -2,10 +2,13 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -17,6 +20,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/logging"
 	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
+	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/redact"
 	"github.com/jackspiering/tailarr/internal/upgrade"
 	"github.com/jackspiering/tailarr/internal/version"
@@ -28,6 +32,9 @@ var prog *tea.Program
 
 // leaveTUI hands the terminal back to cooked mode and pauses bubbletea's stdin
 // reader so prompts can read os.Stdin directly. Reenter with reenterTUI.
+// Signals are not delivered to bubbletea while the terminal is released
+// (bubbletea sets ignoreSignals). Run installs a process-wide SIGINT/SIGTERM
+// handler that calls prog.Quit() so Ctrl-C still exits.
 func leaveTUI() {
 	if prog != nil {
 		_ = prog.ReleaseTerminal()
@@ -115,6 +122,7 @@ type model struct {
 	items    []menuItem
 	status   string
 	quitting bool
+	busy     bool
 
 	// multi-select state
 	multi       multiMode
@@ -136,10 +144,19 @@ func Run(cfg config.Config, log *logging.Logger) error {
 	}
 	p := tea.NewProgram(m)
 	prog = p
+	// Forward SIGINT/SIGTERM to bubbletea even while the terminal is released.
+	// bubbletea ignores signals while ReleaseTerminal is active; without this
+	// a Ctrl-C during a prompt or catalog refresh would be dropped.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		if prog != nil {
+			prog.Quit()
+		}
+	}()
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrInterrupted) {
-		// Routine user cancellation mid-prompt (Ctrl-C while the terminal is
-		// released for a stdin prompt) is a clean exit, not an error.
 		err = nil
 	}
 	return err
@@ -246,6 +263,7 @@ func (m model) Init() tea.Cmd { return nil }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case resultMsg:
+		m.busy = false
 		if msg.cfg != nil {
 			m.cfg = *msg.cfg
 		}
@@ -259,11 +277,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case tea.KeyPressMsg:
+		if m.busy {
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
 		case "q", "esc":
+			if m.screen == screenMultiSelect {
+				if m.multiParent == screenMaintenance {
+					return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
+				}
+				return m.setScreen(screenServices, servicesMenuItems()), nil
+			}
 			if m.screen == screenMain {
 				m.quitting = true
 				return m, tea.Quit
@@ -295,6 +322,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			if msg.String() == "0" {
+				if m.screen == screenMultiSelect {
+					if m.multiParent == screenMaintenance {
+						return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
+					}
+					return m.setScreen(screenServices, servicesMenuItems()), nil
+				}
 				if m.screen == screenMain {
 					m.quitting = true
 					return m, tea.Quit
@@ -415,7 +448,7 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 	case "overview":
 		st, err := deploy.CollectOverview(m.cfg.DeployPath)
 		if err != nil {
-			m.status = styleOrPlain(errStyle, err.Error())
+			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
 			return m, nil
 		}
 		m.status = deploy.FormatOverview(st)
@@ -423,7 +456,7 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 	case "deployed":
 		svcs, err := scaletail.ListDeployed(m.cfg.DeployPath)
 		if err != nil {
-			m.status = styleOrPlain(errStyle, err.Error())
+			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
 			return m, nil
 		}
 		if len(svcs) == 0 {
@@ -448,7 +481,7 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 	case "running":
 		names, err := deploy.RunningServiceNames()
 		if err != nil {
-			m.status = styleOrPlain(errStyle, err.Error())
+			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
 			return m, nil
 		}
 		if len(names) == 0 {
@@ -458,7 +491,11 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 		m.status = "  - " + strings.Join(names, "\n  - ")
 		return m, nil
 	case "summary":
-		st, _ := deploy.CollectOverview(m.cfg.DeployPath)
+		st, err := deploy.CollectOverview(m.cfg.DeployPath)
+		if err != nil {
+			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
+			return m, nil
+		}
 		m.status = deploy.FormatOverview(st) + "\n" + m.cfg.String() + "\nLog path: " + m.cfg.LogPath
 		return m, nil
 	}
@@ -656,23 +693,31 @@ func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
 
 func editConfigInteractive(cfg *config.Config, ui *prompt.Std) string {
 	var err error
-	if cfg.RepoURL, err = ui.Line("TAILARR_REPO_URL", cfg.RepoURL); err != nil {
-		return err.Error()
+	var raw string
+	if raw, err = ui.Line("TAILARR_REPO_URL", cfg.RepoURL); err != nil {
+		return redact.Text(err.Error())
 	}
+	raw = strings.TrimSpace(raw)
+	if raw != "" {
+		if err := names.ValidateRepoURL(raw); err != nil {
+			return "Error saving: " + redact.Text(err.Error())
+		}
+	}
+	cfg.RepoURL = raw
 	if cfg.RepoPath, err = ui.Line("TAILARR_REPO_PATH", cfg.RepoPath); err != nil {
-		return err.Error()
+		return redact.Text(err.Error())
 	}
 	if cfg.DeployPath, err = ui.Line("TAILARR_DEPLOY_PATH", cfg.DeployPath); err != nil {
-		return err.Error()
+		return redact.Text(err.Error())
 	}
 	if cfg.LogPath, err = ui.Line("TAILARR_LOG_PATH", cfg.LogPath); err != nil {
-		return err.Error()
+		return redact.Text(err.Error())
 	}
 	if cfg.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", cfg.AuthkeysPath); err != nil {
-		return err.Error()
+		return redact.Text(err.Error())
 	}
 	if err := config.Save(*cfg); err != nil {
-		return "Error saving: " + err.Error()
+		return "Error saving: " + redact.Text(err.Error())
 	}
 	return "Saved config: " + cfg.ConfigPath
 }
@@ -803,6 +848,7 @@ func (m model) finishMulti() (tea.Model, tea.Cmd) {
 	mode := m.multi
 	cfg := m.cfg
 	log := m.log
+	m.busy = true
 	return m, tea.Sequence(func() tea.Msg {
 		// ReleaseTerminal/RestoreTerminal (replacing the alt-screen exit/enter
 		// commands) also restore raw mode and pause bubbletea's stdin reader so
@@ -817,12 +863,12 @@ func (m model) finishMulti() (tea.Model, tea.Cmd) {
 func runCatalogRefresh(cfg config.Config) string {
 	lock, err := deploy.AcquireLock(deploy.RepoLockPath(cfg.RepoPath), deploy.DefaultLockTimeout)
 	if err != nil {
-		return styleOrPlain(errStyle, "repo lock: "+err.Error())
+		return styleOrPlain(errStyle, "repo lock: "+redact.Text(err.Error()))
 	}
 	defer func() { _ = lock.Release() }()
 	msg, err := scaletail.Refresh(cfg.RepoURL, cfg.RepoPath)
 	if err != nil {
-		return styleOrPlain(errStyle, err.Error())
+		return styleOrPlain(errStyle, redact.Text(err.Error()))
 	}
 	if strings.HasPrefix(msg, "Using local") {
 		return msg

@@ -29,13 +29,15 @@ const gitOpTimeout = 5 * time.Minute
 
 // runGit runs git with hardened args under a gitOpTimeout deadline and returns
 // combined output. A timeout surfaces as an error naming the timeout.
+// WaitDelay ensures helper processes (git-remote-https) are killed with the parent.
 func runGit(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitOpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", gitHardened(args...)...)
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, fmt.Errorf("git operation timed out after %s", gitOpTimeout)
+		return out, fmt.Errorf("git operation timed out after %s (check network and retry; if pull repeatedly fails with index.lock, remove %s/.git/*.lock)", gitOpTimeout, cmd.Dir)
 	}
 	return out, err
 }
@@ -73,19 +75,21 @@ func Refresh(repoURL, repoPath string) (string, error) {
 		}
 		return string(out), nil
 	}
-
 	if _, err := os.Stat(repoPath); err == nil {
 		// Path exists but is not a git repo.
 		if _, err2 := os.Stat(filepath.Join(repoPath, "services")); err2 == nil {
 			// Local tree without .git: treat as OK for offline use.
 			return "Using local ScaleTail tree (not a git repository); skipped pull.", nil
 		}
+		// Allow clone into an existing empty directory (git clone accepts it).
+		if entries, err := os.ReadDir(repoPath); err == nil && len(entries) == 0 {
+			return cloneRepo(repoURL, repoPath)
+		}
 		return "", fmt.Errorf("%s exists but is not a git repository", repoPath)
 	}
 
 	return cloneRepo(repoURL, repoPath)
 }
-
 func cloneRepo(repoURL, repoPath string) (string, error) {
 	out, err := runGit("clone", "--depth", "1", repoURL, repoPath)
 	if err != nil {
@@ -114,6 +118,12 @@ func ensureOnBranch(repoPath string) error {
 	}
 	if branch == "" {
 		return fmt.Errorf("ScaleTail repo is detached and no default branch could be determined")
+	}
+	// Do not silently abandon commits ahead of origin/<branch>.
+	if out, err := runGit("-C", repoPath, "rev-list", "--count", "origin/"+branch+"..HEAD"); err == nil {
+		if cnt := strings.TrimSpace(string(out)); cnt != "" && cnt != "0" {
+			return fmt.Errorf("ScaleTail repo has %s detached commit(s) ahead of origin/%s; aborting checkout", cnt, branch)
+		}
 	}
 	if _, err := runGit("-C", repoPath, "checkout", "-B", branch, "origin/"+branch); err != nil {
 		return fmt.Errorf("could not leave detached HEAD for pull: %w", err)

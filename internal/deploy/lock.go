@@ -34,9 +34,10 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 		timeout = DefaultLockTimeout
 	}
 	dir := filepath.Dir(path)
-	if err := paths.EnsureDir(dir, "lock directory"); err != nil {
+	if err := paths.EnsureDirMode(dir, "lock directory", 0o700); err != nil {
 		return nil, err
 	}
+	_ = os.Chmod(dir, 0o700)
 	if err := paths.RefuseSymlinkAncestry(dir); err != nil {
 		return nil, fmt.Errorf("lock directory: %w", err)
 	}

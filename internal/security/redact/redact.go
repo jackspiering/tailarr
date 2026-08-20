@@ -34,13 +34,16 @@ const secretKeyPattern = `(?:TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE(
 var lineSecretRE = regexp.MustCompile(`(?i)([A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*)=([^\n]*)`)
 
 // jsonSecretRE matches "KEY":"value" JSON object members.
-var jsonSecretRE = regexp.MustCompile(`(?i)("` + secretKeyPattern + `"\s*:\s*")[^"]*(")`)
+// Prefix/suffix wildcards allow client_secret, access_token, etc.
+var jsonSecretRE = regexp.MustCompile(`(?i)("[A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*"\s*:\s*")[^"]*(")`)
 
 // colonSecretRE matches KEY: value forms where KEY looks sensitive.
-var colonSecretRE = regexp.MustCompile(`(?i)(\b` + secretKeyPattern + `\b\s*:\s*)[^\s,;]+`)
+// Value runs to end of line so multi-word secrets are fully redacted.
+var colonSecretRE = regexp.MustCompile(`(?i)(\b` + secretKeyPattern + `\b\s*:\s*)[^\n]+`)
 
 // urlUserinfoRE matches scheme://userinfo@ so URL credentials never reach logs.
-var urlUserinfoRE = regexp.MustCompile(`(?i)(https?|ssh)://[^\s/@]+@`)
+// Allows any non-space chars up to last @, including '/' in passwords (percent-encoded or raw).
+var urlUserinfoRE = regexp.MustCompile(`(?i)(https?|ssh)://[^@\s]+@`)
 
 // bearerRE matches Authorization: Bearer <token>.
 var bearerRE = regexp.MustCompile(`(?i)(\bAuthorization\s*:\s*Bearer\s+)[^\s,;]+`)

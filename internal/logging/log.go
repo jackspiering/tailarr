@@ -27,6 +27,30 @@ func New(path string, maxBytes int64) *Logger {
 	return &Logger{path: path, maxBytes: maxBytes}
 }
 
+// Path returns the log file path.
+func (l *Logger) Path() string {
+	if l == nil {
+		return ""
+	}
+	return l.path
+}
+
+// Validate checks if the log path can be used (parent is not symlink, not a directory).
+// Failures are returned so main can warn; Event remains silent by design.
+func (l *Logger) Validate() error {
+	if l == nil || l.path == "" {
+		return fmt.Errorf("log path is empty")
+	}
+	dir := filepath.Dir(l.path)
+	if err := paths.RefuseSymlinkAncestry(dir); err != nil {
+		return err
+	}
+	if paths.IsSymlink(l.path) {
+		return fmt.Errorf("log file must not be a symlink: %s", l.path)
+	}
+	return nil
+}
+
 // Event appends a timestamped, redacted message. Failures are silent.
 func (l *Logger) Event(message string) {
 	if l == nil || l.path == "" {
@@ -65,7 +89,12 @@ func (l *Logger) rotateIfNeeded() {
 	}
 	rotated := l.path + ".1"
 	if paths.IsSymlink(rotated) {
-		return
+		// Do not silently disable rotation; remove the symlink target check
+		// failed, so just truncate in place rather than losing logs forever.
+		_ = os.Remove(rotated)
+		if paths.IsSymlink(rotated) {
+			return
+		}
 	}
 	_ = os.Rename(l.path, rotated)
 	_ = paths.ChmodNoFollow(rotated, 0o600)
