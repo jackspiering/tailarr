@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-21
+
+### Security
+
+- Redaction now covers suffixed keys (`client_secret`, `access_token`),
+  multi-word colon values, and slash-containing URL userinfo;
+  credential URLs no longer leak on parse failure.
+- `ssh://` userinfo redaction preserves username-only URLs so saved config round-trips correctly.
+- Auth key store fail-closes on chmod errors and uses `O_NOFOLLOW` when tightening permissions.
+
+### Fixed
+
+- Config env overrides now trim whitespace before validation.
+- Env files handle `export FOO=bar`, per-line BOM, invalid keys, and deterministic write ordering.
+- ScaleTail git operations use `WaitDelay` for helper cleanup, allow empty-dir clone, and avoid abandoning detached commits.
+- Upgrade fetch uses 120s timeout, strict `owner/repo` validation, and semver rejects extra parts (`1.2.3.4`).
+- Logging rotation handles symlinked `.1` and validates log path before use; first-run setup no longer runs before logger.
+- Prompts check `s.In` TTY correctly; doctor checks symlink ancestry and reports probe errors accurately.
+- Deploy locks use 0700, backup partial cleanup is best-effort,
+  compose service names have a timeout, Apply preserves all backup
+  secrets and tightens confirmation, and TUI fixes double-Enter,
+  cancel routing, redacted errors, and SIGINT handling.
+
 ## [0.5.0] - 2026-08-15
 
 ### Added
@@ -165,7 +188,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
 - golangci-lint / misspell CI (errcheck, empty branches, US `Canceled` exit code name).
 
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0

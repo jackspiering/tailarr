@@ -18,7 +18,7 @@ set -eu
 
 REPO="${GITHUB_REPO:-jackspiering/tailarr}"
 BINARY_NAME="tailarr"
-DEFAULT_VERSION="v0.5.0"
+DEFAULT_VERSION="v0.5.1"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 RELEASES_URL="https://github.com/${REPO}/releases/download"
 
