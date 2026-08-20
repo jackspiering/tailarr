@@ -74,11 +74,11 @@ func validEnvKey(key string) bool {
 	}
 	for i, c := range key {
 		if i == 0 {
-			if !(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
 				return false
 			}
 		} else {
-			if !(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
 				return false
 			}
 		}
