@@ -180,7 +180,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	}
 
 	if m.UI != nil {
-		ok, cerr := m.UI.Confirm(fmt.Sprintf("Apply catalog to %s? This overwrites template files and pulls images.", service), true)
+		ok, cerr := m.UI.Confirm(fmt.Sprintf("Apply catalog to %s? This overwrites template files and pulls images.", service), false)
 		if cerr != nil {
 			return cerr
 		}
@@ -213,7 +213,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err := syncTemplateFiles(templateDir, dest); err != nil {
 		return err
 	}
-	if err := m.mergeAndWriteEnv(service, templateDir, dest, "", opts); err != nil {
+	if err := m.mergeAndWriteEnv(service, templateDir, dest, backupPath, opts); err != nil {
 		return err
 	}
 	composeFile := composeBaseName(templateDir)
@@ -261,6 +261,10 @@ func syncTemplateFiles(templateDir, dest string) error {
 		targetClean := filepath.Clean(target)
 		if targetClean != destClean && !strings.HasPrefix(targetClean, destClean+string(os.PathSeparator)) {
 			return fmt.Errorf("sync path escaped destination: %s", rel)
+		}
+		// Refuse if any existing ancestor of target is a symlink (TOCTOU window is bounded by per-service lock).
+		if err := paths.RefuseSymlinkAncestry(filepath.Dir(target)); err != nil {
+			return fmt.Errorf("%w: %w", ErrSymlink, err)
 		}
 
 		destInfo, err := os.Lstat(target)

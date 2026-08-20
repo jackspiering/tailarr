@@ -136,22 +136,23 @@ func loadFile(cfg *Config, path string) error {
 
 func applyEnv(cfg *Config) error {
 	if v := os.Getenv("TAILARR_REPO_URL"); v != "" {
+		v = strings.TrimSpace(v)
 		if err := names.ValidateRepoURL(v); err != nil {
 			return err
 		}
 		cfg.RepoURL = v
 	}
 	if v := os.Getenv("TAILARR_REPO_PATH"); v != "" {
-		cfg.RepoPath = v
+		cfg.RepoPath = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("TAILARR_DEPLOY_PATH"); v != "" {
-		cfg.DeployPath = v
+		cfg.DeployPath = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("TAILARR_LOG_PATH"); v != "" {
-		cfg.LogPath = v
+		cfg.LogPath = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("TAILARR_AUTHKEYS_PATH"); v != "" {
-		cfg.AuthkeysPath = v
+		cfg.AuthkeysPath = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("TAILARR_LOG_MAX_BYTES"); v != "" {
 		value := strings.TrimSpace(v)

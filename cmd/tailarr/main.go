@@ -22,12 +22,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	if err := log.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "Warning: log path:", err)
+	}
+
 	if err := ui.FirstRunSetup(&cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
-
-	log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	// FirstRunSetup may have changed LogPath via interactive edit; recreate logger if needed.
+	if cfg.LogPath != log.Path() {
+		log = logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	}
 	if err := ui.Run(cfg, log); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)

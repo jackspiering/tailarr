@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/jackspiering/tailarr/internal/security/atomic"
@@ -31,14 +32,22 @@ func ParseEnvFile(path string) (EnvMap, error) {
 	first := true
 	for sc.Scan() {
 		line := sc.Text()
+		// Strip UTF-8 BOM on first line and also handle stray BOM on later lines
+		// (a copy-paste artifact) so keys are not silently dropped.
 		if first {
-			// Strip a UTF-8 BOM so the first env key is not silently dropped.
 			line = strings.TrimPrefix(line, "\ufeff")
 			first = false
+		} else {
+			line = strings.TrimPrefix(line, "\ufeff")
 		}
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		// Strip optional leading "export " (shell-style) so "export FOO=bar"
+		// is treated as FOO=bar. Only one prefix, case-sensitive.
+		if strings.HasPrefix(line, "export ") || strings.HasPrefix(line, "export\t") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export"))
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -48,11 +57,33 @@ func ParseEnvFile(path string) (EnvMap, error) {
 		if key == "" {
 			continue
 		}
+		if !validEnvKey(key) {
+			continue
+		}
 		// Strip optional surrounding quotes on value.
 		value = unquote(value)
 		out[key] = value
 	}
 	return out, sc.Err()
+}
+
+// validEnvKey reports whether key is a valid dotenv identifier: [A-Za-z_][A-Za-z0-9_]* .
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, c := range key {
+		if i == 0 {
+			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+				return false
+			}
+		} else {
+			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func unquote(v string) string {
@@ -124,17 +155,22 @@ func ReadEnvKeys(path string) ([]string, error) {
 		if first {
 			line = strings.TrimPrefix(line, "\ufeff")
 			first = false
+		} else {
+			line = strings.TrimPrefix(line, "\ufeff")
 		}
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if strings.HasPrefix(line, "export ") || strings.HasPrefix(line, "export\t") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export"))
 		}
 		key, _, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
 		key = strings.TrimSpace(key)
-		if key == "" || seen[key] {
+		if key == "" || seen[key] || !validEnvKey(key) {
 			continue
 		}
 		seen[key] = true
@@ -226,10 +262,16 @@ func WriteEnvFile(path string, merged EnvMap, keyOrder []string) error {
 			written[k] = true
 		}
 	}
-	for k, v := range merged {
+	// Remaining keys sorted for deterministic output.
+	var extra []string
+	for k := range merged {
 		if !written[k] {
-			fmt.Fprintf(&b, "%s=%s\n", k, v)
+			extra = append(extra, k)
 		}
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		fmt.Fprintf(&b, "%s=%s\n", k, merged[k])
 	}
 	return atomic.WriteFileString(path, b.String(), 0o600)
 }

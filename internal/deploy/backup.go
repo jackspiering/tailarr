@@ -340,9 +340,7 @@ func restoreDeploymentFromBackup(deployPath, service, backupPath, dest string) e
 		return fmt.Errorf("restore deployment from backup: %w", err)
 	}
 	if _, err := os.Lstat(partial); err == nil {
-		if err := os.RemoveAll(partial); err != nil {
-			return fmt.Errorf("remove partial deploy: %w", err)
-		}
+		_ = os.RemoveAll(partial)
 	}
 	return nil
 }

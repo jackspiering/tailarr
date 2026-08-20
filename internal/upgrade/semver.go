@@ -53,6 +53,9 @@ func parse(s string) (semver, bool) {
 		s = s[:i]
 	}
 	parts := strings.Split(s, ".")
+	if len(parts) > 3 {
+		return semver{}, false
+	}
 	v := semver{pre: pre}
 	for i := 0; i < 3; i++ {
 		var n int

@@ -61,6 +61,12 @@ func validReleaseTag(tag string) bool {
 	return tag != "" && releaseTagRE.MatchString(tag) && !strings.Contains(tag, "..")
 }
 
+var repoRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+func isValidRepo(repo string) bool {
+	return repoRE.MatchString(repo)
+}
+
 // releaseInfo is the minimal GitHub API response needed to find the latest tag.
 type releaseInfo struct {
 	TagName string `json:"tag_name"`
@@ -77,9 +83,11 @@ func (o Options) client() *http.Client {
 	if o.Client != nil {
 		return o.Client
 	}
-	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: safeGitHubRedirect}
+	// 2-minute timeout allows slow links to fetch 64 MiB assets; the server
+	// must send the first byte within 30s or the context will still expire
+	// via transport dial timeout. Prior 30s bounded the entire body read.
+	return &http.Client{Timeout: 120 * time.Second, CheckRedirect: safeGitHubRedirect}
 }
-
 func (o Options) apiURL(repo string) string {
 	base := o.apiBase
 	if base == "" {
@@ -105,7 +113,7 @@ func (o Options) progress(format string, args ...any) {
 // Latest fetches the latest release tag (for example "v0.3.0") for the repo.
 func Latest(opts Options) (string, error) {
 	repo := opts.repo()
-	if !strings.Contains(repo, "/") || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {
+	if !isValidRepo(repo) {
 		return "", fmt.Errorf("invalid repository %q (want owner/repo)", repo)
 	}
 	url := opts.apiURL(repo)

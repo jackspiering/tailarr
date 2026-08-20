@@ -10,6 +10,9 @@ import (
 )
 
 // IsSymlink reports whether path exists and is a symbolic link.
+// Returns false if the path does not exist or cannot be statted
+// (conflates "not symlink" with "cannot determine"); callers that need
+// to distinguish permission errors should Lstat directly.
 func IsSymlink(path string) bool {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -192,5 +195,5 @@ func EnsureDirMode(path, label string, mode os.FileMode) error {
 	if err := EnsureDir(path, label); err != nil {
 		return err
 	}
-	return os.Chmod(path, mode)
+	return ChmodNoFollow(path, mode)
 }
