@@ -41,10 +41,15 @@ func TestAssumeYesSkipsOnlyDefaultYes(t *testing.T) {
 		t.Fatalf("default-yes should auto-accept: ok=%v err=%v", ok, err)
 	}
 
-	no := &Std{In: strings.NewReader("n\n"), Out: io.Discard, Err: io.Discard, AssumeYes: true}
-	ok, err = no.Confirm("remove?", false)
-	if err == nil && ok {
+	// Default-no stays gated under AssumeYes. Confirm still requires a terminal
+	// and an answer; it does not return (false, nil) without reading.
+	no := &Std{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, AssumeYes: true}
+	ok, err = no.Confirm("Remove stored auth key prod?", false)
+	if ok {
 		t.Fatal("default-no must not auto-accept")
+	}
+	if err == nil {
+		t.Fatal("non-terminal default-no must still require an answer")
 	}
 }
 

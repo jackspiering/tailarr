@@ -19,7 +19,7 @@ env:
   # Keep these tool versions in sync with the CI workflow.
   GO_VERSION: "1.26.6"
   GOLANGCI_LINT_VERSION: v2.12.2
-  RUMDL_VERSION: "0.2.54"
+  RUMDL_VERSION: "0.2.55"
 
 concurrency:
   # Dispatch uses its requested tag; tag pushes use the effective ref name.

@@ -16,6 +16,13 @@ var serviceNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 // authkeyNameRE is the same shape as service names for stored key labels.
 var authkeyNameRE = serviceNameRE
 
+// Fallback redaction when url.Parse fails. Same credential class as
+// redact.urlUserinfoRE: any non-space chars up to @, including '/'.
+var (
+	httpsUserinfoFallbackRE = regexp.MustCompile(`(?i)(https://)[^@\s]+@`)
+	sshUserinfoFallbackRE   = regexp.MustCompile(`(?i)(ssh://)[^@\s]+@`)
+)
+
 // maxNameLen caps service and auth-key identifier length.
 const maxNameLen = 64
 
@@ -149,7 +156,7 @@ func RedactRepoURL(raw string) string {
 		u, err := url.Parse(raw)
 		if err != nil {
 			// Fallback: never return raw credential URL on parse failure.
-			return regexp.MustCompile(`(?i)(https://)[^\s/@]+@`).ReplaceAllString(raw, `${1}redacted@`)
+			return httpsUserinfoFallbackRE.ReplaceAllString(raw, `${1}redacted@`)
 		}
 		if u.User != nil {
 			u.User = nil
@@ -160,7 +167,7 @@ func RedactRepoURL(raw string) string {
 	if strings.HasPrefix(raw, "ssh://") {
 		u, err := url.Parse(raw)
 		if err != nil {
-			return regexp.MustCompile(`(?i)(ssh://)[^\s/@]+@`).ReplaceAllString(raw, `${1}redacted@`)
+			return sshUserinfoFallbackRE.ReplaceAllString(raw, `${1}redacted@`)
 		}
 		if u.User != nil {
 			if _, hasPass := u.User.Password(); hasPass {

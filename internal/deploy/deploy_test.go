@@ -919,6 +919,40 @@ func TestScanComposeServiceNames(t *testing.T) {
 	}
 }
 
+func TestIsManagedRequiresStructuredMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, overrideFilename)
+
+	if IsManaged(dir) {
+		t.Fatal("missing override must not be managed")
+	}
+
+	if err := os.WriteFile(path, []byte("x: tailarr.managed-notreally\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if IsManaged(dir) {
+		t.Fatal("substring lookalike must not be managed")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOverride("demo", dir); err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(dir) {
+		t.Fatal("writeOverrideUsing output must be managed")
+	}
+
+	markerDir := t.TempDir()
+	if err := writeMarkerOnly(markerDir); err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(markerDir) {
+		t.Fatal("writeMarkerOnly output must be managed")
+	}
+}
+
 func TestWriteOverrideLabels(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644); err != nil {
