@@ -44,6 +44,12 @@ const TailarrComposeLabel = "com.tailarr.managed=true"
 // overrideFilename is written next to the service compose file.
 const overrideFilename = ".tailarr.compose.yaml"
 
+// managedYAMLLabelRE matches the compose label Tailarr writes in writeOverrideUsing.
+var managedYAMLLabelRE = regexp.MustCompile(`(?m)^\s+tailarr\.managed:\s*"true"\s*$`)
+
+// managedMarkerRE matches the comment form Tailarr writes in writeMarkerOnly.
+var managedMarkerRE = regexp.MustCompile(`(?m)^# Managed: com\.tailarr\.managed=true\s*$`)
+
 // DeployWith deploys a service: copies the template into the deploy path,
 // merges env, and runs compose up.
 func (m *Manager) DeployWith(service string, opts DeployOpts) error {
@@ -732,6 +738,8 @@ func (m *Manager) log(format string, args ...any) {
 }
 
 // IsManaged reports whether a deploy dir has a Tailarr override marker.
+// It requires the structured forms Tailarr writes (YAML label or marker
+// comment), not a substring match of "tailarr.managed".
 func IsManaged(dir string) bool {
 	p := filepath.Join(dir, overrideFilename)
 	data, err := os.ReadFile(p)
@@ -739,5 +747,5 @@ func IsManaged(dir string) bool {
 		return false
 	}
 	s := string(data)
-	return strings.Contains(s, "com.tailarr.managed") || strings.Contains(s, "tailarr.managed")
+	return managedYAMLLabelRE.MatchString(s) || managedMarkerRE.MatchString(s)
 }

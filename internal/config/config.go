@@ -91,14 +91,11 @@ func loadFile(cfg *Config, path string) error {
 	sc := bufio.NewScanner(f)
 	// Allow long lines without loading secrets into huge buffers unnecessarily.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	first := true
 	for sc.Scan() {
 		line := sc.Text()
-		if first {
-			// Strip a UTF-8 BOM so the first key is not silently dropped.
-			line = strings.TrimPrefix(line, "\ufeff")
-			first = false
-		}
+		// Strip a UTF-8 BOM on every line so a copy-paste artifact does not
+		// silently drop a key.
+		line = strings.TrimPrefix(line, "\ufeff")
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

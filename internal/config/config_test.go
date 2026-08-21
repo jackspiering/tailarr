@@ -150,6 +150,22 @@ func TestLoadStripsBOM(t *testing.T) {
 	if cfg.RepoURL != "https://github.com/tailscale-dev/ScaleTail.git" {
 		t.Fatalf("BOM dropped first key: %s", cfg.RepoURL)
 	}
+
+	mid := filepath.Join(dir, "mid.conf")
+	body := "TAILARR_REPO_URL=https://github.com/tailscale-dev/ScaleTail.git\n" +
+		"\ufeffTAILARR_LOG_PATH=/tmp/from-bom\n"
+	if err := os.WriteFile(mid, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_LOG_PATH", "")
+	cfg = Default()
+	cfg.ConfigPath = mid
+	if err := Load(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogPath != "/tmp/from-bom" {
+		t.Fatalf("mid-file BOM dropped key: %s", cfg.LogPath)
+	}
 }
 
 func TestLoadRefusesSymlinkFile(t *testing.T) {

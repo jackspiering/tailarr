@@ -37,7 +37,6 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 	if err := paths.EnsureDirMode(root, "backup directory", 0o700); err != nil {
 		return "", err
 	}
-	_ = os.Chmod(root, 0o700)
 
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	backupPath, err := backupPathFor(root, service, stamp)

@@ -95,12 +95,43 @@ func TestValidateRepoURL(t *testing.T) {
 
 func TestRedactRepoURL(t *testing.T) {
 	t.Parallel()
-	got := RedactRepoURL("https://user:token@github.com/org/repo.git")
-	if strings.Contains(got, "token") || strings.Contains(got, "user:") {
-		t.Fatalf("credentials not redacted: %s", got)
+	cases := []struct {
+		in, want string
+	}{
+		{
+			in:   "https://user:token@github.com/org/repo.git",
+			want: "https://github.com/org/repo.git",
+		},
+		{
+			// Parse failure (invalid percent-escape) plus slash in the password.
+			in:   "https://user:p/ss@host/a%zz",
+			want: "https://redacted@host/a%zz",
+		},
+		{
+			in:   "https://user:p:ss2@host/a%zz",
+			want: "https://redacted@host/a%zz",
+		},
+		{
+			in:   "ssh://git@github.com/org/repo.git",
+			want: "ssh://git@github.com/org/repo.git",
+		},
+		{
+			in:   "ssh://git:p/ss@host/a%zz",
+			want: "ssh://redacted@host/a%zz",
+		},
+		{
+			in:   "git@github.com:org/repo.git",
+			want: "git@github.com:org/repo.git",
+		},
 	}
-	if got != "https://github.com/org/repo.git" {
-		t.Fatalf("got %s", got)
+	for _, tc := range cases {
+		got := RedactRepoURL(tc.in)
+		if got != tc.want {
+			t.Errorf("RedactRepoURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if strings.Contains(got, "p/ss") || strings.Contains(got, "token") {
+			t.Errorf("RedactRepoURL(%q) leaked credentials: %q", tc.in, got)
+		}
 	}
 }
 

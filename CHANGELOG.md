@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `RedactRepoURL` now redacts passwords that contain `/` when URL parse fails.
+- Authkeys > Remove is a default-no prompt. `TAILARR_ASSUME_YES` does not delete a stored key.
+- `IsManaged` requires the structured Tailarr marker. A substring of `tailarr.managed` is not enough.
+
+### Fixed
+
+- The config parser strips a UTF-8 BOM on every line, not only the first.
+
+### Changed
+
+- The release workflow `rumdl` pin matches CI (`0.2.55`).
+- AcquireLock and Backup no longer call a second `chmod` after `EnsureDirMode`.
+- Catalog search, authkeys list, and multi-select errors go through `redact.Text`.
+
 ## [0.5.1] - 2026-08-21
 
 ### Security

@@ -509,7 +509,7 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 	case "search":
 		svcs, err := scaletail.ListAvailable(m.cfg.RepoPath)
 		if err != nil {
-			m.status = styleOrPlain(errStyle, err.Error())
+			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
 			return m, nil
 		}
 		if len(svcs) == 0 {
@@ -551,7 +551,7 @@ func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
 	case "list":
 		s, err := authkeys.Load(m.cfg.AuthkeysPath)
 		if err != nil {
-			m.status = styleOrPlain(errStyle, err.Error())
+			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
 			return m, nil
 		}
 		lines := s.RedactedList()
@@ -653,7 +653,7 @@ func runAuthkeyAction(cfg config.Config, ui *prompt.Std, action string) string {
 		if err != nil || name == "" {
 			return "Canceled."
 		}
-		ok, err := ui.Confirm("Remove stored auth key "+name+"?", true)
+		ok, err := ui.Confirm("Remove stored auth key "+name+"?", false)
 		if err != nil || !ok {
 			return "Canceled."
 		}
@@ -806,7 +806,7 @@ func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
 		}
 	}
 	if err != nil {
-		m.status = styleOrPlain(errStyle, err.Error())
+		m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
 		return m, nil
 	}
 	if len(names) == 0 {
