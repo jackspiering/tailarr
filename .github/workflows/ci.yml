@@ -18,7 +18,7 @@ concurrency:
 env:
   # Build/test toolchain comes from go.mod (go-version-file). GO_VERSION feeds
   # govulncheck's scanner install, which needs a newer Go than go.mod's floor.
-  GO_VERSION: "1.26.6"
+  GO_VERSION: "1.27.0"
   GOLANGCI_LINT_VERSION: v2.12.2
   RUMDL_VERSION: "0.2.55"
 
