@@ -3,7 +3,7 @@ module github.com/jackspiering/tailarr
 go 1.25.0
 
 require (
-	charm.land/bubbletea/v2 v2.0.8
+	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
