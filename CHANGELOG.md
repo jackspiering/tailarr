@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-21
+
+### Security
+
+- Config, deploy, log, and auth key paths must be absolute. Relative paths are rejected.
+- The auth key store refuses a symlink file and a symlink parent.
+- Apply does not reuse `TS_AUTHKEY` from an older backup. Only the snapshot for that apply is merged.
+- Compose drops `COMPOSE_*` from the process environment. The merged `.env` stays authoritative. `DOCKER_*` is kept.
+- Deploy and Apply lock the catalog so a refresh cannot rewrite the tree during the copy.
+
+### Fixed
+
+- A log path chosen in first-run setup is validated. A symlink parent is no longer silent.
+- Ctrl-C cancels in-flight compose, git, and prompts, then waits so Apply can restore before exit.
+- Status, deployed services, and running containers no longer block the TUI while Docker is queried.
+- Invalid `.env` lines are errors. Apply no longer drops them on rewrite.
+- Upgrade version compare rejects incomplete versions, leading zeroes, and invalid pre-release or build metadata.
+
+### Changed
+
+- CI fails when the release workflow tool pins differ from CI.
+
 ## [0.5.2] - 2026-08-25
 
 ### Security
@@ -204,7 +226,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Log rotation runs on every event (not once per process).
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/jackspiering/tailarr/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0

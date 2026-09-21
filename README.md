@@ -6,7 +6,7 @@ Compose services from a TUI.
 [![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![Version](https://img.shields.io/badge/version-0.5.2-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.3-informational)](CHANGELOG.md)
 
 ## Quick start
 
@@ -226,6 +226,7 @@ Safety:
 - A service name must not contain `..`.
 - Tailarr refuses a write that crosses a symlink at a config, auth, deploy, or
   template boundary.
+- Config, deploy, log, and auth key paths must be absolute.
 - Tailarr writes config, auth keys, and `.env` files atomically.
 - Secret files use mode `600`.
 - Tailarr makes a backup before apply or remove.
