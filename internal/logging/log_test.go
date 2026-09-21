@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+func TestValidateRefusesSymlinkedAncestor(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	l := New(filepath.Join(link, "t.log"), 100)
+	if err := l.Validate(); err == nil {
+		t.Fatal("expected validate error for symlinked ancestor")
+	}
+}
+
 func TestRefusesSymlinkedAncestor(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")

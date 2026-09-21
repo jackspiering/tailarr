@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/deploy"
 	"github.com/jackspiering/tailarr/internal/doctor"
+	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/logging"
 	"github.com/jackspiering/tailarr/internal/prompt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
@@ -34,7 +36,8 @@ var prog *tea.Program
 // reader so prompts can read os.Stdin directly. Reenter with reenterTUI.
 // Signals are not delivered to bubbletea while the terminal is released
 // (bubbletea sets ignoreSignals). Run installs a process-wide SIGINT/SIGTERM
-// handler that calls prog.Quit() so Ctrl-C still exits.
+// handler that cancels in-flight work and quits only after that work finishes,
+// so Apply can restore before the process exits.
 func leaveTUI() {
 	if prog != nil {
 		_ = prog.ReleaseTerminal()
@@ -130,30 +133,83 @@ type model struct {
 	opts        []string
 	// selected indexes for multi
 	picked map[int]bool
+
+	rootCtx  context.Context
+	opCancel context.CancelFunc
+	flight   *workFlight
+}
+
+type workFlight struct {
+	wg sync.WaitGroup
+}
+
+func (w *workFlight) track() {
+	if w == nil {
+		return
+	}
+	w.wg.Add(1)
+}
+
+func (w *workFlight) untrack() {
+	if w == nil {
+		return
+	}
+	w.wg.Done()
+}
+
+func (w *workFlight) wait() {
+	if w == nil {
+		return
+	}
+	w.wg.Wait()
+}
+
+// drainThenQuit cancels in-flight work and invokes quit only after tracked
+// sequences return. Apply's restore defer runs in that sequence.
+func drainThenQuit(cancel context.CancelFunc, flight *workFlight, quit func()) {
+	if cancel != nil {
+		cancel()
+	}
+	if flight != nil {
+		flight.wait()
+	}
+	if quit != nil {
+		quit()
+	}
 }
 
 // Run starts the interactive TUI. Lifecycle actions that need prompts leave the
 // alternate screen and use stdin prompts, then return to the menu.
 func Run(cfg config.Config, log *logging.Logger) error {
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	flight := &workFlight{}
 	m := model{
-		cfg:    cfg,
-		log:    log,
-		screen: screenMain,
-		items:  mainMenuItems(),
-		picked: map[int]bool{},
+		cfg:     cfg,
+		log:     log,
+		screen:  screenMain,
+		items:   mainMenuItems(),
+		picked:  map[int]bool{},
+		rootCtx: rootCtx,
+		flight:  flight,
 	}
+	interrupt.Set(rootCtx)
+	defer interrupt.Clear()
+	prompt.BindCancel(rootCtx)
+	defer prompt.BindCancel(context.Background())
 	p := tea.NewProgram(m)
 	prog = p
-	// Forward SIGINT/SIGTERM to bubbletea even while the terminal is released.
-	// bubbletea ignores signals while ReleaseTerminal is active; without this
-	// a Ctrl-C during a prompt or catalog refresh would be dropped.
+	// bubbletea ignores signals while ReleaseTerminal is active. Cancel shared
+	// work and quit only after sequences return so Apply restore can finish.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		if prog != nil {
-			prog.Quit()
-		}
+		drainThenQuit(rootCancel, flight, func() {
+			if prog != nil {
+				prog.Quit()
+			}
+		})
 	}()
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrInterrupted) {
@@ -182,9 +238,9 @@ func FirstRunSetup(cfg *config.Config) error {
 	if edit, err := uiPrompt.Confirm("Edit defaults before saving?", true); err != nil {
 		return err
 	} else if edit {
-		msg := editConfigInteractive(cfg, uiPrompt)
+		msg, saved := editConfigInteractive(cfg, uiPrompt)
 		uiPrompt.Printf("%s\n", msg)
-		if strings.HasPrefix(msg, "Error") {
+		if !saved {
 			return fmt.Errorf("%s", msg)
 		}
 		return nil
@@ -267,6 +323,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.cfg != nil {
 			m.cfg = *msg.cfg
 		}
+		if msg.log != nil {
+			m.log = msg.log
+		}
 		m.screen = screenResult
 		m.status = msg.text
 		m.items = []menuItem{{id: "back", label: "Back", desc: "Return"}}
@@ -277,10 +336,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case tea.KeyPressMsg:
+		key := msg.String()
 		if m.busy {
+			if key == "ctrl+c" || key == "q" || key == "esc" {
+				m.status = "Canceling..."
+				if m.opCancel != nil {
+					m.opCancel()
+				}
+				return m, nil
+			}
 			return m, nil
 		}
-		switch msg.String() {
+		switch key {
 		case "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
@@ -357,6 +424,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 type resultMsg struct {
 	text string
 	cfg  *config.Config
+	log  *logging.Logger
 }
 
 // upgradeDoneMsg signals that the running binary was replaced and the TUI
@@ -383,6 +451,9 @@ func (m model) setScreen(s screen, items []menuItem) model {
 }
 
 func (m model) activate() (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
 	if m.screen == screenMultiSelect {
 		// cursor indexes opts first, then action items.
 		if m.cursor < len(m.opts) {
@@ -446,58 +517,59 @@ func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
 	case "back":
 		return m.goBack(), nil
 	case "overview":
-		st, err := deploy.CollectOverview(m.cfg.DeployPath)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
-			return m, nil
-		}
-		m.status = deploy.FormatOverview(st)
-		return m, nil
-	case "deployed":
-		svcs, err := scaletail.ListDeployed(m.cfg.DeployPath)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
-			return m, nil
-		}
-		if len(svcs) == 0 {
-			m.status = "No deployed services."
-			return m, nil
-		}
-		names := make([]string, 0, len(svcs))
-		for _, s := range svcs {
-			names = append(names, s.Name)
-		}
-		health := deploy.ServiceHealthMap(names)
-		var b strings.Builder
-		for _, s := range svcs {
-			tag := "other"
-			if deploy.IsManaged(s.Dir) {
-				tag = "managed"
+		deployPath := m.cfg.DeployPath
+		return m.startSequence(func() tea.Msg {
+			st, err := deploy.CollectOverview(deployPath)
+			if err != nil {
+				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
 			}
-			fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, health[s.Name])
-		}
-		m.status = b.String()
-		return m, nil
+			return resultMsg{text: deploy.FormatOverview(st)}
+		})
+	case "deployed":
+		deployPath := m.cfg.DeployPath
+		return m.startSequence(func() tea.Msg {
+			svcs, err := scaletail.ListDeployed(deployPath)
+			if err != nil {
+				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
+			}
+			if len(svcs) == 0 {
+				return resultMsg{text: "No deployed services."}
+			}
+			names := make([]string, 0, len(svcs))
+			for _, s := range svcs {
+				names = append(names, s.Name)
+			}
+			health := deploy.ServiceHealthMap(names)
+			var b strings.Builder
+			for _, s := range svcs {
+				tag := "other"
+				if deploy.IsManaged(s.Dir) {
+					tag = "managed"
+				}
+				fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, health[s.Name])
+			}
+			return resultMsg{text: b.String()}
+		})
 	case "running":
-		names, err := deploy.RunningServiceNames()
-		if err != nil {
-			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
-			return m, nil
-		}
-		if len(names) == 0 {
-			m.status = "No running ScaleTail-style containers found."
-			return m, nil
-		}
-		m.status = "  - " + strings.Join(names, "\n  - ")
-		return m, nil
+		return m.startSequence(func() tea.Msg {
+			names, err := deploy.RunningServiceNames()
+			if err != nil {
+				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
+			}
+			if len(names) == 0 {
+				return resultMsg{text: "No running ScaleTail-style containers found."}
+			}
+			return resultMsg{text: "  - " + strings.Join(names, "\n  - ")}
+		})
 	case "summary":
-		st, err := deploy.CollectOverview(m.cfg.DeployPath)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
-			return m, nil
-		}
-		m.status = deploy.FormatOverview(st) + "\n" + m.cfg.String() + "\nLog path: " + m.cfg.LogPath
-		return m, nil
+		cfg := m.cfg
+		return m.startSequence(func() tea.Msg {
+			st, err := deploy.CollectOverview(cfg.DeployPath)
+			if err != nil {
+				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
+			}
+			return resultMsg{text: deploy.FormatOverview(st) + "\n" + cfg.String() + "\nLog path: " + cfg.LogPath}
+		})
 	}
 	return m, nil
 }
@@ -524,7 +596,7 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "refresh":
 		cfg := m.cfg
-		return m, tea.Sequence(func() tea.Msg {
+		return m.startSequence(func() tea.Msg {
 			leaveTUI()
 			defer reenterTUI()
 			return resultMsg{text: runCatalogRefresh(cfg)}
@@ -565,10 +637,12 @@ func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
 		// Leave the TUI for interactive prompts. ReleaseTerminal/RestoreTerminal
 		// (replacing the alt-screen exit/enter commands) also restore raw mode and
 		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
-		return m, tea.Sequence(func() tea.Msg {
+		cfg := m.cfg
+		action := id
+		return m.startSequence(func() tea.Msg {
 			leaveTUI()
 			defer reenterTUI()
-			text := runAuthkeyAction(m.cfg, ui, id)
+			text := runAuthkeyAction(cfg, ui, action)
 			return resultMsg{text: text}
 		})
 	}
@@ -679,47 +753,62 @@ func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
 		// Leave the TUI for interactive prompts. ReleaseTerminal/RestoreTerminal
 		// (replacing the alt-screen exit/enter commands) also restore raw mode and
 		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
-		return m, tea.Sequence(func() tea.Msg {
+		return m.startSequence(func() tea.Msg {
 			leaveTUI()
 			defer reenterTUI()
 			cfg := m.cfg
+			oldLog := m.cfg.LogPath
+			oldMax := m.cfg.LogMaxBytes
 			ui := prompt.NewStd(false)
-			text := editConfigInteractive(&cfg, ui)
-			return resultMsg{text: text, cfg: &cfg}
+			text, saved := editConfigInteractive(&cfg, ui)
+			if !saved {
+				return resultMsg{text: text}
+			}
+			msg := resultMsg{text: text, cfg: &cfg}
+			if cfg.LogPath != oldLog || cfg.LogMaxBytes != oldMax {
+				log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
+				if err := log.Validate(); err != nil {
+					msg.text += "\nWarning: log path: " + redact.Text(err.Error())
+				}
+				msg.log = log
+			}
+			return msg
 		})
 	}
 	return m, nil
 }
 
-func editConfigInteractive(cfg *config.Config, ui *prompt.Std) string {
+func editConfigInteractive(cfg *config.Config, ui *prompt.Std) (string, bool) {
+	next := *cfg
 	var err error
 	var raw string
-	if raw, err = ui.Line("TAILARR_REPO_URL", cfg.RepoURL); err != nil {
-		return redact.Text(err.Error())
+	if raw, err = ui.Line("TAILARR_REPO_URL", next.RepoURL); err != nil {
+		return redact.Text(err.Error()), false
 	}
 	raw = strings.TrimSpace(raw)
 	if raw != "" {
 		if err := names.ValidateRepoURL(raw); err != nil {
-			return "Error saving: " + redact.Text(err.Error())
+			return "Error saving: " + redact.Text(err.Error()), false
 		}
 	}
-	cfg.RepoURL = raw
-	if cfg.RepoPath, err = ui.Line("TAILARR_REPO_PATH", cfg.RepoPath); err != nil {
-		return redact.Text(err.Error())
+	next.RepoURL = raw
+	if next.RepoPath, err = ui.Line("TAILARR_REPO_PATH", next.RepoPath); err != nil {
+		return redact.Text(err.Error()), false
 	}
-	if cfg.DeployPath, err = ui.Line("TAILARR_DEPLOY_PATH", cfg.DeployPath); err != nil {
-		return redact.Text(err.Error())
+	if next.DeployPath, err = ui.Line("TAILARR_DEPLOY_PATH", next.DeployPath); err != nil {
+		return redact.Text(err.Error()), false
 	}
-	if cfg.LogPath, err = ui.Line("TAILARR_LOG_PATH", cfg.LogPath); err != nil {
-		return redact.Text(err.Error())
+	if next.LogPath, err = ui.Line("TAILARR_LOG_PATH", next.LogPath); err != nil {
+		return redact.Text(err.Error()), false
 	}
-	if cfg.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", cfg.AuthkeysPath); err != nil {
-		return redact.Text(err.Error())
+	if next.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", next.AuthkeysPath); err != nil {
+		return redact.Text(err.Error()), false
 	}
-	if err := config.Save(*cfg); err != nil {
-		return "Error saving: " + redact.Text(err.Error())
+	if err := config.Save(next); err != nil {
+		return "Error saving: " + redact.Text(err.Error()), false
 	}
-	return "Saved config: " + cfg.ConfigPath
+	*cfg = next
+	return "Saved config: " + next.ConfigPath, true
 }
 
 func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
@@ -727,13 +816,15 @@ func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
 	case "back":
 		return m.goBack(), nil
 	case "doctor":
-		res := doctor.Run(m.cfg)
-		var b strings.Builder
-		for _, c := range res.Checks {
-			fmt.Fprintf(&b, "  [%s] %s: %s\n", c.Level, c.Name, c.Message)
-		}
-		m.status = b.String()
-		return m, nil
+		cfg := m.cfg
+		return m.startSequence(func() tea.Msg {
+			res := doctor.Run(cfg)
+			var b strings.Builder
+			for _, c := range res.Checks {
+				fmt.Fprintf(&b, "  [%s] %s: %s\n", c.Level, c.Name, c.Message)
+			}
+			return resultMsg{text: b.String()}
+		})
 	case "upgrade":
 		// Leave the TUI: the running binary may be replaced, and prompts/download
 		// progress need the normal terminal. ReleaseTerminal/RestoreTerminal
@@ -741,7 +832,7 @@ func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
 		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
 		cfg := m.cfg
 		log := m.log
-		return m, tea.Sequence(func() tea.Msg {
+		return m.startSequence(func() tea.Msg {
 			leaveTUI()
 			text, replaced := runUpgradeAction(cfg, log)
 			if replaced {
@@ -848,8 +939,7 @@ func (m model) finishMulti() (tea.Model, tea.Cmd) {
 	mode := m.multi
 	cfg := m.cfg
 	log := m.log
-	m.busy = true
-	return m, tea.Sequence(func() tea.Msg {
+	return m.startSequence(func() tea.Msg {
 		// ReleaseTerminal/RestoreTerminal (replacing the alt-screen exit/enter
 		// commands) also restore raw mode and pause bubbletea's stdin reader so
 		// prompt reads don't race the TUI readLoop.
@@ -857,6 +947,34 @@ func (m model) finishMulti() (tea.Model, tea.Cmd) {
 		defer reenterTUI()
 		text := runBatch(cfg, log, mode, selected)
 		return resultMsg{text: text}
+	})
+}
+
+func (m model) startSequence(fn func() tea.Msg) (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
+	parent := m.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	m.opCancel = cancel
+	m.busy = true
+	interrupt.Set(ctx)
+	prompt.BindCancel(ctx)
+	flight := m.flight
+	if flight != nil {
+		flight.track()
+	}
+	return m, tea.Sequence(func() tea.Msg {
+		defer cancel()
+		defer prompt.BindCancel(parent)
+		defer interrupt.Set(parent)
+		if flight != nil {
+			defer flight.untrack()
+		}
+		return fn()
 	})
 }
 

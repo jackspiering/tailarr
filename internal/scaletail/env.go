@@ -29,42 +29,40 @@ func ParseEnvFile(path string) (EnvMap, error) {
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	first := true
 	for sc.Scan() {
-		line := sc.Text()
-		// Strip UTF-8 BOM on first line and also handle stray BOM on later lines
-		// (a copy-paste artifact) so keys are not silently dropped.
-		if first {
-			line = strings.TrimPrefix(line, "\ufeff")
-			first = false
-		} else {
-			line = strings.TrimPrefix(line, "\ufeff")
+		key, value, skip, err := parseEnvLine(sc.Text())
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if skip {
 			continue
 		}
-		// Strip optional leading "export " (shell-style) so "export FOO=bar"
-		// is treated as FOO=bar. Only one prefix, case-sensitive.
-		if strings.HasPrefix(line, "export ") || strings.HasPrefix(line, "export\t") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export"))
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		if !validEnvKey(key) {
-			continue
-		}
-		// Strip optional surrounding quotes on value.
-		value = unquote(value)
 		out[key] = value
 	}
 	return out, sc.Err()
+}
+
+// parseEnvLine parses one dotenv line. skip is true for blanks and comments.
+// A non-comment line that is not KEY=VALUE with a valid key is an error so
+// Apply cannot drop it on rewrite.
+func parseEnvLine(line string) (key, value string, skip bool, err error) {
+	line = strings.TrimPrefix(line, "\ufeff")
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", "", true, nil
+	}
+	if strings.HasPrefix(line, "export ") || strings.HasPrefix(line, "export\t") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export"))
+	}
+	key, value, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", "", false, fmt.Errorf("invalid env line: expected KEY=VALUE")
+	}
+	key = strings.TrimSpace(key)
+	if !validEnvKey(key) {
+		return "", "", false, fmt.Errorf("invalid env key %q", key)
+	}
+	return key, unquote(value), false, nil
 }
 
 // validEnvKey reports whether key is a valid dotenv identifier: [A-Za-z_][A-Za-z0-9_]* .
@@ -149,28 +147,12 @@ func ReadEnvKeys(path string) ([]string, error) {
 	var keys []string
 	seen := make(map[string]bool)
 	sc := bufio.NewScanner(f)
-	first := true
 	for sc.Scan() {
-		line := sc.Text()
-		if first {
-			line = strings.TrimPrefix(line, "\ufeff")
-			first = false
-		} else {
-			line = strings.TrimPrefix(line, "\ufeff")
+		key, _, skip, err := parseEnvLine(sc.Text())
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "export ") || strings.HasPrefix(line, "export\t") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export"))
-		}
-		key, _, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		if key == "" || seen[key] || !validEnvKey(key) {
+		if skip || seen[key] {
 			continue
 		}
 		seen[key] = true

@@ -44,42 +44,95 @@ type semver struct {
 func parse(s string) (semver, bool) {
 	s = strings.TrimPrefix(s, "v")
 	s = strings.TrimPrefix(s, "V")
+	if s == "" {
+		return semver{}, false
+	}
 	if i := strings.Index(s, "+"); i >= 0 {
-		s = s[:i] // build metadata has no precedence
+		if !validBuild(s[i+1:]) {
+			return semver{}, false
+		}
+		s = s[:i]
 	}
 	var pre []string
 	if i := strings.Index(s, "-"); i >= 0 {
-		pre = strings.Split(s[i+1:], ".")
+		raw := s[i+1:]
 		s = s[:i]
+		if raw == "" {
+			return semver{}, false
+		}
+		pre = strings.Split(raw, ".")
+		for _, id := range pre {
+			if !validPreIdent(id) {
+				return semver{}, false
+			}
+		}
 	}
 	parts := strings.Split(s, ".")
-	if len(parts) > 3 {
+	if len(parts) != 3 {
 		return semver{}, false
 	}
 	v := semver{pre: pre}
-	for i := 0; i < 3; i++ {
-		var n int
-		if i < len(parts) {
-			p := parts[i]
-			if p == "" || strings.ContainsAny(p, "+-") {
-				return semver{}, false
-			}
-			parsed, err := strconv.Atoi(p)
-			if err != nil {
-				return semver{}, false
-			}
-			n = parsed
+	nums := [3]*int{&v.major, &v.minor, &v.patch}
+	for i, p := range parts {
+		if !validNumeric(p) {
+			return semver{}, false
 		}
-		switch i {
-		case 0:
-			v.major = n
-		case 1:
-			v.minor = n
-		case 2:
-			v.patch = n
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return semver{}, false
 		}
+		*nums[i] = n
 	}
 	return v, true
+}
+
+func validNumeric(p string) bool {
+	if p == "" || (len(p) > 1 && p[0] == '0') {
+		return false
+	}
+	for _, c := range p {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPreIdent(id string) bool {
+	if id == "" {
+		return false
+	}
+	numeric := true
+	for _, c := range id {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '-':
+			numeric = false
+		default:
+			return false
+		}
+	}
+	if numeric && len(id) > 1 && id[0] == '0' {
+		return false
+	}
+	return true
+}
+
+func validBuild(b string) bool {
+	if b == "" {
+		return false
+	}
+	for _, id := range strings.Split(b, ".") {
+		if id == "" {
+			return false
+		}
+		for _, c := range id {
+			if (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func cmpInt(x, y int) int {

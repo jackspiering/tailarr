@@ -101,6 +101,34 @@ func TestReadEnvKeysStripsBOM(t *testing.T) {
 	}
 }
 
+func TestParseEnvFileRejectsInvalidKeys(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".env")
+	if err := os.WriteFile(p, []byte("FOO-BAR=/data\nBAZ=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseEnvFile(p); err == nil {
+		t.Fatal("expected invalid key error")
+	}
+	if _, err := ReadEnvKeys(p); err == nil {
+		t.Fatal("expected invalid key error from ReadEnvKeys")
+	}
+	okPath := filepath.Join(dir, "ok.env")
+	if err := os.WriteFile(okPath, []byte("export BAZ=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseEnvFile(okPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m["BAZ"] != "1" {
+		t.Fatalf("export prefix not merged: %#v", m)
+	}
+	if _, ok := m["export"]; ok {
+		t.Fatal("export was kept as a key")
+	}
+}
+
 func TestWriteEnvFileMode(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")

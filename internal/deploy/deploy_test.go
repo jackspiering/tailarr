@@ -1,18 +1,21 @@
 package deploy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
+	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/logging"
 )
 
@@ -66,34 +69,22 @@ func TestBackupAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := Backup(deployRoot, "demo", svc, BackupMove)
+	backup, err := Backup(deployRoot, "demo", svc, BackupCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if backup == "" {
 		t.Fatal("empty backup")
 	}
-	if _, err := os.Stat(svc); !os.IsNotExist(err) {
-		t.Fatal("service should have been moved")
+	if _, err := os.Stat(filepath.Join(svc, "data", "file")); err != nil {
+		t.Fatal("copy backup must leave the deployment in place")
 	}
-
-	// New template deploy dir
-	if err := os.MkdirAll(svc, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(svc, "compose.yaml"), []byte("x:2\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := RestorePersistentData(backup, svc); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(svc, "data", "file"))
+	data, err := os.ReadFile(filepath.Join(backup, "data", "file"))
 	if err != nil || string(data) != "keep\n" {
-		t.Fatalf("restore failed: %v %q", err, data)
+		t.Fatalf("backup copy failed: %v %q", err, data)
 	}
-	// .env is intentionally not restored by RestorePersistentData.
-	if _, err := os.Stat(filepath.Join(svc, ".env")); !os.IsNotExist(err) {
-		t.Fatal(".env should not be restored by RestorePersistentData")
+	if _, err := os.Stat(filepath.Join(backup, ".env")); err != nil {
+		t.Fatal("backup copy must include .env")
 	}
 }
 
@@ -762,48 +753,6 @@ func TestApplyFailsWhenTemplateMissing(t *testing.T) {
 	}
 }
 
-func TestRestorePersistentDataKeepsFreshTemplateFiles(t *testing.T) {
-	backup := t.TempDir()
-	fresh := t.TempDir()
-	// Template ships an updated .env.example; the old deployment's copy is stale.
-	if err := os.WriteFile(filepath.Join(backup, ".env.example"), []byte("OLD"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fresh, ".env.example"), []byte("NEW"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Operator-created top-level data file not shipped by the template.
-	if err := os.WriteFile(filepath.Join(backup, "custom.txt"), []byte("KEEP"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Data directory contents must still win over the fresh template.
-	if err := os.MkdirAll(filepath.Join(backup, "data"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(fresh, "data"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(backup, "data", "db"), []byte("BACKUP"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fresh, "data", "db"), []byte("TEMPLATE"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := RestorePersistentData(backup, fresh); err != nil {
-		t.Fatal(err)
-	}
-	if data, err := os.ReadFile(filepath.Join(fresh, ".env.example")); err != nil || string(data) != "NEW" {
-		t.Fatalf("fresh template file was reverted: %v %q", err, data)
-	}
-	if data, err := os.ReadFile(filepath.Join(fresh, "custom.txt")); err != nil || string(data) != "KEEP" {
-		t.Fatalf("operator file not restored: %v %q", err, data)
-	}
-	if data, err := os.ReadFile(filepath.Join(fresh, "data", "db")); err != nil || string(data) != "BACKUP" {
-		t.Fatalf("data directory not restored: %v %q", err, data)
-	}
-}
-
 func TestHealthFromOutput(t *testing.T) {
 	raw := strings.Join([]string{
 		"app-web\trunning\tUp 2 hours (healthy)\t",
@@ -1145,5 +1094,274 @@ func TestBackupPrunesToNewest(t *testing.T) {
 	}
 	if _, err := os.Stat(backups[2]); err != nil {
 		t.Fatalf("newest backup %s missing: %v", backups[2], err)
+	}
+}
+
+func TestDeployDoesNotReuseHistoricalBackupAuthkey(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "TS_AUTHKEY=\nHOSTNAME=x\n")
+	backup := filepath.Join(deployRoot, config.BackupDirName, "web-20200101T000000Z")
+	if err := os.MkdirAll(backup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, ".env"), []byte("TS_AUTHKEY=tskey-auth-OLD\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
+	err := m.DeployWith("web", DeployOpts{})
+	if !errors.Is(err, ErrEmptyAuthkey) {
+		t.Fatalf("expected ErrEmptyAuthkey, got %v", err)
+	}
+	if data, readErr := os.ReadFile(filepath.Join(deployRoot, "web", ".env")); readErr == nil && strings.Contains(string(data), "tskey-auth-OLD") {
+		t.Fatalf("deploy reused historical backup key: %s", data)
+	}
+}
+
+func TestApplySnapshotBackupStillSuppliesAuthkey(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	templateDir := setupTemplate(t, repo, "web", "TS_AUTHKEY=\nHOSTNAME=template\n")
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=\nHOSTNAME=local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup := filepath.Join(deployRoot, "snap")
+	if err := os.MkdirAll(backup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, ".env"), []byte("TS_AUTHKEY=tskey-auth-SNAP\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.mergeAndWriteEnv("web", templateDir, dest, backup, DeployOpts{SkipInteractive: true}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "TS_AUTHKEY=tskey-auth-SNAP") {
+		t.Fatalf("snapshot backup key not applied: %s", data)
+	}
+}
+
+func TestDeployDoesNotCopyWhileRepoLockHeld(t *testing.T) {
+	if os.Getenv("TAILARR_HOLD_LOCK") == "1" {
+		lock, err := AcquireLock(os.Getenv("TAILARR_LOCK_PATH"), 2*time.Second)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		fmt.Println("held")
+		_ = os.Stdout.Sync()
+		time.Sleep(20 * time.Second)
+		_ = lock.Release()
+		return
+	}
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "TS_AUTHKEY=tskey-auth-NEW\nHOSTNAME=x\n")
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+	lockPath := RepoLockPath(repo)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDeployDoesNotCopyWhileRepoLockHeld$")
+	cmd.Env = append(os.Environ(), "TAILARR_HOLD_LOCK=1", "TAILARR_LOCK_PATH="+lockPath)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	buf := make([]byte, 8)
+	if _, err := out.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	old := repoLockTimeout
+	repoLockTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { repoLockTimeout = old })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
+	err = m.DeployWith("web", DeployOpts{})
+	if err == nil || !strings.Contains(err.Error(), "holds the lock") {
+		t.Fatalf("expected repo lock error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(deployRoot, "web")); !os.IsNotExist(statErr) {
+		t.Fatalf("deploy copied template while repo lock was held: %v", statErr)
+	}
+}
+
+func TestDefaultComposeStopsWhenInterruptCanceled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	bin := t.TempDir()
+	script := "#!/bin/sh\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	interrupt.Set(ctx)
+	t.Cleanup(func() {
+		cancel()
+		interrupt.Clear()
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- Compose(dir, "pull")
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrInterrupted) {
+			t.Fatalf("expected ErrInterrupted, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("compose did not stop when interrupt context was canceled")
+	}
+}
+
+func TestFilterComposeEnv(t *testing.T) {
+	kept, dropped := filterComposeEnv([]string{
+		"COMPOSE_PROFILES=debug",
+		"COMPOSE_FILE=other.yaml",
+		"TAILARR_REPO_PATH=/opt/tailarr",
+		"TS_AUTHKEY=tskey-auth-LEAK",
+		"DOCKER_HOST=unix:///var/run/docker.sock",
+		"PATH=/usr/bin",
+		"TZ=UTC",
+	})
+	got := strings.Join(kept, "\n")
+	for _, banned := range []string{"COMPOSE_PROFILES", "COMPOSE_FILE", "TAILARR_REPO_PATH", "TS_AUTHKEY"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("kept %s: %q", banned, got)
+		}
+	}
+	for _, want := range []string{"DOCKER_HOST=unix:///var/run/docker.sock", "PATH=/usr/bin", "TZ=UTC"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dropped %s: %q", want, got)
+		}
+	}
+	if strings.Join(dropped, ",") != "COMPOSE_PROFILES,COMPOSE_FILE" {
+		t.Fatalf("dropped keys: %v", dropped)
+	}
+}
+
+func TestComposeServiceNamesFiltersEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(dir, "env.txt")
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in\n*version*) exit 0 ;;\nesac\nenv > " + strconv.Quote(envFile) + "\necho app\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TS_AUTHKEY", "tskey-auth-LEAK")
+	t.Setenv("COMPOSE_PROFILES", "debug")
+	t.Setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+	names, err := composeServiceNames(dir, "compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "app" {
+		t.Fatalf("names: %v", names)
+	}
+	dump, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(dump)
+	if strings.Contains(text, "TS_AUTHKEY=") || strings.Contains(text, "COMPOSE_PROFILES=") {
+		t.Fatalf("compose config inherited filtered env:\n%s", text)
+	}
+	if !strings.Contains(text, "DOCKER_HOST=") {
+		t.Fatal("DOCKER_HOST should be kept")
+	}
+}
+
+func TestApplyRestoresWhenInterruptContextCanceled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "TS_AUTHKEY=tskey-auth-from-template\nHOSTNAME=t\n")
+	dest := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig := "services:\n  app:\n    image: original\n"
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=tskey-auth-from-template\nHOSTNAME=old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".tailarr.compose.yaml"), []byte("services:\n  app:\n    labels:\n      tailarr.managed: \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "services", "web", "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(t.TempDir(), "started")
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in\n*version*) exit 0 ;;\n*--services*) echo app; exit 0 ;;\n*pull*|*up*) echo started > " + strconv.Quote(started) + "; exec sleep 30 ;;\n*) exit 0 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	interrupt.Set(ctx)
+	t.Cleanup(func() {
+		cancel()
+		interrupt.Clear()
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+		errCh <- m.Apply("web", DeployOpts{})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(started); err != nil {
+		t.Fatal("compose did not start")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrInterrupted) {
+			t.Fatalf("expected ErrInterrupted, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply did not return after interrupt")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	if err != nil || string(data) != orig {
+		t.Fatalf("previous deployment not restored: %v %q", err, data)
 	}
 }

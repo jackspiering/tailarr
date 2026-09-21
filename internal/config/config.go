@@ -73,6 +73,9 @@ func Load(cfg *Config) error {
 }
 
 func loadFile(cfg *Config, path string) error {
+	if err := requireAbsPath("TAILARR_CONFIG_PATH", path); err != nil {
+		return err
+	}
 	if err := paths.RefuseSymlinkAncestry(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("config directory: %w", err)
 	}
@@ -113,13 +116,21 @@ func loadFile(cfg *Config, path string) error {
 			}
 			cfg.RepoURL = strings.TrimSpace(value)
 		case "TAILARR_REPO_PATH":
-			cfg.RepoPath = value
+			if err := setOptionalAbsPath(&cfg.RepoPath, key, value); err != nil {
+				return err
+			}
 		case "TAILARR_DEPLOY_PATH":
-			cfg.DeployPath = value
+			if err := setOptionalAbsPath(&cfg.DeployPath, key, value); err != nil {
+				return err
+			}
 		case "TAILARR_LOG_PATH":
-			cfg.LogPath = value
+			if err := setOptionalAbsPath(&cfg.LogPath, key, value); err != nil {
+				return err
+			}
 		case "TAILARR_AUTHKEYS_PATH":
-			cfg.AuthkeysPath = value
+			if err := setOptionalAbsPath(&cfg.AuthkeysPath, key, value); err != nil {
+				return err
+			}
 		case "TAILARR_LOG_MAX_BYTES":
 			n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 			if err != nil || n <= 0 {
@@ -139,17 +150,29 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.RepoURL = v
 	}
-	if v := os.Getenv("TAILARR_REPO_PATH"); v != "" {
-		cfg.RepoPath = strings.TrimSpace(v)
+	if v := strings.TrimSpace(os.Getenv("TAILARR_REPO_PATH")); v != "" {
+		if err := requireAbsPath("TAILARR_REPO_PATH", v); err != nil {
+			return err
+		}
+		cfg.RepoPath = v
 	}
-	if v := os.Getenv("TAILARR_DEPLOY_PATH"); v != "" {
-		cfg.DeployPath = strings.TrimSpace(v)
+	if v := strings.TrimSpace(os.Getenv("TAILARR_DEPLOY_PATH")); v != "" {
+		if err := requireAbsPath("TAILARR_DEPLOY_PATH", v); err != nil {
+			return err
+		}
+		cfg.DeployPath = v
 	}
-	if v := os.Getenv("TAILARR_LOG_PATH"); v != "" {
-		cfg.LogPath = strings.TrimSpace(v)
+	if v := strings.TrimSpace(os.Getenv("TAILARR_LOG_PATH")); v != "" {
+		if err := requireAbsPath("TAILARR_LOG_PATH", v); err != nil {
+			return err
+		}
+		cfg.LogPath = v
 	}
-	if v := os.Getenv("TAILARR_AUTHKEYS_PATH"); v != "" {
-		cfg.AuthkeysPath = strings.TrimSpace(v)
+	if v := strings.TrimSpace(os.Getenv("TAILARR_AUTHKEYS_PATH")); v != "" {
+		if err := requireAbsPath("TAILARR_AUTHKEYS_PATH", v); err != nil {
+			return err
+		}
+		cfg.AuthkeysPath = v
 	}
 	if v := os.Getenv("TAILARR_LOG_MAX_BYTES"); v != "" {
 		value := strings.TrimSpace(v)
@@ -169,6 +192,12 @@ func applyEnv(cfg *Config) error {
 // Save writes the config atomically as plain KEY=VALUE (mode 0600).
 // Restrictive mode because RepoURL or paths could be sensitive in some setups.
 func Save(cfg Config) error {
+	if err := requireAbsPath("TAILARR_CONFIG_PATH", cfg.ConfigPath); err != nil {
+		return err
+	}
+	if err := requireStoredPaths(cfg); err != nil {
+		return err
+	}
 	if paths.IsSymlink(cfg.ConfigPath) {
 		return fmt.Errorf("config file must not be a symlink: %s", cfg.ConfigPath)
 	}
@@ -196,4 +225,47 @@ func format(cfg Config) string {
 // String returns a multi-line non-secret dump for display.
 func (c Config) String() string {
 	return format(c)
+}
+
+// setOptionalAbsPath trims a file value. Empty values keep the existing
+// default. Non-absolute values are rejected so a path cannot follow the
+// process working directory.
+func setOptionalAbsPath(dst *string, key, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if err := requireAbsPath(key, value); err != nil {
+		return err
+	}
+	*dst = value
+	return nil
+}
+
+func requireStoredPaths(cfg Config) error {
+	pairs := []struct {
+		key, value string
+	}{
+		{"TAILARR_REPO_PATH", cfg.RepoPath},
+		{"TAILARR_DEPLOY_PATH", cfg.DeployPath},
+		{"TAILARR_LOG_PATH", cfg.LogPath},
+		{"TAILARR_AUTHKEYS_PATH", cfg.AuthkeysPath},
+	}
+	for _, p := range pairs {
+		if err := requireAbsPath(p.key, p.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireAbsPath(key, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s must not be empty", key)
+	}
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be an absolute path: %q", key, value)
+	}
+	return nil
 }

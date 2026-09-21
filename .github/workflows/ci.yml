@@ -31,6 +31,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Release tool pins match CI
+        run: |
+          for key in GO_VERSION GOLANGCI_LINT_VERSION RUMDL_VERSION; do
+            a=$(grep -E "^[[:space:]]+${key}:" .github/workflows/ci.yml | head -n 1)
+            b=$(grep -E "^[[:space:]]+${key}:" .github/workflows/release.yml | head -n 1)
+            if [ "$a" != "$b" ]; then
+              echo "pin drift for ${key}" >&2
+              echo "ci:      ${a}" >&2
+              echo "release: ${b}" >&2
+              exit 1
+            fi
+          done
+
       - name: Markdown lint (rumdl)
         run: |
           python3 -m venv /tmp/rumdl
@@ -104,6 +117,7 @@ jobs:
           cache: true
 
       - name: Derive version
+        id: version
         run: |
           # Dev/PR builds get "<tag>-<n>-g<sha>" so they stay distinguishable from releases.
           ver=$(git describe --tags 2>/dev/null | sed 's/^v//')
@@ -123,6 +137,10 @@ jobs:
           CGO_ENABLED: "0"
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          if [ -z "${VERSION}" ]; then
+            echo "error: VERSION is empty" >&2
+            exit 1
+          fi
           mkdir -p bin
           go build -trimpath -ldflags="-s -w -X github.com/jackspiering/tailarr/internal/version.Version=${VERSION}" \
             -o "bin/tailarr-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/tailarr

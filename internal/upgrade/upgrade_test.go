@@ -45,6 +45,18 @@ func TestCompare(t *testing.T) {
 	if !Comparable("v0.2.0", "0.3.0") {
 		t.Fatal("expected comparable SemVer")
 	}
+	if Comparable("1.2", "1.2.0") || Comparable("1", "1.0.0") {
+		t.Fatal("partial versions are not strict SemVer")
+	}
+	if Comparable("01.2.3", "1.2.3") || Comparable("1.02.3", "1.2.3") || Comparable("1.2.03", "1.2.3") {
+		t.Fatal("leading zeros are not strict SemVer")
+	}
+	if Comparable("1.2.3-", "1.2.3") || Comparable("1.2.3+", "1.2.3") || Comparable("1.2.3.4", "1.2.3") {
+		t.Fatal("lenient versions must not be comparable")
+	}
+	if Compare("1.2", "1.2.0") != 0 {
+		t.Fatal("non-strict versions must not invent an order")
+	}
 	if validReleaseTag("../evil") || validReleaseTag("v1/../x") || !validReleaseTag("v0.3.0") {
 		t.Fatal("validReleaseTag")
 	}

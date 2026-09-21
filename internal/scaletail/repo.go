@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
@@ -25,19 +26,24 @@ func gitHardened(extra ...string) []string {
 
 // gitOpTimeout bounds every git invocation so a stalled network op cannot
 // freeze the TUI event loop indefinitely (no Ctrl-C escape, raw tty on kill).
-const gitOpTimeout = 5 * time.Minute
+var gitOpTimeout = 5 * time.Minute
 
 // runGit runs git with hardened args under a gitOpTimeout deadline and returns
-// combined output. A timeout surfaces as an error naming the timeout.
-// WaitDelay ensures helper processes (git-remote-https) are killed with the parent.
-func runGit(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitOpTimeout)
+// combined output. repoPath is the catalog clone; it is named in timeout errors
+// even when git is invoked with -C or a destination argument rather than Dir.
+// A canceled interrupt context aborts the process group.
+func runGit(repoPath string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(interrupt.Context(), gitOpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", gitHardened(args...)...)
+	configureGitCmd(cmd)
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, fmt.Errorf("git operation timed out after %s (check network and retry; if pull repeatedly fails with index.lock, remove %s/.git/*.lock)", gitOpTimeout, cmd.Dir)
+		return out, fmt.Errorf("git operation timed out after %s (check network and retry; if pull repeatedly fails with index.lock, remove %s/.git/*.lock)", gitOpTimeout, repoPath)
+	}
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return out, fmt.Errorf("git operation interrupted")
 	}
 	return out, err
 }
@@ -69,7 +75,7 @@ func Refresh(repoURL, repoPath string) (string, error) {
 		if err := ensureOnBranch(repoPath); err != nil {
 			return "", err
 		}
-		out, err := runGit("-C", repoPath, "pull", "--ff-only")
+		out, err := runGit(repoPath, "-C", repoPath, "pull", "--ff-only")
 		if err != nil {
 			return "", fmt.Errorf("ScaleTail git pull failed: %w: %s", err, out)
 		}
@@ -91,7 +97,7 @@ func Refresh(repoURL, repoPath string) (string, error) {
 	return cloneRepo(repoURL, repoPath)
 }
 func cloneRepo(repoURL, repoPath string) (string, error) {
-	out, err := runGit("clone", "--depth", "1", repoURL, repoPath)
+	out, err := runGit(repoPath, "clone", "--depth", "1", repoURL, repoPath)
 	if err != nil {
 		return "", fmt.Errorf("ScaleTail git clone failed: %w: %s", err, out)
 	}
@@ -101,16 +107,16 @@ func cloneRepo(repoURL, repoPath string) (string, error) {
 // ensureOnBranch moves a detached HEAD onto the remote default branch so pull works.
 func ensureOnBranch(repoPath string) error {
 	// symbolic-ref fails when detached.
-	if _, err := runGit("-C", repoPath, "symbolic-ref", "-q", "HEAD"); err == nil {
+	if _, err := runGit(repoPath, "-C", repoPath, "symbolic-ref", "-q", "HEAD"); err == nil {
 		return nil // already on a branch
 	}
 	// Detached: resolve origin/HEAD or fall back to main/master.
-	out, err := runGit("-C", repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")
+	out, err := runGit(repoPath, "-C", repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")
 	branch := strings.TrimSpace(string(out))
 	branch = strings.TrimPrefix(branch, "origin/")
 	if err != nil || branch == "" || branch == "HEAD" {
 		for _, candidate := range []string{"main", "master"} {
-			if _, err := runGit("-C", repoPath, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
+			if _, err := runGit(repoPath, "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
 				branch = candidate
 				break
 			}
@@ -120,12 +126,12 @@ func ensureOnBranch(repoPath string) error {
 		return fmt.Errorf("ScaleTail repo is detached and no default branch could be determined")
 	}
 	// Do not silently abandon commits ahead of origin/<branch>.
-	if out, err := runGit("-C", repoPath, "rev-list", "--count", "origin/"+branch+"..HEAD"); err == nil {
+	if out, err := runGit(repoPath, "-C", repoPath, "rev-list", "--count", "origin/"+branch+"..HEAD"); err == nil {
 		if cnt := strings.TrimSpace(string(out)); cnt != "" && cnt != "0" {
 			return fmt.Errorf("ScaleTail repo has %s detached commit(s) ahead of origin/%s; aborting checkout", cnt, branch)
 		}
 	}
-	if _, err := runGit("-C", repoPath, "checkout", "-B", branch, "origin/"+branch); err != nil {
+	if _, err := runGit(repoPath, "-C", repoPath, "checkout", "-B", branch, "origin/"+branch); err != nil {
 		return fmt.Errorf("could not leave detached HEAD for pull: %w", err)
 	}
 	return nil

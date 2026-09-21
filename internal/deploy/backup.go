@@ -14,11 +14,10 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
-// BackupMode selects move (full-tree swap) or copy (apply/remove snapshot).
+// BackupMode selects how Backup snapshots a deployment. Production always copies.
 type BackupMode string
 
 const (
-	BackupMove BackupMode = "move"
 	BackupCopy BackupMode = "copy"
 )
 
@@ -44,21 +43,15 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 		return "", err
 	}
 
-	switch mode {
-	case BackupMove:
-		if err := os.Rename(servicePath, backupPath); err != nil {
-			return "", fmt.Errorf("move deployment to backup: %w", err)
-		}
-	case BackupCopy:
-		if err := copyTree(servicePath, backupPath); err != nil {
-			return "", fmt.Errorf("copy deployment to backup: %w", err)
-		}
-	default:
+	if mode != BackupCopy {
 		return "", fmt.Errorf("unknown backup mode: %s", mode)
+	}
+	if err := copyTree(servicePath, backupPath); err != nil {
+		return "", fmt.Errorf("copy deployment to backup: %w", err)
 	}
 	// Prune older backups: they accumulate unboundedly and hold plaintext
 	// secrets (e.g. TS_AUTHKEY in .env). Best-effort: a prune failure must not
-	// abort an operation that already moved/copied the deployment, and must
+	// abort an operation that already copied the deployment, and must
 	// never lose the backup just created (which is always the newest).
 	_ = pruneBackups(root, service, 2)
 	return backupPath, nil
@@ -231,53 +224,6 @@ func isBackupStamp(s string) bool {
 		}
 	}
 	return true
-}
-
-// RestorePersistentData copies non-compose data directories from backup into a fresh deploy.
-// It intentionally skips .env (merged separately so secrets are applied via MergeEnv).
-func RestorePersistentData(backupPath, servicePath string) error {
-	entries, err := os.ReadDir(backupPath)
-	if err != nil {
-		return err
-	}
-	skip := map[string]bool{
-		"compose.yaml": true, "compose.yml": true,
-		"docker-compose.yml": true, "docker-compose.yaml": true,
-		".env": true, ".tailarr.compose.yaml": true,
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if skip[name] {
-			continue
-		}
-		src := filepath.Join(backupPath, name)
-		if paths.IsSymlink(src) {
-			continue
-		}
-		dst := filepath.Join(servicePath, name)
-		if e.IsDir() {
-			if err := copyTree(src, dst); err != nil {
-				return err
-			}
-			continue
-		}
-		// A file the fresh template already ships is template material, not
-		// persistent data: keep the fresh copy instead of reverting it to
-		// the old deployment's version.
-		if _, err := os.Lstat(dst); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		info, err := e.Info()
-		if err != nil {
-			return err
-		}
-		if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // restorePartialPath is the scratch directory used while swapping a failed

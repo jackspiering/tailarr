@@ -32,11 +32,23 @@ func main() {
 		os.Exit(1)
 	}
 	// FirstRunSetup may have changed LogPath via interactive edit; recreate logger if needed.
-	if cfg.LogPath != log.Path() {
-		log = logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	log, err := reopenLogger(log, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Warning: log path:", err)
 	}
 	if err := ui.Run(cfg, log); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+// reopenLogger rebuilds the logger when first-run changes the log path and
+// validates the replacement. Event stays silent on path errors, so a missing
+// Validate here would hide a symlink parent chosen during first-run.
+func reopenLogger(log *logging.Logger, cfg config.Config) (*logging.Logger, error) {
+	if log != nil && cfg.LogPath == log.Path() {
+		return log, nil
+	}
+	next := logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	return next, next.Validate()
 }

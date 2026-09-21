@@ -23,16 +23,23 @@ type Store struct {
 	Order []string
 }
 
+func openStore(path string, flag int) (*os.File, error) {
+	if err := paths.RefuseSymlinkAncestry(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("auth key directory: %w", err)
+	}
+	if paths.IsSymlink(path) {
+		return nil, fmt.Errorf("auth key store must not be a symlink: %s", path)
+	}
+	return paths.OpenFileNoFollow(path, flag, 0)
+}
+
 // Load reads the authkeys file. Missing file yields an empty store.
 func Load(path string) (*Store, error) {
 	s := &Store{Path: path, Keys: make(map[string]string)}
 	if path == "" {
 		return s, nil
 	}
-	if paths.IsSymlink(path) {
-		return nil, fmt.Errorf("auth key store must not be a symlink: %s", path)
-	}
-	f, err := os.Open(path)
+	f, err := openStore(path, os.O_RDONLY)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s, nil
@@ -83,9 +90,7 @@ func Ensure(path string) error {
 		return err
 	}
 	if _, err := os.Lstat(path); err == nil {
-		// Tighten permissions via descriptor with O_NOFOLLOW where available,
-		// so a raced symlink swap cannot be chmod'd instead.
-		f, err := paths.OpenFileNoFollow(path, os.O_RDWR, 0)
+		f, err := openStore(path, os.O_RDWR)
 		if err != nil {
 			return err
 		}

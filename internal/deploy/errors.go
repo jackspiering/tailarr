@@ -18,7 +18,7 @@ var (
 	// ErrComposeFailed is returned when docker compose fails (wrapped with detail).
 	ErrComposeFailed = errors.New("docker compose failed")
 	// ErrInterrupted is returned when compose is canceled by SIGTERM/SIGINT.
-	// Callers must finish cleanup (for example restore after BackupMove) before exiting.
+	// Callers must finish cleanup (for example restore after a failed apply) before exiting.
 	ErrInterrupted = errors.New("operation interrupted")
 	// ErrSymlink is returned when a path is or contains a symlink that is refused.
 	ErrSymlink = errors.New("symlink refused")

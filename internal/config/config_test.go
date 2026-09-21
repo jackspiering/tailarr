@@ -277,6 +277,55 @@ func TestLoadAcceptsWhitespaceEnvLogMaxBytes(t *testing.T) {
 	}
 }
 
+func TestLoadTrimsPathValuesAndKeepsDefaultsWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	body := "TAILARR_DEPLOY_PATH= /opt/padded\nTAILARR_REPO_PATH=\nTAILARR_LOG_PATH=/tmp/log \n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"TAILARR_DEPLOY_PATH", "TAILARR_REPO_PATH", "TAILARR_LOG_PATH"} {
+		t.Setenv(k, "")
+	}
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DeployPath != "/opt/padded" {
+		t.Fatalf("DeployPath = %q", cfg.DeployPath)
+	}
+	if cfg.RepoPath != DefaultRepoPath {
+		t.Fatalf("empty file path clobbered default: %q", cfg.RepoPath)
+	}
+	if cfg.LogPath != "/tmp/log" {
+		t.Fatalf("LogPath = %q", cfg.LogPath)
+	}
+}
+
+func TestLoadRejectsRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.conf")
+	if err := os.WriteFile(path, []byte("TAILARR_DEPLOY_PATH=relative/stacks\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAILARR_DEPLOY_PATH", "")
+	cfg := Default()
+	cfg.ConfigPath = path
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected relative deploy path to be rejected")
+	}
+}
+
+func TestApplyEnvRejectsRelativePath(t *testing.T) {
+	t.Setenv("TAILARR_DEPLOY_PATH", "relative/stacks")
+	cfg := Default()
+	cfg.ConfigPath = filepath.Join(t.TempDir(), "missing.conf")
+	if err := Load(&cfg); err == nil {
+		t.Fatal("expected relative env path to be rejected")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		(func() bool {

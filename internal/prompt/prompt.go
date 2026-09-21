@@ -3,11 +3,13 @@ package prompt
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"golang.org/x/term"
 )
@@ -99,7 +101,10 @@ func (s *Std) Secret(label string) (string, error) {
 		return "", fmt.Errorf("secret input requires a terminal")
 	}
 	s.Printf("%s: ", label)
-	raw, err := term.ReadPassword(int(f.Fd()))
+	raw, err := readInterruptible(currentCancel(), func() (string, error) {
+		b, err := term.ReadPassword(int(f.Fd()))
+		return string(b), err
+	})
 	s.Printf("\n")
 	if err != nil {
 		return "", err
@@ -148,7 +153,9 @@ func (s *Std) reader() *bufio.Reader {
 }
 
 func (s *Std) readLine() (string, error) {
-	line, err := s.reader().ReadString('\n')
+	line, err := readInterruptible(currentCancel(), func() (string, error) {
+		return s.reader().ReadString('\n')
+	})
 	if err != nil {
 		// A final line without a trailing newline is still a valid answer.
 		if errors.Is(err, io.EOF) && len(line) > 0 {
@@ -178,15 +185,53 @@ func (s *Std) isTerminal() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-func stdinIsTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
+var (
+	cancelMu  sync.Mutex
+	cancelCtx = context.Background()
+)
+
+// BindCancel makes Line and Secret return when ctx is canceled. A nil context
+// clears the binding. Used so SIGINT during a prompt can finish in-flight work.
+func BindCancel(ctx context.Context) {
+	cancelMu.Lock()
+	defer cancelMu.Unlock()
+	if ctx == nil {
+		cancelCtx = context.Background()
+		return
 	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	cancelCtx = ctx
 }
 
-var _ = stdinIsTTY
+func currentCancel() context.Context {
+	cancelMu.Lock()
+	defer cancelMu.Unlock()
+	return cancelCtx
+}
+
+func readInterruptible(ctx context.Context, read func() (string, error)) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := read()
+		ch <- result{line, err}
+	}()
+	if ctx == nil {
+		res := <-ch
+		return res.line, res.err
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-ch:
+		return res.line, res.err
+	}
+}
 
 // ErrCanceled is returned when the operator declines a required confirmation.
 var ErrCanceled = fmt.Errorf("canceled")

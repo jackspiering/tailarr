@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
@@ -25,21 +26,17 @@ func Compose(dir string, args ...string) error {
 	return composeFn(dir, args...)
 }
 
-// ComposeServiceNames returns Compose service names for a deployment directory.
-// Prefers `docker compose config --services`; falls back to a simple YAML scan.
-func ComposeServiceNames(dir string) ([]string, error) {
-	return composeServiceNames(dir, composeBaseName(dir))
-}
-
 func composeServiceNames(dir, base string) ([]string, error) {
 	if base == "" {
 		base = "compose.yaml"
 	}
 	if DockerOK() && ComposeOK() {
-		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		ctx, cancel := probeContext()
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "config", "--services")
 		cmd.Dir = dir
+		cmd.Env, _ = filterComposeEnv(os.Environ())
+		cmd.Stderr = redact.Writer(os.Stderr)
 		out, err := cmd.Output()
 		if err == nil {
 			var names []string
@@ -116,16 +113,17 @@ func defaultCompose(dir string, args ...string) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("%w: docker is required: %v", ErrComposeFailed, err)
 	}
-	// Catch SIGTERM/SIGINT so CommandContext can kill the docker child and we
-	// return to the caller. Do not re-raise: DeployWith must be allowed to
-	// restore a BackupMove dest before the process exits. NotifyContext also
-	// overrides the default SIGINT disposition so Ctrl-C during leaveTUI does
-	// not kill Tailarr before that restore runs.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	// Cancel when the shared interrupt context is canceled (keyboard cancel or
+	// the TUI signal handler) or when SIGINT/SIGTERM arrives directly. Do not
+	// re-raise: the caller must restore a failed apply before the process exits.
+	// Run waits for that sequence, so Quit does not race the restore defer.
+	ctx, stop := signal.NotifyContext(interrupt.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	full := append([]string{"compose"}, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
+	// Bound Wait after cancel so a child that inherited stdio cannot stall restore.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = dir
 	// Redact diagnostics: a compose error echoing the interpolated TS_AUTHKEY
 	// would otherwise print the raw secret to the terminal.
@@ -138,15 +136,11 @@ func defaultCompose(dir string, args ...string) error {
 	// TS_AUTHKEY (or any other secret-like var) would silently override the
 	// merged .env. Filtering makes the merged .env authoritative and limits
 	// secret exposure to the compose subprocess.
-	var env []string
-	for _, e := range os.Environ() {
-		key, _, _ := strings.Cut(e, "=")
-		if strings.HasPrefix(key, "TAILARR_") || redact.LooksSecret(key) {
-			continue
-		}
-		env = append(env, e)
-	}
+	env, dropped := filterComposeEnv(os.Environ())
 	cmd.Env = env
+	for _, key := range dropped {
+		_, _ = fmt.Fprintf(stderr, "ignoring %s from the process environment\n", key)
+	}
 	err := cmd.Run()
 	if f, ok := stdout.(interface{ Flush() error }); ok {
 		_ = f.Flush()
@@ -202,7 +196,7 @@ func ComposeOK() bool {
 	if !DockerOK() {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := probeContext()
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "compose", "version")
 	return cmd.Run() == nil
@@ -213,7 +207,7 @@ func DaemonOK() bool {
 	if !DockerOK() {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := probeContext()
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "info")
 	cmd.Stdout = nil
@@ -223,3 +217,25 @@ func DaemonOK() bool {
 
 // probeTimeout bounds Docker probes so a stalled context cannot freeze the TUI.
 var probeTimeout = 10 * time.Second
+
+func probeContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(interrupt.Context(), probeTimeout)
+}
+
+// filterComposeEnv drops Tailarr settings, Compose CLI knobs, and secret-like
+// keys so the merged .env is authoritative. DOCKER_* is kept for remote daemons.
+// dropped lists COMPOSE_* key names (never values) for an operator warning.
+func filterComposeEnv(environ []string) (kept, dropped []string) {
+	for _, e := range environ {
+		key, _, _ := strings.Cut(e, "=")
+		switch {
+		case strings.HasPrefix(key, "COMPOSE_"):
+			dropped = append(dropped, key)
+		case strings.HasPrefix(key, "TAILARR_") || redact.LooksSecret(key):
+			continue
+		default:
+			kept = append(kept, e)
+		}
+	}
+	return kept, dropped
+}

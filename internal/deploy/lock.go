@@ -28,6 +28,10 @@ type Lock struct {
 // DefaultLockTimeout is how long to wait for a lock.
 const DefaultLockTimeout = 30 * time.Second
 
+// repoLockTimeout bounds waiting for the catalog lock during deploy and apply.
+// Tests shorten it so a held lock fails closed without a 30s wait.
+var repoLockTimeout = DefaultLockTimeout
+
 // AcquireLock creates an exclusive lock file at path.
 func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	if timeout <= 0 {
@@ -267,6 +271,15 @@ func ServiceLockPath(deployPath, service string) (string, error) {
 // RepoLockPath returns the lock file next to the repo path.
 func RepoLockPath(repoPath string) string {
 	return repoPath + ".lock"
+}
+
+// lockRepo takes the catalog lock so deploy and apply cannot read a tree that
+// git pull is rewriting. Refresh holds the same lock.
+func (m *Manager) lockRepo() (*Lock, error) {
+	if m == nil || m.Cfg == nil || strings.TrimSpace(m.Cfg.RepoPath) == "" {
+		return nil, fmt.Errorf("repo path is empty")
+	}
+	return AcquireLock(RepoLockPath(m.Cfg.RepoPath), repoLockTimeout)
 }
 
 // AuthkeysLockPath returns the lock file next to the authkeys store.

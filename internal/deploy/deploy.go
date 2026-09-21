@@ -65,6 +65,11 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		return err
 	}
 	defer func() { _ = lock.Release() }()
+	repoLock, err := m.lockRepo()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = repoLock.Release() }()
 
 	if err := paths.EnsureDir(m.Cfg.DeployPath, "deployment directory"); err != nil {
 		return err
@@ -151,6 +156,11 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		return err
 	}
 	defer func() { _ = lock.Release() }()
+	repoLock, err := m.lockRepo()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = repoLock.Release() }()
 
 	if err := paths.RefuseSymlinkAncestry(m.Cfg.DeployPath); err != nil {
 		return fmt.Errorf("deployment root: %w", err)
@@ -328,21 +338,11 @@ func (m *Manager) mergeAndWriteEnv(service, templateDir, dest, backupPath string
 		if err != nil {
 			return fmt.Errorf("read backup .env: %w", err)
 		}
-		// Non-empty backup values win over empty template values.
+		// Non-empty snapshot values win over empty template values. This is the
+		// backup taken for this apply, not an older historical backup.
 		for k, v := range backupMap {
 			if strings.TrimSpace(v) != "" {
 				localMap[k] = v
-			}
-		}
-	} else {
-		// Also try latest historical backup if local TS_AUTHKEY is empty.
-		if strings.TrimSpace(localMap["TS_AUTHKEY"]) == "" {
-			if latest, err := LatestBackup(m.Cfg.DeployPath, service); err == nil && latest != "" {
-				if bm, err := scaletail.ParseEnvFile(filepath.Join(latest, ".env")); err == nil {
-					if v := strings.TrimSpace(bm["TS_AUTHKEY"]); v != "" {
-						localMap["TS_AUTHKEY"] = v
-					}
-				}
 			}
 		}
 	}
@@ -440,7 +440,7 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 }
 
 // composeServiceNameRE matches valid Compose service names. The YAML scan
-// fallback in ComposeServiceNames can misread nested keys; never emit a name
+// fallback in composeServiceNames can misread nested keys; never emit a name
 // that would produce invalid YAML in the generated override.
 var composeServiceNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
