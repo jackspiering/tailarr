@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Tailarr now requires Go 1.26 or newer (`golang.org/x/sys` v0.48.0 and `golang.org/x/term` v0.46.0).
 - CI fails when the release workflow tool pins differ from CI.
 
 ## [0.5.2] - 2026-08-25

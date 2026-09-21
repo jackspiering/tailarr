@@ -189,7 +189,7 @@ Git workflow:
 
 ## Runtime/Tooling Preferences
 
-- Go: `go.mod` declares `go 1.25.0`; CI installs Go from `go-version-file: go.mod`. No separate toolchain directive.
+- Go: `go.mod` declares `go 1.26.0`; CI installs Go from `go-version-file: go.mod`. No separate toolchain directive.
 - Direct dependencies stay minimal: `charm.land/bubbletea/v2`,
   `charm.land/lipgloss/v2`, `golang.org/x/sys`, `golang.org/x/term`. No Docker
   SDK, no go-git, no third-party logging or assertion libraries.
