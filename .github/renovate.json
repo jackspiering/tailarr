@@ -4,6 +4,7 @@
   "timezone": "UTC",
   "schedule": ["every weekend"],
   "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
       "matchManagers": ["gomod"],
