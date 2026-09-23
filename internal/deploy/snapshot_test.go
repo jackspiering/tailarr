@@ -18,20 +18,6 @@ import (
 	"github.com/jackspiering/tailarr/internal/interrupt"
 )
 
-// managedDeploy creates a managed deployment of the "web" template.
-func managedDeploy(t *testing.T, repo, deployRoot string) string {
-	t.Helper()
-	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
-	dest := filepath.Join(deployRoot, "web")
-	if err := copyTemplate(filepath.Join(repo, "services", "web"), dest); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeOverride("web", dest); err != nil {
-		t.Fatal(err)
-	}
-	return dest
-}
-
 func inode(t *testing.T, path string) uint64 {
 	t.Helper()
 	info, err := os.Stat(path)

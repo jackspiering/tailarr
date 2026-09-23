@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jackspiering/tailarr/internal/security/redact"
+
+	"strings"
 )
 
 func TestParseAndMergeEnv(t *testing.T) {
@@ -211,5 +213,25 @@ func TestQuotedEmptyValuesAreEmpty(t *testing.T) {
 	}
 	if err := ValidateMergedTSAuthkey(EnvMap{"TS_AUTHKEY": `"tskey-auth-x"`}); err != nil {
 		t.Fatalf("quoted auth key rejected: %v", err)
+	}
+}
+
+func TestPlaceholderKeysSortsExtraKeys(t *testing.T) {
+	merged := EnvMap{"T": "", "Z": "", "A": "", "M": "", "SET": "x"}
+	for i := 0; i < 20; i++ {
+		got := strings.Join(PlaceholderKeys(merged, []string{"T"}), ",")
+		if got != "T,A,M,Z" {
+			t.Fatalf("PlaceholderKeys = %s, want T,A,M,Z", got)
+		}
+	}
+}
+
+func TestParseEnvReturnsKeyOrder(t *testing.T) {
+	env, keys, err := ParseEnv(strings.NewReader("B=1\n# c\nA=2\nB=3\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(keys, ",") != "B,A" || env["B"] != "3" || env["A"] != "2" {
+		t.Fatalf("ParseEnv = %v %v", env, keys)
 	}
 }

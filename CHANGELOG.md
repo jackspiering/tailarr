@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backups skip sockets and FIFOs. A FIFO in container data used to block Tailarr forever, and a socket made Remove fail.
   Ctrl+C now stops a long backup copy.
 - The Remove confirm shows how much data the backup copies.
+- Apply asks for confirmation before it takes any lock. Deploy and Apply release the catalog lock before env prompts.
+  A second Tailarr instance no longer times out while the first waits for an answer.
+- Env prompts for keys outside the template come in a stable, sorted order.
 
 ## [0.6.0] - 2026-09-23
 
