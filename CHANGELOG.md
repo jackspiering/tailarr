@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Values typed at a prompt are quoted in `.env`. Compose no longer reads `$` in a password as a variable or a space followed by `#` as a comment.
+- Template `.env` lines keep their original quotes, inline comments, and `${VAR}` references when Tailarr rewrites the file.
+- Lock creation backs off when another process takes the new lock first. Two processes can no longer hold the same lock.
+- A failed first deploy runs `docker compose down` before it deletes the deployment. If that fails, the deployment is kept so Remove can clean up.
+
+### Changed
+
+- Apply no longer merges the backup `.env`. The deployed `.env` already holds the same values.
+- Writing the managed override starts one `docker` process instead of two.
+
 ## [0.5.3] - 2026-09-21
 
 ### Security
