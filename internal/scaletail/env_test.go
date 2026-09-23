@@ -143,3 +143,73 @@ func TestWriteEnvFileMode(t *testing.T) {
 		t.Fatalf("mode %o", info.Mode().Perm())
 	}
 }
+
+func TestQuoteEnvValue(t *testing.T) {
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"", "", true},
+		{"Etc/UTC", "Etc/UTC", true},
+		{"tskey-auth-abc123", "tskey-auth-abc123", true},
+		{"it's", "it's", true},
+		{"p$ss", "'p$ss'", true},
+		{"abc #123", "'abc #123'", true},
+		{`say "hi"`, `'say "hi"'`, true},
+		{`C:\path`, `'C:\path'`, true},
+		{"'lead", "", false},
+		{"it's $5", "", false},
+		{`trail\`, "", false},
+		{"two\nlines", "", false},
+	}
+	for _, c := range cases {
+		got, err := QuoteEnvValue(c.in)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("QuoteEnvValue(%q) = %q, %v; want %q, ok=%v", c.in, got, err, c.want, c.ok)
+		}
+	}
+}
+
+func TestEnvFileRoundTripKeepsRawValues(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.env")
+	body := "TZ=Europe/Amsterdam # See the tz list\n" +
+		"WEBAPP_URL=http://${TS_URL}:3000\n" +
+		"LITERAL='a$b'\n" +
+		"SMTP_PORT=\"587\"\n"
+	if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseEnvFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := ReadEnvKeys(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "dst.env")
+	if err := WriteEnvFile(dst, m, keys); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Fatalf("round trip changed file:\n%s", got)
+	}
+}
+
+func TestQuotedEmptyValuesAreEmpty(t *testing.T) {
+	if !IsPlaceholder(`""`) || !IsPlaceholder(`'# comment'`) {
+		t.Fatal("quoted empty and quoted comment must be placeholders")
+	}
+	merged := MergeEnv(EnvMap{"A": "tpl"}, EnvMap{"A": `""`}, []string{"A"})
+	if merged["A"] != "tpl" {
+		t.Fatalf("quoted empty local overrode template: %q", merged["A"])
+	}
+	if err := ValidateMergedTSAuthkey(EnvMap{"TS_AUTHKEY": `"tskey-auth-x"`}); err != nil {
+		t.Fatalf("quoted auth key rejected: %v", err)
+	}
+}

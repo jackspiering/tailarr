@@ -434,7 +434,11 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 				return err
 			}
 		}
-		merged[key] = val
+		quoted, err := scaletail.QuoteEnvValue(val)
+		if err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		merged[key] = quoted
 	}
 	return nil
 }

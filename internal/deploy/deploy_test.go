@@ -1165,6 +1165,51 @@ func TestDeployDoesNotReuseHistoricalBackupAuthkey(t *testing.T) {
 	}
 }
 
+// fakeUI answers every Line and Secret prompt with fixed values.
+type fakeUI struct {
+	line, secret string
+}
+
+func (f fakeUI) Confirm(string, bool) (bool, error)  { return false, nil }
+func (f fakeUI) Line(string, string) (string, error) { return f.line, nil }
+func (f fakeUI) Secret(string) (string, error)       { return f.secret, nil }
+func (f fakeUI) Printf(string, ...any)               {}
+
+func TestMergeEnvQuotesPromptedValuesAndKeepsTemplateLines(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	env := "TZ=Europe/Amsterdam # See the tz list\n" +
+		"WEBAPP_URL=http://${TS_URL}:3000\n" +
+		"DB_PASSWORD=\n" +
+		"GREETING=\n"
+	templateDir := setupTemplate(t, repo, "web", env)
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(templateDir, dest); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{
+		Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot},
+		UI:  fakeUI{line: "hello world", secret: "p$ss #1"},
+	}
+	if err := m.mergeAndWriteEnv("web", templateDir, dest, "", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"TZ=Europe/Amsterdam # See the tz list\n",
+		"WEBAPP_URL=http://${TS_URL}:3000\n",
+		"DB_PASSWORD='p$ss #1'\n",
+		"GREETING='hello world'\n",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing %q in:\n%s", want, data)
+		}
+	}
+}
+
 func TestApplySnapshotBackupStillSuppliesAuthkey(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
