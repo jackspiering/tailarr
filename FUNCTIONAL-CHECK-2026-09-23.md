@@ -51,6 +51,11 @@ operator** (F2). One defect leaves a running sidecar and a stale deployment afte
 | `govulncheck ./...` (Go 1.26.0) | 17 stdlib advisories, all fixed in 1.26.x patch releases (F11) |
 | `govulncheck ./...` (Go 1.27.1) | No vulnerabilities found |
 
+Rerun after updating the host tools to their latest releases: Go 1.27.1, golangci-lint 2.13.2, govulncheck 1.8.0,
+rumdl 0.2.77, actionlint 1.7.12, zizmor 1.30.1. Every gate above passed again, plus `actionlint` (clean) and
+`zizmor --offline .github/workflows` (no findings, 5 suppressed). CI still pins golangci-lint 2.13.1 and rumdl 0.2.75.
+Renovate should raise those pins.
+
 ## Functional results
 
 | Area | Check | Result |
