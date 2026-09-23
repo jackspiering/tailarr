@@ -29,6 +29,7 @@ INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jack
 The script detects your OS and architecture.
 It downloads the matching release asset.
 It verifies `SHA256SUMS`.
+When the GitHub CLI (`gh`) is installed and logged in, it also verifies the GitHub build attestation.
 It then installs `tailarr` in this order:
 
 - The directory of the first `tailarr` on `PATH`, if that directory is writable
@@ -73,6 +74,7 @@ A release-binary install can also upgrade from the TUI.
 Open **Maintenance > Upgrade Tailarr**.
 Tailarr checks GitHub for a newer release (SemVer).
 It verifies the release asset SHA256 against the published `SHA256SUMS`.
+When `gh` is installed and logged in, it also verifies the GitHub build attestation and stops if that check fails.
 It then replaces the running binary with an atomic write.
 
 `go install` builds do not upgrade in place.

@@ -145,6 +145,26 @@ verify_checksum() {
 	fi
 }
 
+# verify_attestation checks the GitHub build attestation when the GitHub CLI
+# is installed and logged in. The checksum only matches SHA256SUMS from the
+# same release; the attestation proves the release workflow built the file.
+verify_attestation() {
+	bin=$1
+	if ! command -v gh >/dev/null 2>&1; then
+		info "Note: build attestation not checked (install the GitHub CLI to verify it)"
+		return
+	fi
+	set +e
+	out=$(gh attestation verify "$bin" --repo "$REPO" 2>&1)
+	status=$?
+	set -e
+	case "$status" in
+	0) info "Build attestation OK" ;;
+	4) info "Note: build attestation not checked (run gh auth login to verify it)" ;;
+	*) err "build attestation check failed: $out" ;;
+	esac
+}
+
 main() {
 	os=$(detect_os)
 	arch=$(detect_arch)
@@ -170,6 +190,7 @@ main() {
 	download "${base}/SHA256SUMS" "${tmpdir}/SHA256SUMS"
 	verify_checksum "${tmpdir}/SHA256SUMS" "$asset" "${tmpdir}/${asset}"
 	info "Checksum OK"
+	verify_attestation "${tmpdir}/${asset}"
 
 	mkdir -p "$install_dir"
 	if [ ! -w "$install_dir" ]; then
