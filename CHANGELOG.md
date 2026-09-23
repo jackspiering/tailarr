@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The TUI has a new layout: a header bar with the current screen, bordered menu and details panels, a selection meter, and a key-hint footer.
+  The layout follows the terminal size.
+- Long service lists in multi-select scroll with the cursor. The panel border shows the visible range.
+- Command output opens in its own panel. Long lines wrap. PgUp, PgDn, Home, and End scroll the output.
+- Status tokens such as `[ok]`, `[warn]`, `[fail]`, and container health are colored in the output.
+
 ### Fixed
 
 - Values typed at a prompt are quoted in `.env`. Compose no longer reads `$` in a password as a variable or a space followed by `#` as a comment.

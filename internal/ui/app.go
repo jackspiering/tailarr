@@ -77,16 +77,6 @@ func styleOrPlain(s lipgloss.Style, text string) string {
 	return s.Render(text)
 }
 
-var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("44"))
-	dimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	selStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Background(lipgloss.Color("236"))
-	itemStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	border     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-)
-
 type menuItem struct {
 	label string
 	desc  string
@@ -126,6 +116,12 @@ type model struct {
 	status   string
 	quitting bool
 	busy     bool
+
+	// layout state
+	width  int
+	height int
+	scroll int
+	host   string
 
 	// multi-select state
 	multi       multiMode
@@ -192,6 +188,9 @@ func Run(cfg config.Config, log *logging.Logger) error {
 		picked:  map[int]bool{},
 		rootCtx: rootCtx,
 		flight:  flight,
+	}
+	if host, err := os.Hostname(); err == nil {
+		m.host = host
 	}
 	interrupt.Set(rootCtx)
 	defer interrupt.Clear()
@@ -330,6 +329,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = msg.text
 		m.items = []menuItem{{id: "back", label: "Back", desc: "Return"}}
 		m.cursor = 0
+		m.scroll = 0
+		return m, nil
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 	case upgradeDoneMsg:
 		// The binary was replaced; leave the TUI so the new version takes over.
@@ -363,11 +367,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m.goBack(), nil
-		case "up":
+		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "down":
+		case "pgup":
+			m.scroll = max(m.scroll-m.pageSize(), 0)
+		case "pgdown":
+			m.scroll = min(m.scroll+m.pageSize(), m.maxScroll())
+		case "home":
+			m.scroll = 0
+		case "end":
+			m.scroll = m.maxScroll()
+		case "down", "j":
 			max := len(m.items) - 1
 			if m.screen == screenMultiSelect {
 				max = len(m.opts) + len(m.items) - 1
@@ -439,6 +451,7 @@ func (m model) goBack() model {
 	m.multi = multiNone
 	m.picked = map[int]bool{}
 	m.opts = nil
+	m.scroll = 0
 	return m
 }
 
@@ -447,13 +460,21 @@ func (m model) setScreen(s screen, items []menuItem) model {
 	m.items = items
 	m.cursor = 0
 	m.status = ""
+	m.scroll = 0
 	return m
+}
+
+// pageSize is the scroll step for the output panel.
+func (m model) pageSize() int {
+	_, h := m.size()
+	return max(h/2, 1)
 }
 
 func (m model) activate() (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
+	m.scroll = 0
 	if m.screen == screenMultiSelect {
 		// cursor indexes opts first, then action items.
 		if m.cursor < len(m.opts) {
@@ -914,7 +935,7 @@ func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
 		{id: "cancel", label: "Cancel", desc: "Return without changes"},
 	}
 	m.cursor = 0
-	m.status = "Select services (space toggle, a=all), then Run"
+	m.status = ""
 	return m, nil
 }
 
@@ -1052,50 +1073,4 @@ func (m model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	return v
-}
-
-func (m model) render() string {
-	var b string
-	b += styleOrPlain(titleStyle, fmt.Sprintf("Tailarr %s", version.Version)) + "\n"
-	b += styleOrPlain(dimStyle, "Deploy and manage ScaleTail services") + "\n"
-	b += styleOrPlain(border, strings.Repeat("-", 48)) + "\n\n"
-
-	if m.screen == screenMultiSelect {
-		b += styleOrPlain(okStyle, "Select services") + "\n"
-		for i, name := range m.opts {
-			mark := "[ ]"
-			if m.picked[i] {
-				mark = "[x]"
-			}
-			line := fmt.Sprintf("%d  %s %s", i+1, mark, name)
-			if i == m.cursor {
-				b += styleOrPlain(selStyle, "> "+line) + "\n"
-			} else {
-				b += styleOrPlain(itemStyle, "  "+line) + "\n"
-			}
-		}
-		b += "\n"
-	}
-
-	for i, item := range m.items {
-		cursor := "  "
-		idx := i
-		if m.screen == screenMultiSelect {
-			idx = len(m.opts) + i
-		}
-		line := fmt.Sprintf("%d  %s", idx+1, item.label)
-		if idx == m.cursor {
-			cursor = "> "
-			b += styleOrPlain(selStyle, cursor+line) + "\n"
-			b += styleOrPlain(dimStyle, "     "+item.desc) + "\n"
-		} else {
-			b += styleOrPlain(itemStyle, cursor+line) + "\n"
-		}
-	}
-	b += "\n" + styleOrPlain(dimStyle, "arrows move  digits 1-9 select/run  enter select  space toggle  a all  q/esc back") + "\n"
-	if m.status != "" {
-		b += "\n" + styleOrPlain(border, strings.Repeat("-", 48)) + "\n"
-		b += m.status
-	}
-	return b
 }

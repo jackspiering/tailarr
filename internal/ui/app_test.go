@@ -60,7 +60,7 @@ func TestMultiSelectNumericShortcutsMatchView(t *testing.T) {
 		"1  [ ] web",
 		"2  Run on selection",
 		"3  Cancel",
-		"digits 1-9 select/run",
+		"1-9 select/run",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
