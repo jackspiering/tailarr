@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-23
+
 ### Added
 
 - The TUI has a new layout: a header bar with the current screen, bordered menu and details panels, a selection meter, and a key-hint footer.
@@ -21,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Template `.env` lines keep their original quotes, inline comments, and `${VAR}` references when Tailarr rewrites the file.
 - Lock creation backs off when another process takes the new lock first. Two processes can no longer hold the same lock.
 - A failed first deploy runs `docker compose down` before it deletes the deployment. If that fails, the deployment is kept so Remove can clean up.
+- Restart no longer takes a service down. It runs `docker compose stop`, then `docker compose up -d`, so the app waits for a healthy Tailscale sidecar.
+  `docker compose restart` restarted both containers at once, and an app with `network_mode: service:tailscale` exited with code 128.
+- Stop and Restart work for a user in the `docker` group. They check only the compose files, the managed override, and `.env`, not container data.
+  Apply and Remove still check the whole deployment. When container data is unreadable, the error says to run Tailarr as root.
+- Ctrl+C during a first deploy no longer leaves the Tailscale sidecar running. The cleanup `docker compose down` runs even after the interrupt.
+- Deployed services show their columns again. Tab characters were dropped in the TUI.
 
 ### Changed
 
@@ -250,7 +258,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Log rotation runs on every event (not once per process).
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/jackspiering/tailarr/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
