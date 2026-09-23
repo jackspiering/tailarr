@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-23
+
 ### Added
 
 - Services > Search asks for a query and lists the matching services.
@@ -292,7 +294,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Log rotation runs on every event (not once per process).
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jackspiering/tailarr/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/jackspiering/tailarr/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.5.2

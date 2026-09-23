@@ -5,4 +5,4 @@
 package version
 
 // Version is the current Tailarr release (SemVer MAJOR.MINOR.PATCH).
-var Version = "0.6.0"
+var Version = "0.7.0"
