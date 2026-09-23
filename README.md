@@ -153,12 +153,18 @@ Main menu:
 - **Configuration**
 - **Maintenance**
 
+The screen has a header bar, a menu panel, and a details panel.
+The details panel shows the selected action and the active paths.
+Command output opens in an output panel below the menu.
+The footer lists the keys for the current screen.
+
 Keys:
 
-- Arrow keys move.
+- Arrow keys or `j` and `k` move.
 - Enter selects.
 - `q` or Esc goes back or quits.
 - Number keys jump to an item.
+- PgUp and PgDn scroll the output panel. Home and End jump to the top or bottom.
 
 For multi-select deploy and lifecycle actions:
 
