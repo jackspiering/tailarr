@@ -213,3 +213,61 @@ func TestIntegrationUnmanagedRefused(t *testing.T) {
 		t.Fatalf("unmanaged directory must stay intact, stat err: %v", err)
 	}
 }
+
+// newSidecarFixture mirrors the ScaleTail layout: the app shares the network
+// namespace of a health-checked sidecar and waits for it to become healthy.
+func newSidecarFixture(t *testing.T, service string) *integrationFixture {
+	t.Helper()
+	f := newIntegrationFixture(t, service)
+	sidecar := "tailscale-" + service
+	compose := "services:\n" +
+		"  tailscale:\n" +
+		"    image: " + integrationImage + "\n" +
+		"    command: sleep 100000\n" +
+		"    container_name: " + sidecar + "\n" +
+		"    healthcheck:\n" +
+		"      test: [\"CMD\", \"true\"]\n" +
+		"      interval: 1s\n" +
+		"      start_period: 1s\n" +
+		"      start_interval: 1s\n" +
+		"  application:\n" +
+		"    image: " + integrationImage + "\n" +
+		"    command: sleep 100000\n" +
+		"    container_name: " + f.container + "\n" +
+		"    network_mode: service:tailscale\n" +
+		"    depends_on:\n" +
+		"      tailscale:\n" +
+		"        condition: service_healthy\n"
+	if err := os.WriteFile(filepath.Join(f.m.Cfg.RepoPath, "services", service, "compose.yaml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", sidecar).Run() })
+	return f
+}
+
+func containerRunning(name string) bool {
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name).Output()
+	return err == nil && string(out) == "true\n"
+}
+
+func TestIntegrationRestartKeepsSidecarAppRunning(t *testing.T) {
+	f := newSidecarFixture(t, "restarttest")
+	if err := f.m.DeployWith(f.service, DeployOpts{}); err != nil {
+		t.Fatalf("DeployWith failed: %v", err)
+	}
+	t.Cleanup(func() { f.downProject(t) })
+	waitFor(t, 60*time.Second, "app running before restart", func() bool { return containerRunning(f.container) })
+
+	if err := f.m.Restart(f.service); err != nil {
+		t.Fatalf("Restart of a running sidecar service failed: %v", err)
+	}
+	waitFor(t, 30*time.Second, "app running after restart", func() bool { return containerRunning(f.container) })
+
+	if err := f.m.Stop(f.service); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+	if err := f.m.Restart(f.service); err != nil {
+		t.Fatalf("Restart of a stopped sidecar service failed: %v", err)
+	}
+	waitFor(t, 30*time.Second, "app running after restart from stopped", func() bool { return containerRunning(f.container) })
+}

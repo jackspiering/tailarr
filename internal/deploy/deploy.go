@@ -540,12 +540,20 @@ func (m *Manager) Stop(service string) error {
 	})
 }
 
-// Restart restarts a deployment.
+// Restart stops a deployment, then starts it with compose up. compose restart
+// restarts every container at once, so an app with network_mode: service:
+// joins the namespace of a sidecar that is still stopping and exits. up
+// starts the sidecar first and waits for its depends_on condition.
 func (m *Manager) Restart(service string) error {
 	return m.withManagedServiceDir(service, func(dir string) error {
 		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		args := append(append([]string{}, proj...), "restart")
-		if err := Compose(dir, args...); err != nil {
+		stopArgs := append(append([]string{}, proj...), "stop")
+		if err := Compose(dir, stopArgs...); err != nil {
+			return err
+		}
+		upArgs := append(append([]string{}, proj...),
+			"-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans")
+		if err := Compose(dir, upArgs...); err != nil {
 			return err
 		}
 		m.log("restarted service %s", service)
