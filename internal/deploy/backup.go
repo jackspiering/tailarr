@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
+	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
@@ -47,6 +48,7 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 		return "", fmt.Errorf("unknown backup mode: %s", mode)
 	}
 	if err := copyTree(servicePath, backupPath); err != nil {
+		_ = os.RemoveAll(backupPath)
 		return "", fmt.Errorf("copy deployment to backup: %w", err)
 	}
 	// Prune older backups: they accumulate unboundedly and hold plaintext
@@ -142,24 +144,100 @@ func LatestBackup(deployPath, service string) (string, error) {
 	return matches[len(matches)-1], nil
 }
 
+// copyTree copies the deployment at src to dst for a backup. Directories and
+// regular files keep their mode, mtime, and (when running as root) owner, so
+// a restored copy stays usable by containers that run as another uid.
+// Sockets, FIFOs, and devices are skipped: they are runtime artifacts, and
+// opening a FIFO blocks until a writer appears. The operator's interrupt
+// stops a long copy between files.
 func copyTree(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	ctx := interrupt.Context()
+	type dirEntry struct {
+		path string
+		info os.FileInfo
+	}
+	var dirs []dirEntry
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return fmt.Errorf("%w: backup stopped: %v", ErrInterrupted, cerr)
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		if info.Mode()&os.ModeSymlink != 0 {
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
 			return fmt.Errorf("%w: refusing to copy symlink: %s", ErrSymlink, path)
+		case info.IsDir():
+			// Owner-only while copying; the real mode is set once the
+			// contents are in place, so a read-only source dir still copies.
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			dirs = append(dirs, dirEntry{target, info})
+			return nil
+		case info.Mode().IsRegular():
+			return copyRegular(path, target, info)
+		default:
+			return nil
 		}
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		return copyFile(path, target, info.Mode().Perm())
 	})
+	if err != nil {
+		return err
+	}
+	// Children first, so a parent's mtime is not bumped after it is set.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := applyMeta(dirs[i].path, dirs[i].info); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyRegular copies the regular file src to dst. An existing dst is
+// truncated in place, so its inode (and a single-file bind mount of it)
+// survives. Mode, mtime, and owner follow info.
+func copyRegular(src, dst string, info os.FileInfo) error {
+	in, err := paths.OpenFileNoFollow(src, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	out, err := paths.OpenFileNoFollow(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return applyMeta(dst, info)
+}
+
+// applyMeta sets mode, owner, and mtime on path from info. Chmod runs after
+// Chown because changing the owner clears setuid and setgid bits.
+func applyMeta(path string, info os.FileInfo) error {
+	if err := preserveOwner(path, info); err != nil {
+		return fmt.Errorf("preserve owner of %s: %w", path, err)
+	}
+	if err := os.Chmod(path, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky)); err != nil {
+		return err
+	}
+	return os.Chtimes(path, info.ModTime(), info.ModTime())
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
@@ -224,68 +302,4 @@ func isBackupStamp(s string) bool {
 		}
 	}
 	return true
-}
-
-// restorePartialPath is the scratch directory used while swapping a failed
-// force-replace dest aside. It lives under .tailarr_backups and uses a leading
-// dot so it can never collide with a ValidServiceName sibling such as "web.old".
-func restorePartialPath(deployPath, service string) (string, error) {
-	if err := names.ValidateServiceName(service); err != nil {
-		return "", err
-	}
-	root := filepath.Join(deployPath, config.BackupDirName)
-	if err := paths.EnsureDirMode(root, "backup directory", 0o700); err != nil {
-		return "", err
-	}
-	return filepath.Join(root, ".partial-"+service), nil
-}
-
-// restoreDeploymentFromBackup renames backup back to dest. Any existing dest
-// (a partial copy from a failed force redeploy) is first renamed aside, then
-// the backup is renamed into place, and only then is the partial tree removed.
-// Both renames are atomic, so dest is never left missing: the backup remains
-// the source of truth until the final cleanup step.
-func restoreDeploymentFromBackup(deployPath, service, backupPath, dest string) error {
-	if backupPath == "" {
-		return fmt.Errorf("no backup to restore")
-	}
-	if _, err := os.Stat(backupPath); err != nil {
-		return fmt.Errorf("backup missing: %w", err)
-	}
-	// Refuse to restore over symlinks before touching anything.
-	if st, err := os.Lstat(dest); err == nil {
-		if st.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: cannot restore over symlink: %s", ErrSymlink, dest)
-		}
-		if found, err := paths.ContainsSymlinks(dest); err != nil {
-			return err
-		} else if found != "" {
-			return fmt.Errorf("%w: partial deploy has symlink: %s", ErrSymlink, found)
-		}
-	}
-	partial, err := restorePartialPath(deployPath, service)
-	if err != nil {
-		return err
-	}
-	// Clear any leftover scratch tree from a previously interrupted restore.
-	if err := os.RemoveAll(partial); err != nil {
-		return fmt.Errorf("clear previous partial for restore: %w", err)
-	}
-	// Move the partial dest aside so the backup can take its place atomically.
-	if _, err := os.Lstat(dest); err == nil {
-		if err := os.Rename(dest, partial); err != nil {
-			return fmt.Errorf("move partial deploy aside: %w", err)
-		}
-	}
-	if err := os.Rename(backupPath, dest); err != nil {
-		// Backup still exists; put the partial back so dest is not left missing.
-		if _, err2 := os.Lstat(partial); err2 == nil {
-			_ = os.Rename(partial, dest)
-		}
-		return fmt.Errorf("restore deployment from backup: %w", err)
-	}
-	if _, err := os.Lstat(partial); err == nil {
-		_ = os.RemoveAll(partial)
-	}
-	return nil
 }

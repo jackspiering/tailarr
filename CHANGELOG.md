@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Services > Search asks for a query and lists the matching services.
+- In multi-select, `/` filters the list and `n` clears the selection. Selected services stay visible under any filter.
+- Deploy, Stop, and Restart batches ask once before they start and list the selected services.
+- Doctor checks for `/dev/net/tun` on Linux. It also notes when Tailarr does not run as root and Remove may need root.
+- The installer and Maintenance > Upgrade verify the GitHub build attestation when `gh` is installed and logged in.
+  A failed check stops the install. Without `gh`, they print a note.
+
+### Fixed
+
+- A failed Apply no longer breaks the running service. Apply used to swap the whole deployment directory for a backup copy and delete the old one,
+  so running containers lost their bind-mounted data. Apply now saves only the files it changes (template files, `.env`, and the managed override)
+  and restores them in place. When `docker compose up` had started, Apply runs it again with the restored files.
+- Apply no longer reads container data, so it works for a user in the `docker` group.
+- Backups keep file modes and modification times, and owners when Tailarr runs as root.
+  A restored copy used to be owned by the Tailarr user, and containers that run as another user could not write to it.
+- Backups skip sockets and FIFOs. A FIFO in container data used to block Tailarr forever, and a socket made Remove fail.
+  Ctrl+C now stops a long backup copy.
+- The Remove confirm shows how much data the backup copies.
+- Apply asks for confirmation before it takes any lock. Deploy and Apply release the catalog lock before env prompts.
+  A second Tailarr instance no longer times out while the first waits for an answer.
+- Env prompts for keys outside the template come in a stable, sorted order.
+- Catalog refresh fails at once when git needs a password or an SSH host key confirmation. Git could not read the prompt and waited 5 minutes.
+  The error now says to configure a credential helper or SSH agent.
+- Catalog refresh refuses to pull when the clone tracks a different repository than `TAILARR_REPO_URL`. It used to keep pulling the old origin.
+- Ctrl+C during a batch stops it. The remaining services show `skipped: interrupted` instead of running one by one.
+- Failed Deploy, Apply, Stop, Restart, and Remove actions are written to the log.
+- A multi-service deploy rejects an unknown stored key name and an invalid pasted key before it starts.
+- Configuration edits no longer save `TAILARR_*` environment overrides to the config file. The prompt lists the overridden settings.
+- Catalog refresh reports `Catalog is up to date.` when git has nothing new.
+- When Restart stops a service but cannot start it again, the error says that the service is stopped now.
+- Remove reports each backup it cannot delete, because a backup can hold secrets. The log shows the real count.
+
 ## [0.6.0] - 2026-09-23
 
 ### Added

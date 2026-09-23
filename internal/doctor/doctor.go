@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/deploy"
+	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
@@ -86,11 +88,47 @@ func Run(cfg config.Config) Result {
 		r.add(Warn, "catalog", "ScaleTail services directory not found (use Services > Refresh catalog)")
 	}
 
+	r.checkTun()
+	r.checkPrivileges(cfg.DeployPath)
+
 	// Redact credentials if a misconfigured URL slipped through.
 	safeURL := names.RedactRepoURL(cfg.RepoURL)
 	r.add(Info, "paths", fmt.Sprintf("config=%s repo=%s deploy=%s url=%s",
 		cfg.ConfigPath, cfg.RepoPath, cfg.DeployPath, safeURL))
 	return r
+}
+
+// tunPath is the TUN device ScaleTail sidecars need. Tests override it.
+var tunPath = "/dev/net/tun"
+
+// euid reports the effective user ID. Tests override it.
+var euid = os.Geteuid
+
+// checkTun warns when the Linux host has no TUN device for the Tailscale
+// sidecar. On macOS the device lives in the Docker VM, so it is not checked.
+func (r *Result) checkTun() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	info, err := os.Stat(tunPath)
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		r.add(Warn, "tun", tunPath+" not found; Tailscale sidecars need it (load the tun kernel module)")
+		return
+	}
+	r.add(OK, "tun", tunPath+" present")
+}
+
+// checkPrivileges notes that Remove copies and deletes container data, which
+// sidecars write as root, when Tailarr does not run as root.
+func (r *Result) checkPrivileges(deployPath string) {
+	if euid() == 0 {
+		return
+	}
+	svcs, err := scaletail.ListDeployed(deployPath)
+	if err != nil || len(svcs) == 0 {
+		return
+	}
+	r.add(Info, "privileges", "not running as root; Remove may fail on root-owned container data (run Tailarr as root for Remove)")
 }
 
 func (r *Result) add(level Level, name, msg string) {

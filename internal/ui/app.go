@@ -127,6 +127,9 @@ type model struct {
 	multi       multiMode
 	multiParent screen
 	opts        []string
+	// allOpts is the unfiltered list; filter is the active "/" query.
+	allOpts []string
+	filter  string
 	// selected indexes for multi
 	picked map[int]bool
 
@@ -244,7 +247,12 @@ func FirstRunSetup(cfg *config.Config) error {
 		}
 		return nil
 	}
-	if err := config.Save(*cfg); err != nil {
+	// Save the defaults, not TAILARR_* overrides from this session.
+	base, err := config.LoadFile(cfg.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := config.Save(base); err != nil {
 		uiPrompt.Printf("Could not save config: %v\n", err)
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -335,6 +343,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case filterMsg:
+		m.busy = false
+		return m.applyFilter(msg.query), nil
 	case upgradeDoneMsg:
 		// The binary was replaced; leave the TUI so the new version takes over.
 		m.quitting = true
@@ -399,6 +410,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.picked[i] = true
 				}
 			}
+		case "n":
+			if m.screen == screenMultiSelect {
+				m.picked = map[int]bool{}
+			}
+		case "/":
+			if m.screen == screenMultiSelect {
+				return m.promptFilter()
+			}
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			if msg.String() == "0" {
 				if m.screen == screenMultiSelect {
@@ -438,6 +457,9 @@ type resultMsg struct {
 	cfg  *config.Config
 	log  *logging.Logger
 }
+
+// filterMsg carries a new multi-select filter query.
+type filterMsg struct{ query string }
 
 // upgradeDoneMsg signals that the running binary was replaced and the TUI
 // should exit so the new version takes over.
@@ -600,21 +622,17 @@ func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
 	case "back":
 		return m.goBack(), nil
 	case "search":
-		svcs, err := scaletail.ListAvailable(m.cfg.RepoPath)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
-			return m, nil
-		}
-		if len(svcs) == 0 {
-			m.status = "No valid ScaleTail services found."
-			return m, nil
-		}
-		var b strings.Builder
-		for _, s := range svcs {
-			fmt.Fprintf(&b, "  - %s\n", s.Name)
-		}
-		m.status = b.String()
-		return m, nil
+		repoPath := m.cfg.RepoPath
+		ui := prompt.NewStd(m.cfg.AssumeYes)
+		return m.startSequence(func() tea.Msg {
+			leaveTUI()
+			query, err := ui.Line("Search services (empty lists all)", "")
+			reenterTUI()
+			if err != nil {
+				return resultMsg{text: "Canceled."}
+			}
+			return resultMsg{text: searchCatalog(repoPath, query)}
+		})
 	case "refresh":
 		cfg := m.cfg
 		return m.startSequence(func() tea.Msg {
@@ -799,9 +817,17 @@ func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// editConfigInteractive edits the values saved in the config file. TAILARR_*
+// environment overrides still apply to the running session but are not saved.
 func editConfigInteractive(cfg *config.Config, ui *prompt.Std) (string, bool) {
-	next := *cfg
-	var err error
+	next, err := config.LoadFile(cfg.ConfigPath)
+	if err != nil {
+		return "Error: " + redact.Text(err.Error()), false
+	}
+	if keys := config.EnvOverrides(); len(keys) > 0 {
+		ui.Printf("Note: %s set in the environment. The environment wins at runtime; these prompts edit the saved values.\n",
+			strings.Join(keys, ", "))
+	}
 	var raw string
 	if raw, err = ui.Line("TAILARR_REPO_URL", next.RepoURL); err != nil {
 		return redact.Text(err.Error()), false
@@ -828,7 +854,12 @@ func editConfigInteractive(cfg *config.Config, ui *prompt.Std) (string, bool) {
 	if err := config.Save(next); err != nil {
 		return "Error saving: " + redact.Text(err.Error()), false
 	}
-	*cfg = next
+	effective := next
+	effective.AssumeYes = cfg.AssumeYes
+	if err := config.ApplyEnv(&effective); err != nil {
+		return "Saved config, but the environment override is invalid: " + redact.Text(err.Error()), false
+	}
+	*cfg = effective
 	return "Saved config: " + next.ConfigPath, true
 }
 
@@ -928,15 +959,67 @@ func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
 	m.multi = mode
 	m.multiParent = m.screen
 	m.opts = names
+	m.allOpts = names
+	m.filter = ""
 	m.picked = map[int]bool{}
 	m.screen = screenMultiSelect
 	m.items = []menuItem{
-		{id: "run", label: "Run on selection", desc: "space toggles, a selects all, enter runs"},
+		{id: "run", label: "Run on selection", desc: "space toggles, a selects all, n clears, / filters, enter runs"},
 		{id: "cancel", label: "Cancel", desc: "Return without changes"},
 	}
 	m.cursor = 0
 	m.status = ""
 	return m, nil
+}
+
+// promptFilter asks for a multi-select filter query outside the TUI.
+func (m model) promptFilter() (tea.Model, tea.Cmd) {
+	ui := prompt.NewStd(m.cfg.AssumeYes)
+	current := m.filter
+	return m.startSequence(func() tea.Msg {
+		leaveTUI()
+		defer reenterTUI()
+		query, err := ui.Line("Filter services (empty shows all)", "")
+		if err != nil {
+			return filterMsg{query: current}
+		}
+		return filterMsg{query: query}
+	})
+}
+
+// applyFilter shows the services that match query. Selected services stay
+// in the list, so a filter never drops a selection.
+func (m model) applyFilter(query string) model {
+	chosen := map[string]bool{}
+	for i, name := range m.opts {
+		if m.picked[i] {
+			chosen[name] = true
+		}
+	}
+	match := map[string]bool{}
+	for _, name := range filterNames(m.allOpts, query) {
+		match[name] = true
+	}
+	opts := []string{}
+	picked := map[int]bool{}
+	for _, name := range m.allOpts {
+		if !match[name] && !chosen[name] {
+			continue
+		}
+		if chosen[name] {
+			picked[len(opts)] = true
+		}
+		opts = append(opts, name)
+	}
+	m.opts = opts
+	m.picked = picked
+	m.filter = strings.TrimSpace(query)
+	m.cursor = 0
+	m.status = ""
+	if len(opts) == 0 {
+		m.status = fmt.Sprintf("No services match %q.", m.filter)
+	}
+	return m
 }
 
 func (m model) finishMulti() (tea.Model, tea.Cmd) {
@@ -1009,40 +1092,52 @@ func runCatalogRefresh(cfg config.Config) string {
 	if err != nil {
 		return styleOrPlain(errStyle, redact.Text(err.Error()))
 	}
+	return refreshSummary(msg)
+}
+
+// refreshSummary turns git output from a catalog refresh into one result.
+func refreshSummary(msg string) string {
 	if strings.HasPrefix(msg, "Using local") {
 		return msg
 	}
-	if msg == "" {
+	if strings.TrimSpace(msg) == "" || strings.Contains(msg, "Already up to date") {
 		return "Catalog is up to date."
 	}
 	return "Catalog refreshed.\n" + msg
 }
 
 func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services []string) string {
-	ui := prompt.NewStd(cfg.AssumeYes)
-	mgr := &deploy.Manager{Cfg: &cfg, Log: log, UI: ui}
-	var b strings.Builder
-	var sharedKey string
-	if mode == multiDeploy && len(services) > 1 {
-		if ok, _ := ui.Confirm("Use one reusable Tailscale auth key for all selected services?", true); ok {
-			// Resolve once interactively via a dummy merge path is complex; prompt once.
-			s, err := authkeys.Load(cfg.AuthkeysPath)
-			if err == nil && len(s.Order) > 0 {
-				ui.Printf("Stored keys: %s\n", strings.Join(s.Order, ", "))
-				name, _ := ui.Line("Auth key name (empty to paste)", "")
-				if name != "" {
-					sharedKey = s.Keys[name]
-				}
-			}
-			if sharedKey == "" {
-				val, err := ui.Secret("TS_AUTHKEY for all services")
-				if err == nil && val != "" {
-					sharedKey = val
-				}
-			}
+	return runBatchWith(cfg, log, prompt.NewStd(cfg.AssumeYes), mode, services)
+}
+
+// runBatchWith runs mode on each service. It stops at the first interrupt,
+// logs every failure, and asks once before a Deploy, Stop, or Restart batch.
+// Apply and Remove confirm per service.
+func runBatchWith(cfg config.Config, log *logging.Logger, ui prompt.UI, mode multiMode, services []string) string {
+	verb := multiTitle(mode)
+	if mode == multiDeploy || mode == multiStop || mode == multiRestart {
+		ok, err := ui.Confirm(fmt.Sprintf("%s %d service(s): %s?", verb, len(services), summarizeNames(services, 8)), false)
+		if err != nil || !ok {
+			return "Canceled."
 		}
 	}
-	for _, svc := range services {
+	mgr := &deploy.Manager{Cfg: &cfg, Log: log, UI: ui}
+	var sharedKey string
+	if mode == multiDeploy && len(services) > 1 {
+		key, err := sharedAuthkey(cfg, ui)
+		if err != nil {
+			return "Error: " + redact.Text(err.Error())
+		}
+		sharedKey = key
+	}
+	var b strings.Builder
+	for i, svc := range services {
+		if interrupt.Context().Err() != nil {
+			for _, rest := range services[i:] {
+				fmt.Fprintf(&b, "==> %s\n  skipped: interrupted\n", rest)
+			}
+			break
+		}
 		fmt.Fprintf(&b, "==> %s\n", svc)
 		var err error
 		switch mode {
@@ -1057,13 +1152,112 @@ func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services [
 		case multiRestart:
 			err = mgr.Restart(svc)
 		}
-		if err != nil {
-			fmt.Fprintf(&b, "  error: %s\n", redact.Text(err.Error()))
-		} else {
+		if err == nil {
 			fmt.Fprintf(&b, "  ok\n")
+			continue
+		}
+		fmt.Fprintf(&b, "  error: %s\n", redact.Text(err.Error()))
+		if log != nil {
+			log.Event(fmt.Sprintf("%s %s failed: %v", strings.ToLower(verb), svc, err))
+		}
+		if errors.Is(err, deploy.ErrInterrupted) || errors.Is(err, context.Canceled) {
+			for _, rest := range services[i+1:] {
+				fmt.Fprintf(&b, "==> %s\n  skipped: interrupted\n", rest)
+			}
+			break
 		}
 	}
 	return b.String()
+}
+
+// sharedAuthkey asks for one auth key for a multi-service deploy. It returns
+// "" when the operator wants per-service prompts.
+func sharedAuthkey(cfg config.Config, ui prompt.UI) (string, error) {
+	ok, err := ui.Confirm("Use one reusable Tailscale auth key for all selected services?", true)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
+	s, err := authkeys.Load(cfg.AuthkeysPath)
+	if err != nil {
+		return "", err
+	}
+	if len(s.Order) > 0 {
+		ui.Printf("Stored keys: %s\n", strings.Join(s.Order, ", "))
+		name, err := ui.Line("Auth key name (empty to paste)", "")
+		if err != nil {
+			return "", err
+		}
+		if name != "" {
+			key, ok := s.Keys[name]
+			if !ok {
+				return "", fmt.Errorf("auth key %q not found in store", name)
+			}
+			return key, nil
+		}
+	}
+	val, err := ui.Secret("TS_AUTHKEY for all services (empty to ask per service)")
+	if err != nil {
+		return "", err
+	}
+	if val == "" {
+		return "", nil
+	}
+	if !names.ValidTSAuthkey(val) {
+		return "", fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+	}
+	return val, nil
+}
+
+// summarizeNames joins up to max names and counts the rest.
+func summarizeNames(list []string, max int) string {
+	if len(list) <= max {
+		return strings.Join(list, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(list[:max], ", "), len(list)-max)
+}
+
+// searchCatalog lists catalog services whose name contains query, ignoring case.
+func searchCatalog(repoPath, query string) string {
+	svcs, err := scaletail.ListAvailable(repoPath)
+	if err != nil {
+		return styleOrPlain(errStyle, redact.Text(err.Error()))
+	}
+	all := make([]string, 0, len(svcs))
+	for _, s := range svcs {
+		all = append(all, s.Name)
+	}
+	found := filterNames(all, query)
+	if len(found) == 0 {
+		if query == "" {
+			return "No valid ScaleTail services found."
+		}
+		return fmt.Sprintf("No services match %q.", query)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d of %d services", len(found), len(all))
+	if query != "" {
+		fmt.Fprintf(&b, " match %q", query)
+	}
+	b.WriteString(":\n")
+	for _, name := range found {
+		fmt.Fprintf(&b, "  - %s\n", name)
+	}
+	return b.String()
+}
+
+// filterNames returns the names that contain query, ignoring case.
+func filterNames(list []string, query string) []string {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []string
+	for _, name := range list {
+		if q == "" || strings.Contains(strings.ToLower(name), q) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (m model) View() tea.View {

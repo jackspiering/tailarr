@@ -3,6 +3,7 @@ package scaletail
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -20,29 +21,50 @@ type EnvMap map[string]string
 // ParseEnvFile reads a KEY=VALUE file without shell evaluation.
 // Empty values and comments are preserved semantics: keys with empty values are kept.
 func ParseEnvFile(path string) (EnvMap, error) {
-	out := make(EnvMap)
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return out, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
+	env, _, err := parseEnvPath(path)
+	return env, err
+}
 
-	sc := bufio.NewScanner(f)
+// ParseEnv parses dotenv data without shell evaluation. It returns the values
+// and the keys in first-seen order.
+func ParseEnv(r io.Reader) (EnvMap, []string, error) {
+	out := make(EnvMap)
+	var keys []string
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		key, value, skip, err := parseEnvLine(sc.Text())
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+			return nil, nil, err
 		}
 		if skip {
 			continue
 		}
+		if _, seen := out[key]; !seen {
+			keys = append(keys, key)
+		}
 		out[key] = value
 	}
-	return out, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, nil, err
+	}
+	return out, keys, nil
+}
+
+func parseEnvPath(path string) (EnvMap, []string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(EnvMap), nil, nil
+		}
+		return nil, nil, err
+	}
+	defer func() { _ = f.Close() }()
+	env, keys, err := ParseEnv(f)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return env, keys, nil
 }
 
 // parseEnvLine parses one dotenv line. skip is true for blanks and comments.
@@ -156,29 +178,8 @@ func MergeEnv(template, local EnvMap, templateKeys []string) EnvMap {
 
 // ReadEnvKeys returns keys in file order.
 func ReadEnvKeys(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var keys []string
-	seen := make(map[string]bool)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		key, _, skip, err := parseEnvLine(sc.Text())
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		if skip || seen[key] {
-			continue
-		}
-		seen[key] = true
-		keys = append(keys, key)
-	}
-	return keys, sc.Err()
+	_, keys, err := parseEnvPath(path)
+	return keys, err
 }
 
 // MissingRequired returns keys that are empty in merged (common deploy prompts).
@@ -227,15 +228,15 @@ func PlaceholderKeys(merged EnvMap, keys []string) []string {
 			seen[k] = true
 		}
 	}
+	// Keys outside the template order are sorted so prompts keep a stable order.
+	var extra []string
 	for k, v := range merged {
-		if seen[k] {
-			continue
-		}
-		if IsPlaceholder(v) {
-			out = append(out, k)
+		if !seen[k] && IsPlaceholder(v) {
+			extra = append(extra, k)
 		}
 	}
-	return out
+	sort.Strings(extra)
+	return append(out, extra...)
 }
 
 // ValidateMergedTSAuthkey ensures TS_AUTHKEY if present is well-formed.

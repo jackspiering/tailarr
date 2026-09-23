@@ -43,10 +43,13 @@ Deployment flow end to end:
    (`security/names.ValidateServiceName`), merges template `.env` with stored
    values (`ValidateMergedTSAuthkey`), writes env mode 0600 atomically, writes
    managed override `.tailarr.compose.yaml`, takes a pid+flock lock
-   (`deploy.AcquireLock`, 30 s default), backs up persistent data to
-   `.tailarr_backups` (keep 2), then execs `docker compose` (package var
-   `composeFn`) with filtered env and redacted stdio. Failure restores the
-   backup.
+   (`deploy.AcquireLock`, 30 s default), then execs `docker compose` (package
+   var `composeFn`) with filtered env and redacted stdio. Apply first saves
+   only the files it writes (template paths, `.env`, override) to
+   `.tailarr_backups` (keep 2); failure restores them in place and re-runs
+   `up`. Container data is never moved, because running containers bind-mount
+   it. Remove copies the whole tree first (modes, mtimes, owners as root;
+   sockets and FIFOs skipped).
 5. Status (`deploy.CollectOverview`): one `docker ps -a` pass; health groups by `app-` / `tailscale-` name prefixes.
 6. Every event appends a redacted line via `logging.Logger.Event` (size rotation, O_NOFOLLOW).
 
@@ -172,7 +175,8 @@ Git workflow:
 |`internal/deploy/deploy.go`|DeployWith / Apply / Stop / Restart / RemoveWith|
 |`internal/deploy/compose.go`|docker compose exec, project naming, probes|
 |`internal/deploy/lock.go`|pid+flock acquisition and reclaim|
-|`internal/deploy/backup.go`|Timestamped backups, prune, restore|
+|`internal/deploy/backup.go`|Full-tree Remove backups, prune|
+|`internal/deploy/snapshot.go`|Apply snapshot of managed files, in-place restore|
 |`internal/deploy/errors.go`|Lifecycle sentinel errors|
 |`internal/config/config.go`|Config defaults, load/save, env precedence|
 |`internal/scaletail/catalog.go`|Service discovery and filtering|

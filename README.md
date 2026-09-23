@@ -29,6 +29,7 @@ INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jack
 The script detects your OS and architecture.
 It downloads the matching release asset.
 It verifies `SHA256SUMS`.
+When the GitHub CLI (`gh`) is installed and logged in, it also verifies the GitHub build attestation.
 It then installs `tailarr` in this order:
 
 - The directory of the first `tailarr` on `PATH`, if that directory is writable
@@ -73,6 +74,7 @@ A release-binary install can also upgrade from the TUI.
 Open **Maintenance > Upgrade Tailarr**.
 Tailarr checks GitHub for a newer release (SemVer).
 It verifies the release asset SHA256 against the published `SHA256SUMS`.
+When `gh` is installed and logged in, it also verifies the GitHub build attestation and stops if that check fails.
 It then replaces the running binary with an atomic write.
 
 `go install` builds do not upgrade in place.
@@ -115,10 +117,10 @@ go build -o bin/tailarr ./cmd/tailarr
   Docker/Compose.
 - The install does not need root. Set `INSTALL_DIR` to choose the install path.
   See [Quick start](#quick-start).
-- Deploy, Stop, and Restart work for a user in the `docker` group.
-  Apply and Remove copy and delete container data.
+- Deploy, Apply, Stop, and Restart work for a user in the `docker` group.
+  Remove copies and deletes container data.
   Containers such as the Tailscale sidecar write that data as root.
-  Run Tailarr as root for Apply and Remove.
+  Run Tailarr as root for Remove.
 
 ## Features
 
@@ -130,7 +132,7 @@ go build -o bin/tailarr ./cmd/tailarr
 | Status | Shows deployed services, running services, Docker, and config. |
 | Deploy env | Tailarr prompts for empty or placeholder env values. You can reuse a stored auth key on more than one service. |
 | Safety | Includes name checks, symlink refusal, backups, mode-600 secrets, path bounds, and ownership-bound locks. |
-| Doctor | Checks the host, paths, and Docker/Compose reachability. |
+| Doctor | Checks the host, paths, Docker/Compose reachability, and the TUN device. |
 | UI | Menus: Status, Services, Tailscale Authentication Keys, Configuration, Maintenance. You can multi-select for batch deploy and lifecycle actions. |
 
 ## Usage
@@ -239,7 +241,10 @@ Safety:
 - Config, deploy, log, and auth key paths must be absolute.
 - Tailarr writes config, auth keys, and `.env` files atomically.
 - Secret files use mode `600`.
-- Tailarr makes a backup before apply or remove.
+- Before apply, Tailarr saves the files that apply changes: template files, `.env`, and the managed override.
+  A failed apply puts them back in place and starts the service again. Container data is not copied or moved.
+- Before remove, Tailarr copies the whole deployment to `.tailarr_backups`. The copy keeps modes and times, and owners when
+  Tailarr runs as root. It skips sockets and FIFOs.
 - Each service has an ownership-bound lock.
 - Git refresh uses a repo lock.
 - Treat the ScaleTail clone as trusted input. Compose runs on your host.

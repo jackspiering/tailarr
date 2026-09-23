@@ -2,7 +2,8 @@
 //
 // The latest release tag is resolved through the GitHub API, the asset and
 // its SHA256SUMS file are downloaded from the matching GitHub release, and
-// the running binary is replaced atomically only after the checksum matches.
+// the running binary is replaced atomically only after the checksum matches
+// and, when the GitHub CLI is available, the build attestation verifies.
 package upgrade
 
 import (
@@ -211,6 +212,15 @@ func Upgrade(opts Options) (string, error) {
 		return "", err
 	}
 	opts.progress("Checksum OK\n")
+	verified, note, err := checkProvenance(assetPath, opts.repo())
+	if err != nil {
+		return "", err
+	}
+	if verified {
+		opts.progress("Build attestation OK\n")
+	} else {
+		opts.progress("Note: %s\n", note)
+	}
 
 	// Replace the binary atomically in place (temp file + rename).
 	if err := atomic.WriteFile(exe, data, 0o755); err != nil {

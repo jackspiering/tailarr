@@ -3,6 +3,7 @@ package doctor
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -367,5 +368,40 @@ func TestProbeWritableCreatesAndRemovesProbe(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("probe file was not removed: %v", matches)
+	}
+}
+
+func TestDoctorWarnsWithoutTun(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("TUN check runs on Linux only")
+	}
+	_, cfg := readyRoot(t)
+	old := tunPath
+	tunPath = filepath.Join(t.TempDir(), "missing-tun")
+	t.Cleanup(func() { tunPath = old })
+	if c := find(Run(cfg), "tun"); c == nil || c.Level != Warn {
+		t.Fatalf("expected tun warning, got %+v", c)
+	}
+}
+
+func TestDoctorNotesRemoveNeedsRoot(t *testing.T) {
+	_, cfg := readyRoot(t)
+	svc := filepath.Join(cfg.DeployPath, "web")
+	if err := os.MkdirAll(svc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := euid
+	t.Cleanup(func() { euid = old })
+
+	euid = func() int { return 1000 }
+	if c := find(Run(cfg), "privileges"); c == nil || c.Level != Info {
+		t.Fatalf("expected privileges note for non-root, got %+v", c)
+	}
+	euid = func() int { return 0 }
+	if find(Run(cfg), "privileges") != nil {
+		t.Fatal("root needs no privileges note")
 	}
 }

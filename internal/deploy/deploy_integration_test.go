@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -270,4 +272,51 @@ func TestIntegrationRestartKeepsSidecarAppRunning(t *testing.T) {
 		t.Fatalf("Restart of a stopped sidecar service failed: %v", err)
 	}
 	waitFor(t, 30*time.Second, "app running after restart from stopped", func() bool { return containerRunning(f.container) })
+}
+
+func TestIntegrationFailedApplyKeepsContainerData(t *testing.T) {
+	f := newIntegrationFixture(t, "applydata")
+	tpl := filepath.Join(f.m.Cfg.RepoPath, "services", f.service)
+	// Run as the test user so the bind-mounted files stay removable.
+	compose := "services:\n" +
+		"  " + f.service + ":\n" +
+		"    image: " + integrationImage + "\n" +
+		"    container_name: " + f.container + "\n" +
+		"    user: \"" + strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()) + "\"\n" +
+		"    command: sh -c 'i=0; while true; do i=$$((i+1)); echo $$i > /data/heartbeat; sleep 1; done'\n" +
+		"    volumes:\n" +
+		"      - ./data:/data\n"
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tpl, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.DeployWith(f.service, DeployOpts{}); err != nil {
+		t.Fatalf("DeployWith failed: %v", err)
+	}
+	t.Cleanup(func() { f.downProject(t) })
+	heartbeat := filepath.Join(f.deploy, f.service, "data", "heartbeat")
+	waitFor(t, 60*time.Second, "first heartbeat", func() bool {
+		_, err := os.Stat(heartbeat)
+		return err == nil
+	})
+
+	broken := strings.Replace(compose, integrationImage, "tailarr-integration/does-not-exist:none", 1)
+	if err := os.WriteFile(filepath.Join(tpl, "compose.yaml"), []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Apply(f.service, DeployOpts{}); err == nil {
+		t.Fatal("expected Apply to fail on a missing image")
+	}
+
+	// The running container must still write to the deployment's data dir.
+	before, err := os.ReadFile(heartbeat)
+	if err != nil {
+		t.Fatalf("heartbeat missing after failed apply: %v", err)
+	}
+	waitFor(t, 15*time.Second, "heartbeat to advance after failed apply", func() bool {
+		now, err := os.ReadFile(heartbeat)
+		return err == nil && string(now) != string(before)
+	})
 }

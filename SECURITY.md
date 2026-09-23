@@ -39,6 +39,10 @@ Include:
   SHA-256 checksum against `SHA256SUMS` from the same GitHub release. That is
   transport-integrity protection (corruption/truncation), not cryptographic
   authenticity: it does not prove the release was published by the maintainer.
+- When the GitHub CLI (`gh`) is installed and logged in, both also run
+  `gh attestation verify` against this repository. That proves the release
+  workflow built the asset, and a failed check stops the install or upgrade.
+  Without `gh`, they print a note that the attestation was not checked.
 
 ## Project rules
 

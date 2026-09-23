@@ -2,8 +2,10 @@
 package deploy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -114,7 +116,14 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		return err
 	}
 
-	if started, err := m.finishDeploy(service, templateDir, dest, opts); err != nil {
+	tplEnv, err := readTemplateEnv(templateDir)
+	if err != nil {
+		return err
+	}
+	// The catalog is not read after the template copy, so release its lock
+	// before env prompts: other instances need it for unrelated services.
+	releaseRepo := func() { _ = repoLock.Release() }
+	if started, err := m.finishDeploy(service, templateDir, dest, tplEnv, opts, releaseRepo); err != nil {
 		// A failed up can leave some containers running. Take them down before
 		// deleting dest; if that fails, keep dest so Remove can clean up later.
 		if started {
@@ -134,12 +143,15 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 }
 
 // finishDeploy populates dest and runs compose up. started reports whether
-// compose up ran, so a failure may have left containers behind.
-func (m *Manager) finishDeploy(service, templateDir, dest string, opts DeployOpts) (started bool, err error) {
-	if err := copyTemplate(templateDir, dest); err != nil {
+// compose up ran, so a failure may have left containers behind. afterCopy
+// runs once the template is copied.
+func (m *Manager) finishDeploy(service, templateDir, dest string, tplEnv []byte, opts DeployOpts, afterCopy func()) (started bool, err error) {
+	err = copyTemplate(templateDir, dest)
+	afterCopy()
+	if err != nil {
 		return false, err
 	}
-	if err := m.mergeAndWriteEnv(templateDir, dest, opts); err != nil {
+	if err := m.mergeAndWriteEnv(tplEnv, dest, opts); err != nil {
 		return false, err
 	}
 	if err := writeOverride(service, dest); err != nil {
@@ -154,10 +166,31 @@ func (m *Manager) finishDeploy(service, templateDir, dest string, opts DeployOpt
 
 // Apply syncs catalog template files onto an existing managed deployment, then
 // pulls images and runs compose up. Dest-only paths and dest .env are kept.
-// Create is Deploy only.
+// Create is Deploy only. Before changing anything, Apply saves the files it
+// may write. A failure puts those files back in place and, when compose up
+// had started, runs up again so the containers match the restored files.
+// Container data is never copied or moved.
 func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err := names.ValidateServiceName(service); err != nil {
 		return err
+	}
+	// Ask before taking locks so a slow answer does not block other
+	// Tailarr instances. Everything is checked again under the locks.
+	if m.UI != nil {
+		dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
+		if err != nil {
+			return err
+		}
+		if err := requireApplyTarget(dest, service); err != nil {
+			return err
+		}
+		ok, cerr := m.UI.Confirm(fmt.Sprintf("Apply catalog to %s? This overwrites template files and pulls images.", service), false)
+		if cerr != nil {
+			return cerr
+		}
+		if !ok {
+			return fmt.Errorf("%w: apply canceled", prompt.ErrCanceled)
+		}
 	}
 	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
 	if err != nil {
@@ -182,15 +215,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err != nil {
 		return err
 	}
-	if st, err := os.Lstat(dest); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%w: %s (use Deploy)", ErrNotDeployed, service)
-		}
-		return err
-	} else if st.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
-	}
-	if err := requireManagedDeploy(dest, service); err != nil {
+	if err := requireApplyTarget(dest, service); err != nil {
 		return err
 	}
 
@@ -206,45 +231,54 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if !scaletail.HasComposeFile(templateDir) {
 		return fmt.Errorf("template has no compose file: %s", service)
 	}
-
-	if m.UI != nil {
-		ok, cerr := m.UI.Confirm(fmt.Sprintf("Apply catalog to %s? This overwrites template files and pulls images.", service), false)
-		if cerr != nil {
-			return cerr
-		}
-		if !ok {
-			return fmt.Errorf("%w: apply canceled", prompt.ErrCanceled)
-		}
-	}
-
-	backupPath, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy)
+	tplEnv, err := readTemplateEnv(templateDir)
 	if err != nil {
 		return err
 	}
-	m.log("backup created for %s: %s", service, backupPath)
+
+	snap, err := snapshotManaged(m.Cfg.DeployPath, service, templateDir, dest)
+	if err != nil {
+		return err
+	}
+	m.log("backup created for %s: %s", service, snap.dir)
 
 	restore := true
+	upStarted := false
 	defer func() {
-		if !restore || backupPath == "" {
+		if !restore {
 			return
 		}
-		if rerr := restoreDeploymentFromBackup(m.Cfg.DeployPath, service, backupPath, dest); rerr != nil {
-			retErr = fmt.Errorf("apply failed (%v); also failed to restore previous deployment from %s: %w", retErr, backupPath, rerr)
+		if rerr := snap.restore(); rerr != nil {
+			retErr = fmt.Errorf("apply failed (%v); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
 			return
 		}
-		if retErr != nil {
-			m.log("restored previous deployment for %s after failed apply", service)
+		m.log("restored previous files for %s after failed apply", service)
+		switch {
+		case !upStarted:
 			retErr = fmt.Errorf("apply failed; previous deployment restored: %w", retErr)
+		case errors.Is(retErr, ErrInterrupted):
+			retErr = fmt.Errorf("apply interrupted; previous files restored, but containers may not match them (run Restart): %w", retErr)
+		default:
+			upArgs := append(composeProjectArgs(m.Cfg.DeployPath, service),
+				"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
+			if uerr := Compose(dest, upArgs...); uerr != nil {
+				m.log("warning: compose up with restored files failed for %s: %v", service, uerr)
+				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%v): %w", uerr, retErr)
+				return
+			}
+			retErr = fmt.Errorf("apply failed; previous deployment restored and started: %w", retErr)
 		}
 	}()
 
 	if err := syncTemplateFiles(templateDir, dest); err != nil {
 		return err
 	}
-	if err := m.mergeAndWriteEnv(templateDir, dest, opts); err != nil {
+	composeFile := composeBaseName(templateDir)
+	// The catalog is not read again; free it before env prompts and compose.
+	_ = repoLock.Release()
+	if err := m.mergeAndWriteEnv(tplEnv, dest, opts); err != nil {
 		return err
 	}
-	composeFile := composeBaseName(templateDir)
 	if err := writeOverrideUsing(service, dest, composeFile); err != nil {
 		return err
 	}
@@ -254,6 +288,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err := Compose(dest, pullArgs...); err != nil {
 		return err
 	}
+	upStarted = true
 	upArgs := append(append([]string{}, proj...),
 		"-f", composeFile, "-f", overrideFilename, "up", "-d", "--remove-orphans")
 	if err := Compose(dest, upArgs...); err != nil {
@@ -262,6 +297,36 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	restore = false
 	m.log("applied catalog to service %s", service)
 	return nil
+}
+
+// requireApplyTarget checks that dest is an existing managed deployment
+// that Apply may update.
+func requireApplyTarget(dest, service string) error {
+	st, err := os.Lstat(dest)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: %s (use Deploy)", ErrNotDeployed, service)
+		}
+		return err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
+	}
+	return requireManagedFiles(dest, service)
+}
+
+// readTemplateEnv returns the template .env contents, or nil when the
+// template has none.
+func readTemplateEnv(templateDir string) ([]byte, error) {
+	f, err := paths.OpenFileNoFollow(filepath.Join(templateDir, ".env"), os.O_RDONLY, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("template .env: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, 1<<20))
 }
 
 // syncTemplateFiles copies template files onto dest without deleting dest-only
@@ -328,16 +393,11 @@ func composeBaseName(dir string) string {
 	return "compose.yaml"
 }
 
-func (m *Manager) mergeAndWriteEnv(templateDir, dest string, opts DeployOpts) error {
-	tplEnv := filepath.Join(templateDir, ".env")
+func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) error {
 	localEnv := filepath.Join(dest, ".env")
-	templateMap, err := scaletail.ParseEnvFile(tplEnv)
+	templateMap, keys, err := scaletail.ParseEnv(bytes.NewReader(tplEnv))
 	if err != nil {
-		return err
-	}
-	keys, err := scaletail.ReadEnvKeys(tplEnv)
-	if err != nil {
-		return err
+		return fmt.Errorf("template .env: %w", err)
 	}
 	// Apply never overwrites dest .env, so it already holds the deployed values.
 	localMap, err := scaletail.ParseEnvFile(localEnv)
@@ -554,7 +614,7 @@ func (m *Manager) Restart(service string) error {
 		upArgs := append(append([]string{}, proj...),
 			"-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans")
 		if err := Compose(dir, upArgs...); err != nil {
-			return err
+			return fmt.Errorf("restart stopped %s but could not start it again; it is stopped now (fix the cause, then Restart or Apply): %w", service, err)
 		}
 		m.log("restarted service %s", service)
 		return nil
@@ -586,7 +646,11 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 	}
 
 	if m.UI != nil {
-		ok, cerr := m.UI.Confirm(fmt.Sprintf("Remove %s and delete %s?", service, dest), false)
+		question := fmt.Sprintf("Remove %s and delete %s?", service, dest)
+		if size, err := treeSize(dest); err == nil {
+			question = fmt.Sprintf("Remove %s and delete %s? A backup copy (%s) is made first.", service, dest, formatBytes(size))
+		}
+		ok, cerr := m.UI.Confirm(question, false)
 		if cerr != nil {
 			return cerr
 		}
@@ -613,16 +677,55 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 			m.UI.Printf("%d backup(s) for %s remain under .tailarr_backups and may contain secrets.\n", len(backups), service)
 			if ok, _ := m.UI.Confirm("Delete these backups as well?", false); ok {
 				root := filepath.Join(m.Cfg.DeployPath, config.BackupDirName)
+				removed := 0
 				for _, b := range backups {
-					_ = safeRemoveTree(b, root)
+					if err := safeRemoveTree(b, root); err != nil {
+						m.UI.Printf("Could not delete %s; it may contain secrets: %v\n", b, err)
+						m.log("warning: could not delete backup %s: %v", b, err)
+						continue
+					}
+					removed++
 				}
-				m.log("removed %d backups for %s", len(backups), service)
+				m.log("removed %d of %d backups for %s", removed, len(backups), service)
 			}
 		}
 	}
 
 	m.log("removed service %s", service)
 	return nil
+}
+
+// treeSize returns the total size of the regular files under root.
+func treeSize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
+// formatBytes renders n with a binary unit, for example "12.3 MiB".
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func listServiceBackups(deployPath, service string) ([]string, error) {
