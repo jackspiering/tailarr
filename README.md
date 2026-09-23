@@ -130,7 +130,7 @@ go build -o bin/tailarr ./cmd/tailarr
 | Status | Shows deployed services, running services, Docker, and config. |
 | Deploy env | Tailarr prompts for empty or placeholder env values. You can reuse a stored auth key on more than one service. |
 | Safety | Includes name checks, symlink refusal, backups, mode-600 secrets, path bounds, and ownership-bound locks. |
-| Doctor | Checks the host, paths, and Docker/Compose reachability. |
+| Doctor | Checks the host, paths, Docker/Compose reachability, and the TUN device. |
 | UI | Menus: Status, Services, Tailscale Authentication Keys, Configuration, Maintenance. You can multi-select for batch deploy and lifecycle actions. |
 
 ## Usage

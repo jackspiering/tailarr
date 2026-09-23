@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Services > Search asks for a query and lists the matching services.
 - In multi-select, `/` filters the list and `n` clears the selection. Selected services stay visible under any filter.
 - Deploy, Stop, and Restart batches ask once before they start and list the selected services.
+- Doctor checks for `/dev/net/tun` on Linux. It also notes when Tailarr does not run as root and Remove may need root.
 
 ### Fixed
 
