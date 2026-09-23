@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Apply no longer merges the backup `.env`. The deployed `.env` already holds the same values.
 - Writing the managed override starts one `docker` process instead of two.
+- Release binaries are built with the patched Go toolchain that CI scans (`GO_VERSION`), not the `go.mod` floor.
+  Binaries built with Go 1.26.0 reached 17 known standard library vulnerabilities.
 
 ## [0.5.3] - 2026-09-21
 
