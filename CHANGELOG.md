@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A multi-service deploy rejects an unknown stored key name and an invalid pasted key before it starts.
 - Configuration edits no longer save `TAILARR_*` environment overrides to the config file. The prompt lists the overridden settings.
 - Catalog refresh reports `Catalog is up to date.` when git has nothing new.
+- When Restart stops a service but cannot start it again, the error says that the service is stopped now.
+- Remove reports each backup it cannot delete, because a backup can hold secrets. The log shows the real count.
 
 ## [0.6.0] - 2026-09-23
 

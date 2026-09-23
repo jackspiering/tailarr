@@ -614,7 +614,7 @@ func (m *Manager) Restart(service string) error {
 		upArgs := append(append([]string{}, proj...),
 			"-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans")
 		if err := Compose(dir, upArgs...); err != nil {
-			return err
+			return fmt.Errorf("restart stopped %s but could not start it again; it is stopped now (fix the cause, then Restart or Apply): %w", service, err)
 		}
 		m.log("restarted service %s", service)
 		return nil
@@ -677,10 +677,16 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 			m.UI.Printf("%d backup(s) for %s remain under .tailarr_backups and may contain secrets.\n", len(backups), service)
 			if ok, _ := m.UI.Confirm("Delete these backups as well?", false); ok {
 				root := filepath.Join(m.Cfg.DeployPath, config.BackupDirName)
+				removed := 0
 				for _, b := range backups {
-					_ = safeRemoveTree(b, root)
+					if err := safeRemoveTree(b, root); err != nil {
+						m.UI.Printf("Could not delete %s; it may contain secrets: %v\n", b, err)
+						m.log("warning: could not delete backup %s: %v", b, err)
+						continue
+					}
+					removed++
 				}
-				m.log("removed %d backups for %s", len(backups), service)
+				m.log("removed %d of %d backups for %s", removed, len(backups), service)
 			}
 		}
 	}
