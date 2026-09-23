@@ -72,6 +72,34 @@ func Load(cfg *Config) error {
 	return applyEnv(cfg)
 }
 
+// LoadFile returns the defaults overlaid with the config file at path, without
+// TAILARR_* environment overrides. Config edits start from it, so a one-off
+// environment override is never written to the file.
+func LoadFile(path string) (Config, error) {
+	cfg := Default()
+	cfg.ConfigPath = path
+	return cfg, loadFile(&cfg, path)
+}
+
+// ApplyEnv applies TAILARR_* environment overrides to cfg.
+func ApplyEnv(cfg *Config) error {
+	return applyEnv(cfg)
+}
+
+// EnvOverrides lists the TAILARR_* settings that the environment overrides.
+func EnvOverrides() []string {
+	var keys []string
+	for _, k := range []string{
+		"TAILARR_REPO_URL", "TAILARR_REPO_PATH", "TAILARR_DEPLOY_PATH",
+		"TAILARR_LOG_PATH", "TAILARR_AUTHKEYS_PATH", "TAILARR_LOG_MAX_BYTES",
+	} {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 func loadFile(cfg *Config, path string) error {
 	if err := requireAbsPath("TAILARR_CONFIG_PATH", path); err != nil {
 		return err

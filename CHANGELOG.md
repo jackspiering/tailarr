@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Services > Search asks for a query and lists the matching services.
+- In multi-select, `/` filters the list and `n` clears the selection. Selected services stay visible under any filter.
+- Deploy, Stop, and Restart batches ask once before they start and list the selected services.
+
 ### Fixed
 
 - A failed Apply no longer breaks the running service. Apply used to swap the whole deployment directory for a backup copy and delete the old one,
@@ -24,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Catalog refresh fails at once when git needs a password or an SSH host key confirmation. Git could not read the prompt and waited 5 minutes.
   The error now says to configure a credential helper or SSH agent.
 - Catalog refresh refuses to pull when the clone tracks a different repository than `TAILARR_REPO_URL`. It used to keep pulling the old origin.
+- Ctrl+C during a batch stops it. The remaining services show `skipped: interrupted` instead of running one by one.
+- Failed Deploy, Apply, Stop, Restart, and Remove actions are written to the log.
+- A multi-service deploy rejects an unknown stored key name and an invalid pasted key before it starts.
+- Configuration edits no longer save `TAILARR_*` environment overrides to the config file. The prompt lists the overridden settings.
+- Catalog refresh reports `Catalog is up to date.` when git has nothing new.
 
 ## [0.6.0] - 2026-09-23
 

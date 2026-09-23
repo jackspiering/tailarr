@@ -219,7 +219,8 @@ func (m model) footer(w int, scrolls bool) string {
 	case screenResult:
 		hints = nil
 	case screenMultiSelect:
-		hints = append(hints, [2]string{"space", "toggle"}, [2]string{"a", "all"}, [2]string{"1-9", "select/run"})
+		hints = append(hints, [2]string{"space", "toggle"}, [2]string{"a", "all"}, [2]string{"1-9", "select/run"},
+			[2]string{"/", "filter"}, [2]string{"n", "none"})
 	default:
 		hints = append(hints, [2]string{"1-9", "jump"})
 	}
@@ -408,6 +409,9 @@ func (m model) selectionLines(w int) []string {
 		fmt.Sprintf("%s %s", styleOrPlain(dimStyle, "picked"), styleOrPlain(itemStyle, fmt.Sprintf("%d of %d", n, len(m.opts)))),
 		meter(n, len(m.opts), w),
 		"",
+	}
+	if m.filter != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", styleOrPlain(dimStyle, "filter"), styleOrPlain(itemStyle, clip(m.filter, max(w-7, 1)))), "")
 	}
 	if m.cursor < len(m.opts) {
 		lines = append(lines, styleOrPlain(dimStyle, "cursor"), styleOrPlain(itemStyle, m.opts[m.cursor]))
