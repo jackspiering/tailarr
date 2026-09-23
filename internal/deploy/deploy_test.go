@@ -380,7 +380,7 @@ func TestProjectNameDistinctPerRoot(t *testing.T) {
 func withFakeCompose(t *testing.T, fn func(dir string, args ...string) error) {
 	t.Helper()
 	prev := composeFn
-	composeFn = fn
+	composeFn = func(_ context.Context, dir string, args ...string) error { return fn(dir, args...) }
 	t.Cleanup(func() { composeFn = prev })
 }
 
