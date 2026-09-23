@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apply asks for confirmation before it takes any lock. Deploy and Apply release the catalog lock before env prompts.
   A second Tailarr instance no longer times out while the first waits for an answer.
 - Env prompts for keys outside the template come in a stable, sorted order.
+- Catalog refresh fails at once when git needs a password or an SSH host key confirmation. Git could not read the prompt and waited 5 minutes.
+  The error now says to configure a credential helper or SSH agent.
 
 ## [0.6.0] - 2026-09-23
 
