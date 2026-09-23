@@ -126,6 +126,51 @@ func TestLockReleaseDoesNotSteal(t *testing.T) {
 	}
 }
 
+func TestAcquireLockBacksOffWhenReclaimedDuringCreate(t *testing.T) {
+	if !flockAvailable() {
+		t.Skip("flock is not available on this platform")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.lock")
+	var rival *os.File
+	prev := afterLockCreate
+	t.Cleanup(func() {
+		afterLockCreate = prev
+		if rival != nil {
+			releaseFlock(rival)
+			_ = rival.Close()
+		}
+	})
+	// A rival opens the still-empty file and flocks it before the creator.
+	afterLockCreate = func(p string) {
+		afterLockCreate = prev
+		f, err := os.OpenFile(p, os.O_RDWR, 0)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		rival = f
+		if !tryFlock(f) {
+			t.Error("rival could not flock the new lock file")
+			return
+		}
+		if err := writeLockIdentity(f, os.Getpid(), "rival-token"); err != nil {
+			t.Error(err)
+		}
+	}
+	if l, err := AcquireLock(path, 300*time.Millisecond); err == nil {
+		_ = l.Release()
+		t.Fatal("creator must back off when a rival holds the flock")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "rival-token") {
+		t.Fatalf("creator overwrote the rival's identity: %q", data)
+	}
+}
+
 // deadPID returns a PID that is guaranteed no longer running.
 func deadPID(t *testing.T) int {
 	t.Helper()

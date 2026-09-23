@@ -32,6 +32,10 @@ const DefaultLockTimeout = 30 * time.Second
 // Tests shorten it so a held lock fails closed without a 30s wait.
 var repoLockTimeout = DefaultLockTimeout
 
+// afterLockCreate runs between creating a new lock file and taking its flock.
+// Tests use it to race another owner into that window.
+var afterLockCreate = func(string) {}
+
 // AcquireLock creates an exclusive lock file at path.
 func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	if timeout <= 0 {
@@ -55,7 +59,18 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 	for {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 		if err == nil {
-			_ = tryFlock(f)
+			afterLockCreate(path)
+			// The file is empty until identity is written, so another process
+			// can flock and reclaim it first. That process owns the lock now:
+			// back off without touching the file.
+			if !tryFlock(f) && flockAvailable() {
+				_ = f.Close()
+				if time.Now().After(deadline) {
+					return nil, fmt.Errorf("another Tailarr process holds the lock: %s", path)
+				}
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
 			if err := writeLockIdentity(f, pid, token); err != nil {
 				releaseFlock(f)
 				_ = f.Close()
@@ -120,7 +135,7 @@ func tryReclaimExisting(path string, pid int, token string) (*Lock, bool) {
 		_ = f.Close()
 		return nil, false
 	}
-	if lockOwnerAlive(data) && ownerIsTailarr(data) {
+	if ownerIsTailarr(data) {
 		// A live Tailarr owner still blocks reclaim; a different live process
 		// means PID reuse after flock succeeded, so reclaim the lock in place.
 		releaseFlock(f)
@@ -135,16 +150,14 @@ func tryReclaimExisting(path string, pid int, token string) (*Lock, bool) {
 	return &Lock{path: path, file: f, pid: pid, token: token}, true
 }
 
-func lockOwnerAlive(data []byte) bool {
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 1 {
-		return false
+// lockOwnerPID parses the owner PID from the first line of lock data.
+func lockOwnerPID(data []byte) (int, bool) {
+	first, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	pid, err := strconv.Atoi(strings.TrimSpace(first))
+	if err != nil || pid <= 0 {
+		return 0, false
 	}
-	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-	if err != nil || ownerPID <= 0 {
-		return false
-	}
-	return processAlive(ownerPID)
+	return pid, true
 }
 
 // ownerIsTailarr reports whether the recorded owner PID appears to be a
@@ -152,18 +165,8 @@ func lockOwnerAlive(data []byte) bool {
 // after a crash, this returns false so the flock-verified free lock can be
 // reclaimed in place.
 func ownerIsTailarr(data []byte) bool {
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 1 {
-		return false
-	}
-	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-	if err != nil || ownerPID <= 0 {
-		return false
-	}
-	if !processAlive(ownerPID) {
-		return false
-	}
-	return processIsTailarr(ownerPID)
+	pid, ok := lockOwnerPID(data)
+	return ok && processAlive(pid) && processIsTailarr(pid)
 }
 
 // tryRemoveStaleLock removes path when the recorded owner PID is not running,
@@ -176,12 +179,8 @@ func tryRemoveStaleLock(path string, maxAge time.Duration) bool {
 	if err != nil {
 		return false
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 1 {
-		return false
-	}
-	ownerPID, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-	if err != nil || ownerPID <= 0 {
+	ownerPID, ok := lockOwnerPID(data)
+	if !ok {
 		// Unparseable owner: reclaim only once the lock is old enough that a
 		// writer mid-creation is not clobbered.
 		info, err := os.Stat(path)
