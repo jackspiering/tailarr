@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1207,6 +1208,47 @@ func TestMergeEnvQuotesPromptedValuesAndKeepsTemplateLines(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("missing %q in:\n%s", want, data)
 		}
+	}
+}
+
+func TestDeployTakesDownContainersAfterFailedUp(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
+	var calls []string
+	withFakeCompose(t, func(dir string, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if slices.Contains(args, "up") {
+			return fmt.Errorf("%w: simulated up failure", ErrComposeFailed)
+		}
+		return nil
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.DeployWith("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
+		t.Fatalf("expected ErrComposeFailed, got %v", err)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[1], "down --remove-orphans") {
+		t.Fatalf("expected compose down after failed up, got %q", calls)
+	}
+	if _, err := os.Stat(filepath.Join(deployRoot, "web")); !os.IsNotExist(err) {
+		t.Fatalf("partial deployment not removed: %v", err)
+	}
+}
+
+func TestDeployKeepsDestWhenCleanupDownFails(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "HOSTNAME=x\n")
+	withFakeCompose(t, func(dir string, args ...string) error {
+		return fmt.Errorf("%w: simulated failure", ErrComposeFailed)
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.DeployWith("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
+		t.Fatalf("expected ErrComposeFailed, got %v", err)
+	}
+	dest := filepath.Join(deployRoot, "web")
+	if !IsManaged(dest) {
+		t.Fatal("deployment must stay managed so Remove can take containers down")
 	}
 }
 

@@ -113,7 +113,16 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		return err
 	}
 
-	if err := m.finishDeploy(service, templateDir, dest, opts); err != nil {
+	if started, err := m.finishDeploy(service, templateDir, dest, opts); err != nil {
+		// A failed up can leave some containers running. Take them down before
+		// deleting dest; if that fails, keep dest so Remove can clean up later.
+		if started {
+			args := append(composeProjectArgs(m.Cfg.DeployPath, service), "down", "--remove-orphans")
+			if derr := Compose(dest, args...); derr != nil {
+				m.log("warning: compose down after failed deploy of %s: %v", service, derr)
+				return fmt.Errorf("%w; compose down also failed, kept %s so Remove can clean up: %v", err, dest, derr)
+			}
+		}
 		if rerr := safeRemoveTree(dest, m.Cfg.DeployPath); rerr != nil {
 			m.log("warning: could not remove partial deployment %s: %v", dest, rerr)
 		}
@@ -123,21 +132,23 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 	return nil
 }
 
-func (m *Manager) finishDeploy(service, templateDir, dest string, opts DeployOpts) error {
+// finishDeploy populates dest and runs compose up. started reports whether
+// compose up ran, so a failure may have left containers behind.
+func (m *Manager) finishDeploy(service, templateDir, dest string, opts DeployOpts) (started bool, err error) {
 	if err := copyTemplate(templateDir, dest); err != nil {
-		return err
+		return false, err
 	}
 	if err := m.mergeAndWriteEnv(service, templateDir, dest, "", opts); err != nil {
-		return err
+		return false, err
 	}
 	if err := writeOverride(service, dest); err != nil {
-		return err
+		return false, err
 	}
 
 	proj := composeProjectArgs(m.Cfg.DeployPath, service)
 	upArgs := append(append([]string{}, proj...),
 		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
-	return Compose(dest, upArgs...)
+	return true, Compose(dest, upArgs...)
 }
 
 // Apply syncs catalog template files onto an existing managed deployment, then
