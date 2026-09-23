@@ -117,7 +117,7 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		// deleting dest; if that fails, keep dest so Remove can clean up later.
 		if started {
 			args := append(composeProjectArgs(m.Cfg.DeployPath, service), "down", "--remove-orphans")
-			if derr := Compose(dest, args...); derr != nil {
+			if derr := composeCleanup(dest, args...); derr != nil {
 				m.log("warning: compose down after failed deploy of %s: %v", service, derr)
 				return fmt.Errorf("%w; compose down also failed, kept %s so Remove can clean up: %v", err, dest, derr)
 			}

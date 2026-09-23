@@ -21,9 +21,23 @@ import (
 // composeFn is the compose executor. Tests may replace it with a fake.
 var composeFn = defaultCompose
 
-// Compose runs `docker compose` in dir with the given args.
+// cleanupTimeout bounds compose calls that must run after an interrupt.
+const cleanupTimeout = 2 * time.Minute
+
+// Compose runs `docker compose` in dir with the given args. The operator's
+// interrupt cancels it.
 func Compose(dir string, args ...string) error {
-	return composeFn(dir, args...)
+	return composeFn(interrupt.Context(), dir, args...)
+}
+
+// composeCleanup runs `docker compose` for cleanup after a failed operation.
+// It ignores the interrupt that may have caused the failure, so a Ctrl+C
+// during deploy still takes the containers down. A new SIGINT or SIGTERM, or
+// cleanupTimeout, still stops it.
+func composeCleanup(dir string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	return composeFn(ctx, dir, args...)
 }
 
 func composeServiceNames(dir, base string) ([]string, error) {
@@ -110,15 +124,15 @@ func countLeadingSpaces(s string) int {
 	return n
 }
 
-func defaultCompose(dir string, args ...string) error {
+func defaultCompose(parent context.Context, dir string, args ...string) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("%w: docker is required: %v", ErrComposeFailed, err)
 	}
-	// Cancel when the shared interrupt context is canceled (keyboard cancel or
-	// the TUI signal handler) or when SIGINT/SIGTERM arrives directly. Do not
+	// Cancel when parent is canceled (the shared interrupt context for Compose,
+	// a timeout for composeCleanup) or when SIGINT/SIGTERM arrives directly. Do not
 	// re-raise: the caller must restore a failed apply before the process exits.
 	// Run waits for that sequence, so Quit does not race the restore defer.
-	ctx, stop := signal.NotifyContext(interrupt.Context(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(parent, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	full := append([]string{"compose"}, args...)
