@@ -91,6 +91,32 @@ func needsCredentials(out []byte) bool {
 	return false
 }
 
+// checkOrigin refuses to pull when the clone tracks a different repository
+// than the configured URL. A clone without a readable origin is left to pull,
+// which reports its own error.
+func checkOrigin(repoPath, repoURL string) error {
+	out, err := runGit(repoPath, "-C", repoPath, "remote", "get-url", "origin")
+	if err != nil {
+		return nil
+	}
+	origin := strings.TrimSpace(string(out))
+	if sameRepoURL(origin, repoURL) {
+		return nil
+	}
+	return fmt.Errorf("catalog clone at %s tracks %s, but TAILARR_REPO_URL is %s; remove %s and refresh again to clone the configured catalog",
+		repoPath, names.RedactRepoURL(origin), names.RedactRepoURL(repoURL), repoPath)
+}
+
+// sameRepoURL compares repository URLs, ignoring case, a trailing slash,
+// and a trailing ".git".
+func sameRepoURL(a, b string) bool {
+	norm := func(s string) string {
+		s = strings.TrimSuffix(strings.TrimSpace(s), "/")
+		return strings.TrimSuffix(s, ".git")
+	}
+	return strings.EqualFold(norm(a), norm(b))
+}
+
 // Refresh clones or updates the ScaleTail repository.
 // Git output is captured and returned so callers can render it without
 // polluting a TUI alternate screen.
@@ -115,6 +141,9 @@ func Refresh(repoURL, repoPath string) (string, error) {
 
 	if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
 		// Unpinned: ensure we are on a branch before pull (detached HEAD breaks pull).
+		if err := checkOrigin(repoPath, repoURL); err != nil {
+			return "", err
+		}
 		if err := ensureOnBranch(repoPath); err != nil {
 			return "", err
 		}

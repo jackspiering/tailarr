@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Env prompts for keys outside the template come in a stable, sorted order.
 - Catalog refresh fails at once when git needs a password or an SSH host key confirmation. Git could not read the prompt and waited 5 minutes.
   The error now says to configure a credential helper or SSH agent.
+- Catalog refresh refuses to pull when the clone tracks a different repository than `TAILARR_REPO_URL`. It used to keep pulling the old origin.
 
 ## [0.6.0] - 2026-09-23
 

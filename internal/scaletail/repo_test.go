@@ -2,6 +2,7 @@ package scaletail
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -107,5 +108,24 @@ func TestRunGitExplainsRefusedPrompt(t *testing.T) {
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Fatal("git waited for a prompt")
+	}
+}
+
+func TestCheckOriginRefusesOtherRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", repo}, {"-C", repo, "remote", "add", "origin", "https://example.com/org/old.git"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := checkOrigin(repo, "https://example.com/org/old"); err != nil {
+		t.Fatalf("same repository refused: %v", err)
+	}
+	err := checkOrigin(repo, "https://example.com/org/new.git")
+	if err == nil || !strings.Contains(err.Error(), "tracks https://example.com/org/old.git") {
+		t.Fatalf("expected origin mismatch, got %v", err)
 	}
 }
