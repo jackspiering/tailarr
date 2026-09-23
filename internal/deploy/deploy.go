@@ -2,7 +2,9 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -538,12 +540,20 @@ func (m *Manager) Stop(service string) error {
 	})
 }
 
-// Restart restarts a deployment.
+// Restart stops a deployment, then starts it with compose up. compose restart
+// restarts every container at once, so an app with network_mode: service:
+// joins the namespace of a sidecar that is still stopping and exits. up
+// starts the sidecar first and waits for its depends_on condition.
 func (m *Manager) Restart(service string) error {
 	return m.withManagedServiceDir(service, func(dir string) error {
 		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		args := append(append([]string{}, proj...), "restart")
-		if err := Compose(dir, args...); err != nil {
+		stopArgs := append(append([]string{}, proj...), "stop")
+		if err := Compose(dir, stopArgs...); err != nil {
+			return err
+		}
+		upArgs := append(append([]string{}, proj...),
+			"-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans")
+		if err := Compose(dir, upArgs...); err != nil {
 			return err
 		}
 		m.log("restarted service %s", service)
@@ -653,24 +663,50 @@ func (m *Manager) withManagedServiceDir(service string, fn func(dir string) erro
 	if err != nil {
 		return err
 	}
-	if err := requireManagedDeploy(dest, service); err != nil {
+	if err := requireManagedFiles(dest, service); err != nil {
 		return err
 	}
 	return fn(dest)
 }
 
-// requireManagedDeploy ensures dest exists, has a compose file, and Tailarr marker.
+// requireManagedDeploy ensures dest is a managed deployment with no symlink
+// anywhere in the tree. Apply and Remove copy and delete the whole tree, so
+// they need it. Containers often write root-owned data, so a non-root
+// operator gets a permission error that says to run as root.
 func requireManagedDeploy(dest, service string) error {
-	if _, err := os.Stat(dest); err != nil {
+	if err := requireManagedFiles(dest, service); err != nil {
+		return err
+	}
+	if found, err := paths.ContainsSymlinks(dest); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("cannot read container data; run Tailarr as root to back up and delete %s: %w", service, err)
+		}
+		return err
+	} else if found != "" {
+		return fmt.Errorf("%w: deployment contains unsupported symlink: %s", ErrSymlink, found)
+	}
+	return nil
+}
+
+// requireManagedFiles ensures dest is a managed deployment whose compose
+// inputs are not symlinks. Stop and Restart only run compose, so they do not
+// walk container data, which may be unreadable or hold symlinks.
+func requireManagedFiles(dest, service string) error {
+	st, err := os.Lstat(dest)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: %s", ErrNotDeployed, service)
 		}
 		return err
 	}
-	if found, err := paths.ContainsSymlinks(dest); err != nil {
-		return err
-	} else if found != "" {
-		return fmt.Errorf("%w: deployment contains unsupported symlink: %s", ErrSymlink, found)
+	if st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: refusing to operate on symlink deployment: %s", ErrSymlink, service)
+	}
+	inputs := append([]string{overrideFilename, ".env"}, scaletail.ComposeCandidates...)
+	for _, name := range inputs {
+		if p := filepath.Join(dest, name); paths.IsSymlink(p) {
+			return fmt.Errorf("%w: deployment contains unsupported symlink: %s", ErrSymlink, p)
+		}
 	}
 	if !scaletail.HasComposeFile(dest) {
 		return fmt.Errorf("%w: %s", ErrNoCompose, service)

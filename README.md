@@ -113,8 +113,12 @@ go build -o bin/tailarr ./cmd/tailarr
 - Deploy and lifecycle actions need Docker with Compose v2.
   **Maintenance > Run doctor checks** verifies the host, paths, and
   Docker/Compose.
-- Root is not required. Set `INSTALL_DIR` to choose the install path.
+- The install does not need root. Set `INSTALL_DIR` to choose the install path.
   See [Quick start](#quick-start).
+- Deploy, Stop, and Restart work for a user in the `docker` group.
+  Apply and Remove copy and delete container data.
+  Containers such as the Tailscale sidecar write that data as root.
+  Run Tailarr as root for Apply and Remove.
 
 ## Features
 
