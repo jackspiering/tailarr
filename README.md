@@ -115,10 +115,10 @@ go build -o bin/tailarr ./cmd/tailarr
   Docker/Compose.
 - The install does not need root. Set `INSTALL_DIR` to choose the install path.
   See [Quick start](#quick-start).
-- Deploy, Stop, and Restart work for a user in the `docker` group.
-  Apply and Remove copy and delete container data.
+- Deploy, Apply, Stop, and Restart work for a user in the `docker` group.
+  Remove copies and deletes container data.
   Containers such as the Tailscale sidecar write that data as root.
-  Run Tailarr as root for Apply and Remove.
+  Run Tailarr as root for Remove.
 
 ## Features
 
@@ -239,7 +239,10 @@ Safety:
 - Config, deploy, log, and auth key paths must be absolute.
 - Tailarr writes config, auth keys, and `.env` files atomically.
 - Secret files use mode `600`.
-- Tailarr makes a backup before apply or remove.
+- Before apply, Tailarr saves the files that apply changes: template files, `.env`, and the managed override.
+  A failed apply puts them back in place and starts the service again. Container data is not copied or moved.
+- Before remove, Tailarr copies the whole deployment to `.tailarr_backups`. The copy keeps modes and times, and owners when
+  Tailarr runs as root. It skips sockets and FIFOs.
 - Each service has an ownership-bound lock.
 - Git refresh uses a repo lock.
 - Treat the ScaleTail clone as trusted input. Compose runs on your host.

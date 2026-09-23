@@ -1077,42 +1077,6 @@ func TestBackupNameDoesNotCollideWithHyphenPrefix(t *testing.T) {
 	}
 }
 
-func TestRestoreDoesNotClobberDotOldService(t *testing.T) {
-	deployRoot := t.TempDir()
-	web := filepath.Join(deployRoot, "web")
-	webOld := filepath.Join(deployRoot, "web.old")
-	if err := os.MkdirAll(web, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(web, "marker.txt"), []byte("PARTIAL"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(webOld, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(webOld, "keep.txt"), []byte("SIBLING"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	backup := filepath.Join(deployRoot, config.BackupDirName, "web-20200101T000000Z")
-	if err := os.MkdirAll(backup, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(backup, "marker.txt"), []byte("ORIGINAL"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := restoreDeploymentFromBackup(deployRoot, "web", backup, web); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(web, "marker.txt"))
-	if err != nil || string(data) != "ORIGINAL" {
-		t.Fatalf("restore failed: %v %q", err, data)
-	}
-	sib, err := os.ReadFile(filepath.Join(webOld, "keep.txt"))
-	if err != nil || string(sib) != "SIBLING" {
-		t.Fatalf("sibling web.old was clobbered: %v %q", err, sib)
-	}
-}
-
 func TestBackupPrunesToNewest(t *testing.T) {
 	root := t.TempDir()
 	svc := filepath.Join(root, "demo")
@@ -1192,7 +1156,7 @@ func TestMergeEnvQuotesPromptedValuesAndKeepsTemplateLines(t *testing.T) {
 		Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot},
 		UI:  fakeUI{line: "hello world", secret: "p$ss #1"},
 	}
-	if err := m.mergeAndWriteEnv(templateDir, dest, DeployOpts{}); err != nil {
+	if err := m.mergeAndWriteEnv([]byte(env), dest, DeployOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dest, ".env"))

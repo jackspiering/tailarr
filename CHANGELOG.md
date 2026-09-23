@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed Apply no longer breaks the running service. Apply used to swap the whole deployment directory for a backup copy and delete the old one,
+  so running containers lost their bind-mounted data. Apply now saves only the files it changes (template files, `.env`, and the managed override)
+  and restores them in place. When `docker compose up` had started, Apply runs it again with the restored files.
+- Apply no longer reads container data, so it works for a user in the `docker` group.
+- Backups keep file modes and modification times, and owners when Tailarr runs as root.
+  A restored copy used to be owned by the Tailarr user, and containers that run as another user could not write to it.
+- Backups skip sockets and FIFOs. A FIFO in container data used to block Tailarr forever, and a socket made Remove fail.
+  Ctrl+C now stops a long backup copy.
+- The Remove confirm shows how much data the backup copies.
+
 ## [0.6.0] - 2026-09-23
 
 ### Added
