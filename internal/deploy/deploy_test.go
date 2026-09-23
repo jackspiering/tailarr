@@ -1192,7 +1192,7 @@ func TestMergeEnvQuotesPromptedValuesAndKeepsTemplateLines(t *testing.T) {
 		Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot},
 		UI:  fakeUI{line: "hello world", secret: "p$ss #1"},
 	}
-	if err := m.mergeAndWriteEnv("web", templateDir, dest, "", DeployOpts{}); err != nil {
+	if err := m.mergeAndWriteEnv(templateDir, dest, DeployOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dest, ".env"))
@@ -1249,37 +1249,6 @@ func TestDeployKeepsDestWhenCleanupDownFails(t *testing.T) {
 	dest := filepath.Join(deployRoot, "web")
 	if !IsManaged(dest) {
 		t.Fatal("deployment must stay managed so Remove can take containers down")
-	}
-}
-
-func TestApplySnapshotBackupStillSuppliesAuthkey(t *testing.T) {
-	repo := t.TempDir()
-	deployRoot := t.TempDir()
-	templateDir := setupTemplate(t, repo, "web", "TS_AUTHKEY=\nHOSTNAME=template\n")
-	dest := filepath.Join(deployRoot, "web")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte("TS_AUTHKEY=\nHOSTNAME=local\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	backup := filepath.Join(deployRoot, "snap")
-	if err := os.MkdirAll(backup, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(backup, ".env"), []byte("TS_AUTHKEY=tskey-auth-SNAP\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.mergeAndWriteEnv("web", templateDir, dest, backup, DeployOpts{SkipInteractive: true}); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(dest, ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "TS_AUTHKEY=tskey-auth-SNAP") {
-		t.Fatalf("snapshot backup key not applied: %s", data)
 	}
 }
 

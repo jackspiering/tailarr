@@ -3,7 +3,6 @@ package deploy
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -138,7 +137,7 @@ func (m *Manager) finishDeploy(service, templateDir, dest string, opts DeployOpt
 	if err := copyTemplate(templateDir, dest); err != nil {
 		return false, err
 	}
-	if err := m.mergeAndWriteEnv(service, templateDir, dest, "", opts); err != nil {
+	if err := m.mergeAndWriteEnv(templateDir, dest, opts); err != nil {
 		return false, err
 	}
 	if err := writeOverride(service, dest); err != nil {
@@ -240,7 +239,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err := syncTemplateFiles(templateDir, dest); err != nil {
 		return err
 	}
-	if err := m.mergeAndWriteEnv(service, templateDir, dest, backupPath, opts); err != nil {
+	if err := m.mergeAndWriteEnv(templateDir, dest, opts); err != nil {
 		return err
 	}
 	composeFile := composeBaseName(templateDir)
@@ -299,7 +298,7 @@ func syncTemplateFiles(templateDir, dest string) error {
 			if info.IsDir() {
 				return os.MkdirAll(target, 0o755)
 			}
-			return copyFileMode(path, target, info.Mode().Perm())
+			return copyFile(path, target, info.Mode().Perm())
 		}
 		if err != nil {
 			return err
@@ -316,7 +315,7 @@ func syncTemplateFiles(templateDir, dest string) error {
 		if destInfo.IsDir() {
 			return fmt.Errorf("apply type mismatch: template %s is a file, dest is a directory", rel)
 		}
-		return copyFileMode(path, target, info.Mode().Perm())
+		return copyFile(path, target, info.Mode().Perm())
 	})
 }
 
@@ -327,7 +326,7 @@ func composeBaseName(dir string) string {
 	return "compose.yaml"
 }
 
-func (m *Manager) mergeAndWriteEnv(service, templateDir, dest, backupPath string, opts DeployOpts) error {
+func (m *Manager) mergeAndWriteEnv(templateDir, dest string, opts DeployOpts) error {
 	tplEnv := filepath.Join(templateDir, ".env")
 	localEnv := filepath.Join(dest, ".env")
 	templateMap, err := scaletail.ParseEnvFile(tplEnv)
@@ -338,24 +337,10 @@ func (m *Manager) mergeAndWriteEnv(service, templateDir, dest, backupPath string
 	if err != nil {
 		return err
 	}
-	// Start with dest .env (template copy), then layer backup secrets, then store key.
+	// Apply never overwrites dest .env, so it already holds the deployed values.
 	localMap, err := scaletail.ParseEnvFile(localEnv)
 	if err != nil {
 		return err
-	}
-	if backupPath != "" {
-		backupEnv := filepath.Join(backupPath, ".env")
-		backupMap, err := scaletail.ParseEnvFile(backupEnv)
-		if err != nil {
-			return fmt.Errorf("read backup .env: %w", err)
-		}
-		// Non-empty snapshot values win over empty template values. This is the
-		// backup taken for this apply, not an older historical backup.
-		for k, v := range backupMap {
-			if strings.TrimSpace(v) != "" {
-				localMap[k] = v
-			}
-		}
 	}
 
 	merged := scaletail.MergeEnv(templateMap, localMap, keys)
@@ -519,32 +504,8 @@ func copyTemplate(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		return copyFileMode(path, target, info.Mode().Perm())
+		return copyFile(path, target, info.Mode().Perm())
 	})
-}
-
-func copyFileMode(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err = io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 // storeAuthkey writes a named key using the same lock as the Authkeys menu.

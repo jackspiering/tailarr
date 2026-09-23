@@ -30,7 +30,8 @@ func composeServiceNames(dir, base string) ([]string, error) {
 	if base == "" {
 		base = "compose.yaml"
 	}
-	if DockerOK() && ComposeOK() {
+	// No separate ComposeOK probe: a failing config call falls back to the scan.
+	if DockerOK() {
 		ctx, cancel := probeContext()
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "config", "--services")
