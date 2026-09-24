@@ -18,13 +18,37 @@ Non-negotiable rules:
 - Never log secrets. Route output through `internal/security/redact`.
 - Never accept secrets through CLI or TUI flags; prompts or files only.
 - Config is plain `KEY=VALUE` parsed with a scanner. Never shell out to interpret user-controlled config.
-- Do not add a web UI or encrypt auth keys at rest unless the owner asks.
+- Do not add a web UI, subcommands, or a daemon, or encrypt auth keys at rest, unless the owner asks.
 - Markdown is plain ASCII: no curly quotes, em dashes, or decorative unicode.
-- Never create or push release tags, dispatch the release workflow, or publish releases without explicit owner approval.
+
+## Working Autonomously
+
+When a step does not need the owner's input, keep going. Put status notes in
+the same message as your next action. Do not stop to ask whether to continue.
+
+Stop and ask only when you cannot continue without the owner, or before:
+
+- pushing to `main` or merging a pull request into `main`;
+- adding a new direct Go dependency;
+- deleting data, or changing anything outside this repository other than the
+  live test deploys described below.
+
+Allowed without asking:
+
+- Create feature branches, commit, push them, and open pull requests.
+- Create and push release tags, dispatch the release workflow, and publish
+  releases (see Versioning and release safety for the preconditions).
+- Run `go test -race -tags integration ./...` and live deploys against the
+  local Docker daemon. On the owner's dev machine, use the test auth key at
+  `~/.config/tailarr-test/authkey`. Remove the test services when done.
+
+Done means every command in the gate set under Development Commands passes and
+the change is covered by a test. If a gate fails for a reason you cannot
+explain, stop and report it with the output.
 
 ## Architecture & Data Flow
 
-Two layers. `cmd/tailarr/main.go` (~60 lines) loads config, builds the logger, runs first-run setup, then calls `ui.Run`. Everything else is `internal/*`.
+Two layers. `cmd/tailarr/main.go` (~55 lines) loads config, builds the logger, runs first-run setup, then calls `ui.Run`. Everything else is `internal/*`.
 
 Import direction, arrows point at dependencies:
 
@@ -131,7 +155,7 @@ Concurrency and locking:
 - `deploy.AcquireLock`: O_EXCL file holding pid+token, non-blocking flock on
   top, stale-owner reclaim via `/proc/<pid>/comm`; `Release` never removes a
   live owner's lock.
-- Platform code splits by build tags: `lock_unix.go`, `lock_linux.go`, `lock_other.go`, `process_unix.go`, `nofollow_unix.go` and `_other` twins.
+- Platform code splits by build tags: `lock_unix.go`, `lock_linux.go`, `owner_unix.go`, `process_unix.go`, `nofollow_unix.go`, and their `_other` twins.
 
 Dependency injection:
 
@@ -158,8 +182,9 @@ Versioning and release safety:
 - Tags are strict SemVer `vMAJOR.MINOR.PATCH` with optional `-PRERELEASE`/`+BUILD`, and must be reachable from `main`.
 - The release workflow verifies metadata, cross-compiles linux/darwin x
   amd64/arm64, uploads SHA256SUMS, attests provenance, then creates a draft
-  release behind a protected `release` environment. A human reviews and
-  publishes. Agents prepare metadata and pull requests only.
+  release behind a protected `release` environment. Agents may tag, dispatch,
+  and publish once the release metadata pull request is merged into `main`.
+  Never publish a draft whose workflow run failed.
 
 Git workflow:
 
@@ -206,16 +231,16 @@ Git workflow:
 
 ## Testing & QA
 
-- Stdlib `testing` only. About 109 test functions across 12 packages; largest suite is `internal/deploy` (42 tests).
+- Stdlib `testing` only. About 200 test functions across 14 packages; largest suite is `internal/deploy` (about 70 tests).
 - Guard-clause assertions with `t.Fatal`/`t.Fatalf`; table-driven loops report every row with `t.Errorf`. No testify, no golden files, no `t.Run` subtests.
 - Test names read as behavior specs: `TestLoadRefusesSymlinkFile`, `TestApplyRestoresOnInterrupt`, `TestRemoveFailsClosedOnComposeError`, `TestLockReleaseDoesNotSteal`.
 - Isolation idioms: `t.TempDir()` for filesystem, `t.Setenv()` for env and
   PATH, `t.Parallel()` throughout security packages, `t.Helper()` and
   `t.Cleanup` for fixture helpers and global-var restoration.
 - Unit tests must pass without Docker. Fake compose via the `composeFn` seam or
-  a fake `#!/bin/sh docker` script prepended to PATH. Optional daemon-dependent
-  tests would use `//go:build integration` and skip cleanly; no such files
-  exist yet.
+  a fake `#!/bin/sh docker` script prepended to PATH. Daemon-dependent tests
+  use `//go:build integration` and skip cleanly without Docker; see
+  `internal/deploy/deploy_integration_test.go`.
 - Platform-specific tests skip at runtime (`runtime.GOOS` checks) instead of build tags.
 - Fixtures: only `testdata/scaletail/services/`, consumed solely by
   `internal/scaletail/catalog_test.go`. It covers good services, invalid names,
