@@ -189,6 +189,13 @@ Versioning and release safety:
 - Version source of truth: `var Version` in `internal/version/version.go`.
 - A release requires four locations to agree: `version.go`, README version badge, `CHANGELOG.md` entry (Keep-a-Changelog), `scripts/install.sh` `DEFAULT_VERSION`.
 - Tags are strict SemVer `vMAJOR.MINOR.PATCH` with optional `-PRERELEASE`/`+BUILD`, and must be reachable from `main`.
+- Tagging is automatic: `.github/workflows/tag.yml` runs when a push to `main`
+  changes `internal/version/version.go`. It checks the four locations, tags the
+  commit that set the version (annotated, `Tailarr X.Y.Z`), and dispatches
+  `release.yml`, because a `GITHUB_TOKEN` tag push does not start workflows. It
+  skips an existing tag and refuses a version older than the newest tag. A
+  release is therefore just a merged `chore(release): prepare vX.Y.Z` pull
+  request; never bump `version.go` in any other change.
 - The release workflow verifies metadata, cross-compiles linux/darwin x
   amd64/arm64, uploads SHA256SUMS, attests provenance, then creates a draft
   release behind a protected `release` environment. Agents may tag, dispatch,
@@ -224,6 +231,7 @@ Git workflow:
 |`internal/version/version.go`|Single version declaration|
 |`internal/upgrade/upgrade.go`|Release download, SHA256 verify, binary swap|
 |`.github/workflows/ci.yml`|Gate commands and cross-build matrix|
+|`.github/workflows/tag.yml`|Tags a merged version bump and dispatches the release|
 |`.github/workflows/release.yml`|Tag verification and draft publication|
 |`scripts/install.sh`|curl/sh installer, checksum verified|
 |`.golangci.yml`, `.rumdl.toml`|Lint configs|

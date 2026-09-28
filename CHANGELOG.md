@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A merge to `main` that changes the version in `internal/version/version.go` now tags the release and starts the release workflow.
+  Dependency, CI, and docs changes do not tag. The protected `release` environment still gates publication.
+
 ## [0.8.0] - 2026-09-28
 
 ### Added

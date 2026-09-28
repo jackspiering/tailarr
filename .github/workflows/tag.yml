@@ -1,0 +1,133 @@
+name: Tag release
+
+# Tags a release when a merge to main changes the version in
+# internal/version/version.go and no tag exists for it yet. Dependency, CI,
+# and docs changes never touch that file, so they never tag. The tag goes on
+# the commit that set the version, after the release metadata is checked.
+#
+# A tag created with GITHUB_TOKEN does not start other workflows, so this job
+# dispatches the release workflow itself. The protected release environment
+# still gates publication. Run it by hand (workflow_dispatch) to tag a version
+# that is already on main.
+
+on:
+  push:
+    branches: [main]
+    paths: [internal/version/version.go]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag version from version.go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the annotated tag and its ref
+      actions: write # dispatch release.yml, which a GITHUB_TOKEN tag push cannot start
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Find the version commit and check release metadata
+        id: version
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: version check failed at line $LINENO" >&2' ERR
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          def git(*args):
+              return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+          # The commit that last changed the Version line, not a later merge.
+          commit = git("log", "-1", "--format=%H", "-G", r'^var Version = ', "--",
+                       "internal/version/version.go").strip()
+          if not commit:
+              raise SystemExit("error: no commit sets Version in internal/version/version.go")
+
+          def show(path):
+              return git("show", f"{commit}:{path}")
+
+          versions = re.findall(r'^var Version = "([^"]+)"\s*$', show("internal/version/version.go"), re.MULTILINE)
+          if len(versions) != 1:
+              raise SystemExit("error: internal/version/version.go must declare Version exactly once")
+          version = versions[0]
+          ident = r"(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+          semver = (r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                    rf"(-{ident}(\.{ident})*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$")
+          if not re.fullmatch(semver, version):
+              raise SystemExit(f"error: Version {version!r} is not strict SemVer")
+          tag = "v" + version
+
+          # Refuse a version that does not move past the newest release tag,
+          # so a revert or typo cannot tag an older number.
+          def key(v):
+              core, _, pre = v.split("+")[0].partition("-")
+              nums = tuple(int(x) for x in core.split("."))
+              parts = []
+              for p in pre.split(".") if pre else []:
+                  parts.append((0, int(p), "") if p.isdigit() else (1, 0, p))
+              return nums, (1,) if not pre else (0, *parts)
+
+          existing = [t[1:] for t in git("tag", "--list", "v*").split()
+                      if re.fullmatch(semver, t[1:])]
+          if version in existing:
+              print(f"{tag} already exists; nothing to tag.")
+              tag = ""
+          elif existing and key(version) < max(key(v) for v in existing):
+              raise SystemExit(f"error: {tag} is older than the newest release tag")
+
+          if tag:
+              escaped = re.escape(version)
+              changelog = show("CHANGELOG.md")
+              checks = {
+                  "CHANGELOG heading": re.search(rf"^## \[{escaped}\]( - \d{{4}}-\d{{2}}-\d{{2}})?$", changelog, re.MULTILINE),
+                  "CHANGELOG link": re.search(rf"^\[{escaped}\]:\s+\S+\s*$", changelog, re.MULTILINE),
+                  "README badge": re.findall(r"badge/version-([^)]*)-informational", show("README.md")) == [version],
+                  "install.sh DEFAULT_VERSION": re.findall(r'^DEFAULT_VERSION="([^"]+)"', show("scripts/install.sh"),
+                                                           re.MULTILINE) == [tag],
+              }
+              missing = [name for name, ok in checks.items() if not ok]
+              if missing:
+                  raise SystemExit(f"error: release metadata for {version} does not agree: {', '.join(missing)}")
+              print(f"Tagging {tag} at {commit}.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"tag={tag}\ncommit={commit}\n")
+          PY
+
+      - name: Create the tag and dispatch the release
+        if: steps.version.outputs.tag != ''
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "error: tagging failed at line $LINENO" >&2' ERR
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists on the remote; nothing to tag."
+            exit 0
+          fi
+          tag_sha=$(gh api "repos/$GH_REPO/git/tags" -f tag="$TAG" -f message="Tailarr ${TAG#v}" \
+            -f object="$COMMIT" -f type=commit --jq .sha)
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag_sha" >/dev/null
+          gh workflow run release.yml --ref main -f tag="$TAG"
+          echo "Created $TAG at $COMMIT and started the release workflow."
