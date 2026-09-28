@@ -1567,3 +1567,86 @@ func TestApplyRestoresWhenInterruptContextCanceled(t *testing.T) {
 		t.Fatalf("previous deployment not restored: %v %q", err, data)
 	}
 }
+
+func TestCollectOverviewUsesOneDockerPass(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	deployRoot := t.TempDir()
+	for _, svc := range []string{"web", "other"} {
+		dir := filepath.Join(deployRoot, svc)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services:\n  app:\n    image: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeOverride("web", filepath.Join(deployRoot, "web")); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(t.TempDir(), "calls")
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho \"$*\" >> " + strconv.Quote(calls) + "\n" +
+		"printf 'app-TEST_web\\trunning\\tUp 3 minutes (healthy)\\tweb\\n'\n" +
+		"printf 'tailscale-TEST_web\\trunning\\tUp 3 minutes (health: starting)\\tweb\\n'\n" +
+		"printf 'app-other\\texited\\tExited (1) 2 minutes ago\\t\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.Remove(calls); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(calls)
+	if n := strings.Count(string(data), "ps -a"); n != 1 || strings.Count(string(data), "\n") != 1 {
+		t.Fatalf("want one docker ps -a call, got:\n%s", data)
+	}
+	if st.DockerErr != "" || len(st.Services) != 2 {
+		t.Fatalf("services=%+v dockerErr=%q", st.Services, st.DockerErr)
+	}
+	other, web := st.Services[0], st.Services[1]
+	if !web.Managed || web.Health != HealthStarting || len(web.Containers) != 2 || web.Containers[0].Name != "app-TEST_web" {
+		t.Fatalf("web: %+v", web)
+	}
+	if other.Managed || other.Health != HealthExited || len(other.Containers) != 1 {
+		t.Fatalf("other: %+v", other)
+	}
+	if st.ManagedCount != 1 || st.OtherCount != 1 || st.ManagedHealth["web"] != HealthStarting {
+		t.Fatalf("counts: %+v", st)
+	}
+	if strings.Join(st.RunningNames, ",") != "TEST_web" {
+		t.Fatalf("running: %v", st.RunningNames)
+	}
+}
+
+func TestCollectOverviewReportsDockerFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	deployRoot := t.TempDir()
+	dir := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.DockerErr == "" || len(st.Services) != 1 || st.Services[0].Health != HealthUnknown {
+		t.Fatalf("docker failure must mark health unknown: %+v", st)
+	}
+}
