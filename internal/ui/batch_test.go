@@ -20,6 +20,7 @@ type scriptUI struct {
 	line     string
 	secret   string
 	confirms *int
+	printed  *[]string
 }
 
 func (u scriptUI) Confirm(string, bool) (bool, error) {
@@ -30,7 +31,11 @@ func (u scriptUI) Confirm(string, bool) (bool, error) {
 }
 func (u scriptUI) Line(string, string) (string, error) { return u.line, nil }
 func (u scriptUI) Secret(string) (string, error)       { return u.secret, nil }
-func (u scriptUI) Printf(string, ...any)               {}
+func (u scriptUI) Printf(format string, args ...any) {
+	if u.printed != nil {
+		*u.printed = append(*u.printed, strings.TrimSpace(strings.ReplaceAll(format, "%s", "")))
+	}
+}
 
 func batchConfig(t *testing.T) config.Config {
 	t.Helper()
@@ -53,25 +58,35 @@ func batchConfig(t *testing.T) config.Config {
 func TestRunBatchAsksBeforeStopping(t *testing.T) {
 	cfg := batchConfig(t)
 	confirms := 0
-	out := runBatchWith(cfg, nil, scriptUI{confirms: &confirms}, multiStop, []string{"web", "db"})
-	if out != "Canceled." {
-		t.Fatalf("declined batch must not run, got %q", out)
+	r := runBatchWith(cfg, nil, scriptUI{confirms: &confirms}, multiStop, []string{"web", "db"})
+	if !r.canceled || r.text != "Canceled." {
+		t.Fatalf("declined batch must not run, got %+v", r)
 	}
 	if confirms != 1 {
 		t.Fatalf("expected one summary confirm, got %d", confirms)
 	}
+	if got := r.summary(multiStop, []string{"web", "db"}); got != "Canceled." {
+		t.Fatalf("summary = %q", got)
+	}
 }
 
-func TestRunBatchLogsFailures(t *testing.T) {
+func TestRunBatchLogsFailuresAndStreamsProgress(t *testing.T) {
 	cfg := batchConfig(t)
 	log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
-	out := runBatchWith(cfg, log, scriptUI{confirm: true}, multiStop, []string{"web"})
-	if !strings.Contains(out, "error:") {
-		t.Fatalf("expected an error for a missing deployment, got %q", out)
+	var printed []string
+	r := runBatchWith(cfg, log, scriptUI{confirm: true, printed: &printed}, multiStop, []string{"web"})
+	if !strings.Contains(r.text, "error:") || r.failed != 1 || r.failedNames[0] != "web" {
+		t.Fatalf("expected an error for a missing deployment, got %+v", r)
 	}
 	data, err := os.ReadFile(cfg.LogPath)
 	if err != nil || !strings.Contains(string(data), "stop web failed") {
 		t.Fatalf("failure not logged: %v %q", err, data)
+	}
+	if len(printed) < 2 || printed[0] != "==>" {
+		t.Fatalf("progress not streamed through Printf: %q", printed)
+	}
+	if got := r.summary(multiStop, []string{"web"}); got != "✖ Stop failed for web · 0 of 1 ok" {
+		t.Fatalf("summary = %q", got)
 	}
 }
 
@@ -81,9 +96,21 @@ func TestRunBatchSkipsRemainingAfterInterrupt(t *testing.T) {
 	cancel()
 	interrupt.Set(ctx)
 	t.Cleanup(interrupt.Clear)
-	out := runBatchWith(cfg, nil, scriptUI{confirm: true}, multiRestart, []string{"web", "db"})
-	if strings.Count(out, "skipped: interrupted") != 2 {
-		t.Fatalf("expected both services skipped, got %q", out)
+	r := runBatchWith(cfg, nil, scriptUI{confirm: true}, multiRestart, []string{"web", "db"})
+	if strings.Count(r.text, "skipped: interrupted") != 2 || r.skipped != 2 {
+		t.Fatalf("expected both services skipped, got %+v", r)
+	}
+	if got := r.summary(multiRestart, []string{"web", "db"}); got != "✖ Restart interrupted · 0 of 2 ok, 2 skipped" {
+		t.Fatalf("summary = %q", got)
+	}
+}
+
+func TestBatchSummaryOnSuccess(t *testing.T) {
+	if got := (batchResult{ok: 1}).summary(multiDeploy, []string{"web"}); got != "✔ Deployed web" {
+		t.Fatalf("single: %q", got)
+	}
+	if got := (batchResult{ok: 3}).summary(multiRestart, []string{"a", "b", "c"}); got != "✔ Restarted 3 services" {
+		t.Fatalf("many: %q", got)
 	}
 }
 
@@ -106,61 +133,40 @@ func TestSharedAuthkeyRejectsUnknownNameAndBadKey(t *testing.T) {
 	}
 }
 
-func TestApplyFilterKeepsSelection(t *testing.T) {
-	m := model{
-		screen:  screenMultiSelect,
-		allOpts: []string{"adguard", "immich", "jellyfin", "plex"},
-		opts:    []string{"adguard", "immich", "jellyfin", "plex"},
-		picked:  map[int]bool{3: true},
+func TestAuthkeyActionUsesPickedName(t *testing.T) {
+	cfg := batchConfig(t)
+	if err := os.WriteFile(cfg.AuthkeysPath, []byte("home=tskey-auth-home\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	got := m.applyFilter("JELLY")
-	if strings.Join(got.opts, ",") != "jellyfin,plex" {
-		t.Fatalf("filtered opts = %v", got.opts)
+	if got := runAuthkeyAction(cfg, scriptUI{line: "office"}, "rename", "home"); got != "✔ Renamed home to office" {
+		t.Fatalf("rename: %q", got)
 	}
-	if !got.picked[1] || got.picked[0] {
-		t.Fatalf("selection lost: %v", got.picked)
+	if got := runAuthkeyAction(cfg, scriptUI{secret: "tskey-auth-new"}, "replace", "office"); got != "✔ Updated auth key office" {
+		t.Fatalf("replace: %q", got)
 	}
-	all := got.applyFilter("")
-	if len(all.opts) != 4 || !all.picked[3] {
-		t.Fatalf("clearing the filter must restore all rows: %v %v", all.opts, all.picked)
+	if got := runAuthkeyAction(cfg, scriptUI{secret: "tskey-auth-x"}, "replace", "missing"); !strings.Contains(got, "not found") {
+		t.Fatalf("replace missing: %q", got)
 	}
-}
-
-func TestMultiSelectClearKey(t *testing.T) {
-	m := model{screen: screenMultiSelect, opts: []string{"a", "b"}, picked: map[int]bool{0: true, 1: true}}
-	next, _ := m.Update(digitKey('n'))
-	if got := next.(model); len(got.picked) != 0 {
-		t.Fatalf("n must clear the selection: %v", got.picked)
+	if got := runAuthkeyAction(cfg, scriptUI{confirm: true}, "remove", "office"); got != "✔ Removed auth key office" {
+		t.Fatalf("remove: %q", got)
 	}
-}
-
-func TestSearchCatalogFilters(t *testing.T) {
-	repo := t.TempDir()
-	for _, name := range []string{"jellyfin", "plex", "immich"} {
-		dir := filepath.Join(repo, "services", name)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		for _, f := range []string{"compose.yaml", ".env"} {
-			if err := os.WriteFile(filepath.Join(dir, f), []byte("\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	out := searchCatalog(repo, "ple")
-	if !strings.Contains(out, "1 of 3 services") || !strings.Contains(out, "- plex") || strings.Contains(out, "jellyfin") {
-		t.Fatalf("unexpected search result: %q", out)
-	}
-	if out := searchCatalog(repo, "zzz"); !strings.Contains(out, "No services match") {
-		t.Fatalf("expected no match, got %q", out)
+	data, _ := os.ReadFile(cfg.AuthkeysPath)
+	if strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("store not empty: %q", data)
 	}
 }
 
 func TestRefreshSummaryUpToDate(t *testing.T) {
-	if got := refreshSummary("Already up to date.\n"); got != "Catalog is up to date." {
+	if got := refreshSummary("Already up to date.\n"); got != "✔ Catalog is up to date." {
 		t.Fatalf("got %q", got)
 	}
-	if got := refreshSummary("Updating a..b\n"); !strings.HasPrefix(got, "Catalog refreshed.") {
+	if got := refreshSummary("Updating a..b\n"); !strings.HasSuffix(got, "✔ Catalog refreshed.") || !strings.HasPrefix(got, "Updating") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFilterNamesIgnoresCase(t *testing.T) {
+	if got := strings.Join(filterNames([]string{"jellyfin", "plex", "immich"}, " PLE "), ","); got != "plex" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -187,5 +193,12 @@ func TestEditConfigDoesNotSaveEnvOverride(t *testing.T) {
 	}
 	if cfg.DeployPath != filepath.Join(dir, "env-stacks") {
 		t.Fatalf("session must keep the environment override, got %s", cfg.DeployPath)
+	}
+}
+
+func TestBatchSummaryNamesInterrupt(t *testing.T) {
+	r := batchResult{failed: 1, failedNames: []string{"web"}, interrupted: true, skipped: 1}
+	if got := r.summary(multiRestart, []string{"web", "db"}); got != "✖ Restart interrupted · 0 of 2 ok, 1 skipped" {
+		t.Fatalf("summary = %q", got)
 	}
 }
