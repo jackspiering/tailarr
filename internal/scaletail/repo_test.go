@@ -70,9 +70,25 @@ func TestRunGitTimeoutNamesRepoPathAndKillsGroup(t *testing.T) {
 	}
 }
 
+// processAlive reports whether pid still runs. A zombie counts as gone: the
+// kill worked, and only an init that does not reap orphans (as in some
+// containers) keeps its process table entry.
 func processAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// The state field follows the parenthesized command name.
+	if i := strings.LastIndexByte(string(stat), ')'); i >= 0 && i+2 < len(stat) {
+		return stat[i+2] != 'Z'
+	}
+	return true
 }
 
 func TestGitEnvDisablesPrompts(t *testing.T) {

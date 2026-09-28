@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1308,7 +1309,7 @@ func TestFilterComposeEnv(t *testing.T) {
 		"DOCKER_HOST=unix:///var/run/docker.sock",
 		"PATH=/usr/bin",
 		"TZ=UTC",
-	})
+	}, nil)
 	got := strings.Join(kept, "\n")
 	for _, banned := range []string{"COMPOSE_PROFILES", "COMPOSE_FILE", "TAILARR_REPO_PATH", "TS_AUTHKEY"} {
 		if strings.Contains(got, banned) {
@@ -1322,6 +1323,142 @@ func TestFilterComposeEnv(t *testing.T) {
 	}
 	if strings.Join(dropped, ",") != "COMPOSE_PROFILES,COMPOSE_FILE" {
 		t.Fatalf("dropped keys: %v", dropped)
+	}
+}
+
+func TestFilterComposeEnvLetsDotEnvWin(t *testing.T) {
+	fileKeys := map[string]bool{"TZ": true, "SERVICE": true, "PATH": true, "DOCKER_HOST": true, "HOME": true}
+	kept, _ := filterComposeEnv([]string{
+		"TZ=UTC",
+		"SERVICE=other",
+		"PATH=/usr/bin",
+		"HOME=/root",
+		"DOCKER_HOST=unix:///var/run/docker.sock",
+		"LANG=C.UTF-8",
+	}, fileKeys)
+	got := strings.Join(kept, "\n")
+	for _, shadowed := range []string{"TZ=", "SERVICE="} {
+		if strings.Contains(got, shadowed) {
+			t.Errorf("kept %s although .env sets it: %q", shadowed, got)
+		}
+	}
+	for _, want := range []string{"PATH=/usr/bin", "HOME=/root", "DOCKER_HOST=unix:///var/run/docker.sock", "LANG=C.UTF-8"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dropped %s: %q", want, got)
+		}
+	}
+}
+
+func TestDefaultComposeUsesDotEnvOverProcessEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("TZ=Europe/Amsterdam\nSERVICE=web\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(t.TempDir(), "env.txt")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nenv > " + strconv.Quote(envFile) + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TZ", "UTC")
+	t.Setenv("SERVICE", "other")
+	SetOutput(io.Discard)
+	t.Cleanup(func() { SetOutput(nil) })
+	if err := defaultCompose(context.Background(), dir, "up", "-d"); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(dump), "\n") {
+		if line == "TZ=UTC" || line == "SERVICE=other" {
+			t.Errorf("compose inherited %s, which overrides .env", line)
+		}
+	}
+	if !strings.Contains(string(dump), "PATH=") {
+		t.Error("compose lost PATH")
+	}
+}
+
+func TestDefaultComposeKeepsFailureReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo ' Container tailscale-web Waiting' >&2\n" +
+		"echo 'dependency failed to start: container tailscale-web is unhealthy (TS_AUTHKEY=tskey-auth-LEAK)' >&2\n" +
+		"echo '' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var out strings.Builder
+	SetOutput(&out)
+	t.Cleanup(func() { SetOutput(nil) })
+	err := defaultCompose(context.Background(), dir, "up", "-d")
+	if !errors.Is(err, ErrComposeFailed) {
+		t.Fatalf("expected ErrComposeFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "dependency failed to start: container tailscale-web is unhealthy") {
+		t.Fatalf("error lost the compose reason: %v", err)
+	}
+	if strings.Contains(err.Error(), "tskey-auth-LEAK") || strings.Contains(out.String(), "tskey-auth-LEAK") {
+		t.Fatalf("secret leaked: err=%v out=%q", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Container tailscale-web Waiting") {
+		t.Fatalf("output not sent to SetOutput writer: %q", out.String())
+	}
+}
+
+func TestDefaultComposeInterruptSignalsPluginChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are unix-only")
+	}
+	dir := t.TempDir()
+	bin := t.TempDir()
+	marks := t.TempDir()
+	cli, plugin, ready := filepath.Join(marks, "cli"), filepath.Join(marks, "plugin"), filepath.Join(marks, "ready")
+	// The fake docker CLI runs a fake plugin in the foreground, as docker
+	// runs docker-compose. Both record the SIGINT they receive.
+	child := "trap 'echo int > " + plugin + "; exit 0' INT; echo up > " + ready + "; while :; do sleep 0.1; done"
+	script := "#!/bin/sh\ntrap 'echo int > " + cli + "; exit 0' INT\nsh -c " + strconv.Quote(child) + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	SetOutput(io.Discard)
+	t.Cleanup(func() { SetOutput(nil) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- defaultCompose(ctx, dir, "up", "-d") }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrInterrupted) {
+			t.Fatalf("expected ErrInterrupted, got %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("compose did not stop after cancel")
+	}
+	for _, mark := range []string{cli, plugin} {
+		if _, err := os.Stat(mark); err != nil {
+			t.Errorf("%s did not receive SIGINT: %v", filepath.Base(mark), err)
+		}
 	}
 }
 
@@ -1428,5 +1565,143 @@ func TestApplyRestoresWhenInterruptContextCanceled(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))
 	if err != nil || string(data) != orig {
 		t.Fatalf("previous deployment not restored: %v %q", err, data)
+	}
+}
+
+func TestCollectOverviewUsesOneDockerPass(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	deployRoot := t.TempDir()
+	for _, svc := range []string{"web", "other"} {
+		dir := filepath.Join(deployRoot, svc)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services:\n  app:\n    image: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeOverride("web", filepath.Join(deployRoot, "web")); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(t.TempDir(), "calls")
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho \"$*\" >> " + strconv.Quote(calls) + "\n" +
+		"printf 'app-TEST_web\\trunning\\tUp 3 minutes (healthy)\\tweb\\n'\n" +
+		"printf 'tailscale-TEST_web\\trunning\\tUp 3 minutes (health: starting)\\tweb\\n'\n" +
+		"printf 'app-other\\texited\\tExited (1) 2 minutes ago\\t\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.Remove(calls); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(calls)
+	if n := strings.Count(string(data), "ps -a"); n != 1 || strings.Count(string(data), "\n") != 1 {
+		t.Fatalf("want one docker ps -a call, got:\n%s", data)
+	}
+	if st.DockerErr != "" || len(st.Services) != 2 {
+		t.Fatalf("services=%+v dockerErr=%q", st.Services, st.DockerErr)
+	}
+	other, web := st.Services[0], st.Services[1]
+	if !web.Managed || web.Health != HealthStarting || len(web.Containers) != 2 || web.Containers[0].Name != "app-TEST_web" {
+		t.Fatalf("web: %+v", web)
+	}
+	if other.Managed || other.Health != HealthStopped || len(other.Containers) != 1 || other.Containers[0].Health != HealthExited {
+		t.Fatalf("other: %+v", other)
+	}
+	if st.ManagedCount != 1 || st.OtherCount != 1 || st.ManagedHealth["web"] != HealthStarting {
+		t.Fatalf("counts: %+v", st)
+	}
+	if strings.Join(st.RunningNames, ",") != "TEST_web" {
+		t.Fatalf("running: %v", st.RunningNames)
+	}
+}
+
+func TestCollectOverviewReportsDockerFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	deployRoot := t.TempDir()
+	dir := filepath.Join(deployRoot, "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.DockerErr == "" || len(st.Services) != 1 || st.Services[0].Health != HealthUnknown {
+		t.Fatalf("docker failure must mark health unknown: %+v", st)
+	}
+}
+
+func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "SERVICE=web\n")
+	setupTemplate(t, repo, "api", "SERVICE=api\nTS_AUTHKEY=\n")
+	withFakeCompose(t, func(string, ...string) error { return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	for _, svc := range []string{"web", "api"} {
+		if err := m.DeployWith(svc, DeployOpts{ReusableAuthKey: "tskey-auth-shared"}); err != nil {
+			t.Fatalf("deploy %s: %v", svc, err)
+		}
+	}
+	web, err := os.ReadFile(filepath.Join(deployRoot, "web", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(web), "TS_AUTHKEY") {
+		t.Fatalf("shared key written into a .env that does not declare it:\n%s", web)
+	}
+	api, err := os.ReadFile(filepath.Join(deployRoot, "api", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(api), "TS_AUTHKEY=tskey-auth-shared") {
+		t.Fatalf("declared TS_AUTHKEY not filled:\n%s", api)
+	}
+}
+
+func TestComposeVerbDropsProjectAndFiles(t *testing.T) {
+	got := composeVerb([]string{"-p", "tailarr-1234-web", "-f", "compose.yaml", "-f", ".tailarr.compose.yaml", "up", "-d", "--remove-orphans"})
+	if got != "up -d --remove-orphans" {
+		t.Fatalf("composeVerb = %q", got)
+	}
+}
+
+func TestHealthFromOutputStoppedStackIsNotDown(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\texited\tExited (137) 5 seconds ago\t",
+		"tailscale-web\texited\tExited (0) 5 seconds ago\t",
+		"app-api\trestarting\tRestarting (1) 2 seconds ago\t",
+		"app-db\trunning\tUp 1 hour\t",
+		"tailscale-db\texited\tExited (1) 1 minute ago\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web", "api", "db"})
+	if got["web"] != HealthStopped {
+		t.Errorf("all containers exited after stop: got %s, want stopped", got["web"])
+	}
+	if got["api"] != HealthExited {
+		t.Errorf("crash loop: got %s, want exited", got["api"])
+	}
+	if got["db"] != HealthExited {
+		t.Errorf("sidecar died while app runs: got %s, want exited", got["db"])
 	}
 }

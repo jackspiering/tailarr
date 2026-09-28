@@ -10,47 +10,18 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
-	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/deploy"
 	"github.com/jackspiering/tailarr/internal/doctor"
 	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/logging"
 	"github.com/jackspiering/tailarr/internal/prompt"
-	"github.com/jackspiering/tailarr/internal/scaletail"
-	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/redact"
-	"github.com/jackspiering/tailarr/internal/upgrade"
-	"github.com/jackspiering/tailarr/internal/version"
 )
-
-// prog is the running Bubble Tea program, bound in Run so in-TUI prompts can
-// hand the terminal back to cooked mode around direct os.Stdin reads.
-var prog *tea.Program
-
-// leaveTUI hands the terminal back to cooked mode and pauses bubbletea's stdin
-// reader so prompts can read os.Stdin directly. Reenter with reenterTUI.
-// Signals are not delivered to bubbletea while the terminal is released
-// (bubbletea sets ignoreSignals). Run installs a process-wide SIGINT/SIGTERM
-// handler that cancels in-flight work and quits only after that work finishes,
-// so Apply can restore before the process exits.
-func leaveTUI() {
-	if prog != nil {
-		_ = prog.ReleaseTerminal()
-	}
-}
-
-// reenterTUI resumes bubbletea's terminal handling (raw mode, alt screen, stdin
-// reader) after leaveTUI.
-func reenterTUI() {
-	if prog != nil {
-		_ = prog.RestoreTerminal()
-	}
-}
 
 // IsInteractive reports whether stdin/stdout support a TUI.
 func IsInteractive() bool {
@@ -68,74 +39,86 @@ func IsInteractive() bool {
 	return true
 }
 
-func colorEnabled() bool { return os.Getenv("NO_COLOR") == "" }
+type tab int
 
-func styleOrPlain(s lipgloss.Style, text string) string {
-	if !colorEnabled() {
-		return text
-	}
-	return s.Render(text)
+const (
+	tabServices tab = iota
+	tabCatalog
+	tabKeys
+	tabSystem
+	tabCount
+)
+
+var tabNames = [tabCount]string{"Services", "Catalog", "Keys", "System"}
+
+// pollInterval is how often the Services tab refreshes container state.
+const pollInterval = 4 * time.Second
+
+// listState is the cursor, selection, and filter of one list tab. Picks are
+// keyed by name, so they survive a refresh and stay visible under a filter.
+type listState struct {
+	cursor int
+	picked map[string]bool
+	filter string
 }
 
+// menuItem is one row of the action menu.
 type menuItem struct {
+	key   string
 	label string
 	desc  string
-	id    string
+	run   func(model) (model, tea.Cmd)
 }
 
-type screen int
-
-const (
-	screenMain screen = iota
-	screenStatus
-	screenServices
-	screenAuthkeys
-	screenConfig
-	screenMaintenance
-	screenMultiSelect
-	screenResult
-)
-
-type multiMode int
-
-const (
-	multiNone multiMode = iota
-	multiDeploy
-	multiRemove
-	multiApply
-	multiStop
-	multiRestart
-)
+// actionMenu is the popup that Enter opens on the Services and Keys tabs.
+type actionMenu struct {
+	title  string
+	items  []menuItem
+	cursor int
+}
 
 type model struct {
 	cfg      config.Config
 	log      *logging.Logger
-	screen   screen
-	cursor   int
-	items    []menuItem
-	status   string
+	host     string
+	width    int
+	height   int
+	tab      tab
 	quitting bool
+
+	lists [tabCount]listState
+
+	status     *deploy.OverviewStats
+	statusErr  string
+	statusBusy bool
+
+	catalog       []catalogItem
+	catalogErr    string
+	catalogLoaded bool
+
+	keyNames   []string
+	keysErr    string
+	checks     []doctor.Check
+	doctorBusy bool
+
+	filtering bool
+	menu      *actionMenu
+
 	busy     bool
-
-	// layout state
-	width  int
-	height int
-	scroll int
-	host   string
-
-	// multi-select state
-	multi       multiMode
-	multiParent screen
-	opts        []string
-	// allOpts is the unfiltered list; filter is the active "/" query.
-	allOpts []string
-	filter  string
-	// selected indexes for multi
-	picked map[int]bool
-
-	rootCtx  context.Context
+	opTitle  string
+	opStart  time.Time
 	opCancel context.CancelFunc
-	flight   *workFlight
+	note     string
+	out      outLog
+	// scrollBack is how many lines the output panel is scrolled up from the
+	// newest line. 0 follows new output.
+	scrollBack int
+	spin       int
+	ask        *askState
+
+	snd     *sender
+	rootCtx context.Context
+	flight  *workFlight
 }
 
 type workFlight struct {
@@ -164,7 +147,7 @@ func (w *workFlight) wait() {
 }
 
 // drainThenQuit cancels in-flight work and invokes quit only after tracked
-// sequences return. Apply's restore defer runs in that sequence.
+// operations return. Apply's restore defer runs in that operation.
 func drainThenQuit(cancel context.CancelFunc, flight *workFlight, quit func()) {
 	if cancel != nil {
 		cancel()
@@ -177,45 +160,53 @@ func drainThenQuit(cancel context.CancelFunc, flight *workFlight, quit func()) {
 	}
 }
 
-// Run starts the interactive TUI. Lifecycle actions that need prompts leave the
-// alternate screen and use stdin prompts, then return to the menu.
-func Run(cfg config.Config, log *logging.Logger) error {
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
-	flight := &workFlight{}
-	m := model{
-		cfg:     cfg,
-		log:     log,
-		screen:  screenMain,
-		items:   mainMenuItems(),
-		picked:  map[int]bool{},
-		rootCtx: rootCtx,
-		flight:  flight,
+// exitText is printed after the TUI exits, for example after an upgrade.
+var exitText string
+
+func newModel(cfg config.Config, log *logging.Logger, ctx context.Context, flight *workFlight, snd *sender) model {
+	m := model{cfg: cfg, log: log, rootCtx: ctx, flight: flight, snd: snd}
+	for i := range m.lists {
+		m.lists[i].picked = map[string]bool{}
 	}
 	if host, err := os.Hostname(); err == nil {
 		m.host = host
 	}
+	return m
+}
+
+// Run starts the interactive TUI. Prompts, compose output, and git output
+// all stay inside the TUI; the terminal is never handed back mid-operation.
+func Run(cfg config.Config, log *logging.Logger) error {
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	flight := &workFlight{}
+	snd := &sender{}
+	m := newModel(cfg, log, rootCtx, flight, snd)
 	interrupt.Set(rootCtx)
 	defer interrupt.Clear()
 	prompt.BindCancel(rootCtx)
 	defer prompt.BindCancel(context.Background())
-	p := tea.NewProgram(m)
-	prog = p
-	// bubbletea ignores signals while ReleaseTerminal is active. Cancel shared
-	// work and quit only after sequences return so Apply restore can finish.
+	deploy.SetOutput(&lineSink{snd: snd})
+	defer deploy.SetOutput(nil)
+
+	// Tailarr handles SIGINT and SIGTERM itself: cancel shared work and quit
+	// only after operations return, so Apply can restore before exit.
+	p := tea.NewProgram(m, tea.WithoutSignalHandler())
+	snd.bind(p.Send)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		drainThenQuit(rootCancel, flight, func() {
-			if prog != nil {
-				prog.Quit()
-			}
-		})
+		drainThenQuit(rootCancel, flight, p.Quit)
 	}()
 	_, err := p.Run()
+	// Quit can come while an operation runs; let it finish its cleanup.
+	drainThenQuit(rootCancel, flight, nil)
 	if errors.Is(err, tea.ErrInterrupted) {
 		err = nil
+	}
+	if exitText != "" {
+		fmt.Println(exitText)
 	}
 	return err
 }
@@ -224,7 +215,6 @@ func Run(cfg config.Config, log *logging.Logger) error {
 // the config file already exists. Prompts run before the TUI takes over the
 // terminal.
 func FirstRunSetup(cfg *config.Config) error {
-	// If config file already exists, nothing to do.
 	if _, err := os.Stat(cfg.ConfigPath); err == nil {
 		return nil
 	}
@@ -260,801 +250,713 @@ func FirstRunSetup(cfg *config.Config) error {
 	return nil
 }
 
-func mainMenuItems() []menuItem {
-	return []menuItem{
-		{id: "status", label: "Status", desc: "Health, counts, and deployment status"},
-		{id: "services", label: "Services", desc: "Deploy, apply, and control services"},
-		{id: "authkeys", label: "Tailscale Authentication Keys", desc: "Manage stored Tailscale authentication keys"},
-		{id: "config", label: "Configuration", desc: "View or edit Tailarr configuration"},
-		{id: "maintenance", label: "Maintenance", desc: "Doctor checks and maintenance tools"},
-		{id: "quit", label: "Exit", desc: "Quit Tailarr"},
-	}
+type (
+	spinMsg time.Time
+	pollMsg time.Time
+)
+
+// opResult is what an operation reports when it returns.
+type opResult struct {
+	lines []string
+	cfg   *config.Config
+	log   *logging.Logger
+	quit  bool
 }
 
-func statusMenuItems() []menuItem {
-	return []menuItem{
-		{id: "overview", label: "Overview", desc: "Health, counts, and managed services"},
-		{id: "deployed", label: "Deployed services", desc: "Browse local deployments"},
-		{id: "running", label: "Running services", desc: "Inspect running Docker containers"},
-		{id: "summary", label: "Docker and config summary", desc: "Review Docker access and configuration"},
-		{id: "back", label: "Back", desc: "Return to main menu"},
-	}
+type opDoneMsg struct{ res opResult }
+
+func spinTick() tea.Cmd {
+	return tea.Tick(90*time.Millisecond, func(t time.Time) tea.Msg { return spinMsg(t) })
 }
 
-func servicesMenuItems() []menuItem {
-	return []menuItem{
-		{id: "search", label: "Search available services", desc: "Find available ScaleTail templates"},
-		{id: "refresh", label: "Refresh catalog", desc: "Clone or pull the ScaleTail templates"},
-		{id: "deploy", label: "Deploy services", desc: "Create new deployments from the catalog"},
-		{id: "apply", label: "Apply catalog", desc: "Sync template files, pull images, and recreate"},
-		{id: "remove", label: "Remove services", desc: "Stop and remove deployments"},
-		{id: "stop", label: "Stop services", desc: "Stop selected deployments"},
-		{id: "restart", label: "Restart services", desc: "Restart selected deployments"},
-		{id: "back", label: "Back", desc: "Return to main menu"},
-	}
+func pollTick() tea.Cmd {
+	return tea.Tick(pollInterval, func(t time.Time) tea.Msg { return pollMsg(t) })
 }
 
-func authkeysMenuItems() []menuItem {
-	return []menuItem{
-		{id: "list", label: "List keys", desc: "Show stored key names (redacted)"},
-		{id: "add", label: "Add key", desc: "Add a new stored auth key"},
-		{id: "rename", label: "Rename key", desc: "Change a stored key name"},
-		{id: "replace", label: "Replace key value", desc: "Replace a stored key value"},
-		{id: "remove", label: "Remove key", desc: "Delete a stored auth key"},
-		{id: "back", label: "Back", desc: "Return to main menu"},
-	}
+func (m model) Init() tea.Cmd {
+	return tea.Batch(loadStatus(m.cfg.DeployPath), loadCatalog(m.cfg.RepoPath), loadKeys(m.cfg.AuthkeysPath), pollTick())
 }
-
-func configMenuItems() []menuItem {
-	return []menuItem{
-		{id: "view", label: "View current config", desc: "View the active configuration"},
-		{id: "edit", label: "Edit config", desc: "Edit paths, repository, and logging"},
-		{id: "back", label: "Back", desc: "Return to main menu"},
-	}
-}
-
-func maintenanceMenuItems() []menuItem {
-	return []menuItem{
-		{id: "doctor", label: "Run doctor checks", desc: "Host, path, Docker, and health checks"},
-		{id: "upgrade", label: "Upgrade Tailarr", desc: "Replace this binary with the latest release"},
-		{id: "back", label: "Back", desc: "Return to main menu"},
-	}
-}
-
-func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case resultMsg:
-		m.busy = false
-		if msg.cfg != nil {
-			m.cfg = *msg.cfg
-		}
-		if msg.log != nil {
-			m.log = msg.log
-		}
-		m.screen = screenResult
-		m.status = msg.text
-		m.items = []menuItem{{id: "back", label: "Back", desc: "Return"}}
-		m.cursor = 0
-		m.scroll = 0
-		return m, nil
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.width, m.height = msg.Width, msg.Height
 		return m, nil
-	case filterMsg:
-		m.busy = false
-		return m.applyFilter(msg.query), nil
-	case upgradeDoneMsg:
-		// The binary was replaced; leave the TUI so the new version takes over.
+	case statusMsg:
+		m.statusBusy = false
+		m.statusErr = msg.err
+		if msg.err == "" {
+			st := msg.st
+			m.status = &st
+		}
+		m.clampCursor()
+		return m, nil
+	case catalogMsg:
+		m.catalogLoaded = true
+		m.catalog, m.catalogErr = msg.items, msg.err
+		m.clampCursor()
+		return m, nil
+	case keysMsg:
+		m.keyNames, m.keysErr = msg.names, msg.err
+		m.clampCursor()
+		return m, nil
+	case doctorMsg:
+		m.doctorBusy = false
+		m.checks = msg.checks
+		return m, nil
+	case pollMsg:
+		cmds := []tea.Cmd{pollTick()}
+		if m.tab == tabServices && !m.busy && !m.statusBusy {
+			m.statusBusy = true
+			cmds = append(cmds, loadStatus(m.cfg.DeployPath))
+		}
+		return m, tea.Batch(cmds...)
+	case spinMsg:
+		if !m.busy {
+			return m, nil
+		}
+		m.spin++
+		return m, spinTick()
+	case outMsg:
+		m.out.add(msg.line)
+		if m.scrollBack > 0 {
+			m.scrollBack++
+		}
+		return m, nil
+	case askMsg:
+		m.ask = msg.ask
+		m.menu = nil
+		m.filtering = false
+		return m, nil
+	case opDoneMsg:
+		return m.finishOp(msg.res)
+	case tea.PasteMsg:
+		return m.paste(msg.Content), nil
+	case tea.KeyPressMsg:
+		return m.handleKey(msg)
+	}
+	return m, nil
+}
+
+// paste adds pasted text to the open prompt or the filter. Only the first
+// line counts: a pasted key often ends with a newline.
+func (m model) paste(text string) model {
+	text, _, _ = strings.Cut(strings.ReplaceAll(text, "\r", "\n"), "\n")
+	text = cleanLine(text)
+	switch {
+	case m.ask != nil && m.ask.kind != askConfirm:
+		if m.ask.fresh {
+			m.ask.buf, m.ask.fresh = nil, false
+		}
+		m.ask.buf = append(m.ask.buf, []rune(text)...)
+	case m.filtering:
+		m.list().filter += text
+		m.list().cursor = 0
+	}
+	return m
+}
+
+func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if m.ask != nil {
+		return m.handleAskKey(msg)
+	}
+	if key == "ctrl+c" {
+		if m.busy {
+			if m.opCancel != nil {
+				m.opCancel()
+			}
+			m.note = "Canceling..."
+			return m, nil
+		}
 		m.quitting = true
 		return m, tea.Quit
-	case tea.KeyPressMsg:
-		key := msg.String()
+	}
+	if m.menu != nil {
+		return m.handleMenuKey(key)
+	}
+	if m.filtering {
+		return m.handleFilterKey(msg), nil
+	}
+	m.note = ""
+	switch key {
+	case "q":
 		if m.busy {
-			if key == "ctrl+c" || key == "q" || key == "esc" {
-				m.status = "Canceling..."
-				if m.opCancel != nil {
-					m.opCancel()
-				}
-				return m, nil
-			}
+			m.note = "Still working. Press ctrl+c to cancel."
 			return m, nil
 		}
-		switch key {
-		case "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
-		case "q", "esc":
-			if m.screen == screenMultiSelect {
-				if m.multiParent == screenMaintenance {
-					return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
-				}
-				return m.setScreen(screenServices, servicesMenuItems()), nil
-			}
-			if m.screen == screenMain {
-				m.quitting = true
-				return m, tea.Quit
-			}
-			return m.goBack(), nil
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "pgup":
-			m.scroll = max(m.scroll-m.pageSize(), 0)
-		case "pgdown":
-			m.scroll = min(m.scroll+m.pageSize(), m.maxScroll())
-		case "home":
-			m.scroll = 0
-		case "end":
-			m.scroll = m.maxScroll()
-		case "down", "j":
-			max := len(m.items) - 1
-			if m.screen == screenMultiSelect {
-				max = len(m.opts) + len(m.items) - 1
-			}
-			if m.cursor < max {
-				m.cursor++
-			}
-		case "space":
-			if m.screen == screenMultiSelect && m.cursor < len(m.opts) {
-				m.picked[m.cursor] = !m.picked[m.cursor]
-			}
-		case "enter":
-			return m.activate()
-		case "a":
-			if m.screen == screenMultiSelect {
-				for i := range m.opts {
-					m.picked[i] = true
-				}
-			}
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		switch {
+		case m.list() != nil && m.list().filter != "":
+			m.list().filter = ""
+			m.clampCursor()
+		case !m.busy && !m.out.empty():
+			m.out.reset("")
+			m.scrollBack = 0
+		}
+		return m, nil
+	case "tab", "right", "l":
+		return m.switchTab((m.tab + 1) % tabCount)
+	case "shift+tab", "left", "h":
+		return m.switchTab((m.tab + tabCount - 1) % tabCount)
+	case "1", "2", "3", "4":
+		return m.switchTab(tab(key[0] - '1'))
+	case "up", "k":
+		m.moveCursor(-1)
+		return m, nil
+	case "down", "j":
+		m.moveCursor(1)
+		return m, nil
+	case "g":
+		m.moveCursor(-1 << 20)
+		return m, nil
+	case "G":
+		m.moveCursor(1 << 20)
+		return m, nil
+	case "pgup":
+		m.scrollBack = min(m.scrollBack+m.pageSize(), m.maxScroll())
+		return m, nil
+	case "pgdown":
+		m.scrollBack = max(m.scrollBack-m.pageSize(), 0)
+		return m, nil
+	case "home":
+		m.scrollBack = m.maxScroll()
+		return m, nil
+	case "end":
+		m.scrollBack = 0
+		return m, nil
+	}
+	switch m.tab {
+	case tabServices:
+		return m.servicesKey(key)
+	case tabCatalog:
+		return m.catalogKey(key)
+	case tabKeys:
+		return m.keysKey(key)
+	case tabSystem:
+		return m.systemKey(key)
+	}
+	return m, nil
+}
+
+func (m model) switchTab(t tab) (tea.Model, tea.Cmd) {
+	if t < 0 || t >= tabCount {
+		return m, nil
+	}
+	m.tab = t
+	m.filtering = false
+	m.note = ""
+	var cmds []tea.Cmd
+	switch t {
+	case tabSystem:
+		if m.checks == nil && !m.doctorBusy {
+			m.doctorBusy = true
+			cmds = append(cmds, loadDoctor(m.cfg))
+		}
+	case tabServices:
+		if !m.statusBusy && !m.busy {
+			m.statusBusy = true
+			cmds = append(cmds, loadStatus(m.cfg.DeployPath))
+		}
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) handleAskKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	a := m.ask
+	switch key := msg.String(); key {
+	case "ctrl+c":
+		if m.opCancel != nil {
+			m.opCancel()
+		}
+		a.answer(askReply{err: context.Canceled})
+		m.ask = nil
+		m.note = "Canceling..."
+		return m, nil
+	case "esc":
+		a.answer(askReply{err: prompt.ErrCanceled})
+		m.ask = nil
+		return m, nil
+	case "pgup", "pgdown", "home", "end":
+		m.ask = nil
+		next, cmd := m.handleKey(msg)
+		nm := next.(model)
+		nm.ask = a
+		return nm, cmd
+	}
+	if a.kind == askConfirm {
+		switch strings.ToLower(msg.Text) {
+		case "y":
+			a.answer(askReply{yes: true})
 		case "n":
-			if m.screen == screenMultiSelect {
-				m.picked = map[int]bool{}
-			}
-		case "/":
-			if m.screen == screenMultiSelect {
-				return m.promptFilter()
-			}
-		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			if msg.String() == "0" {
-				if m.screen == screenMultiSelect {
-					if m.multiParent == screenMaintenance {
-						return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
-					}
-					return m.setScreen(screenServices, servicesMenuItems()), nil
-				}
-				if m.screen == screenMain {
-					m.quitting = true
-					return m, tea.Quit
-				}
-				return m.goBack(), nil
-			}
-			n := int(msg.String()[0] - '0')
-			if m.screen == screenMultiSelect {
-				// Digits address the same rows shown in View.
-				idx := n - 1
-				if idx >= 0 && idx < len(m.opts)+len(m.items) {
-					m.cursor = idx
-					return m.activate()
-				}
+			a.answer(askReply{yes: false})
+		default:
+			if msg.String() != "enter" {
 				return m, nil
 			}
-
-			if n >= 1 && n <= len(m.items) {
-				m.cursor = n - 1
-				return m.activate()
-			}
+			a.answer(askReply{yes: a.defaultYes})
 		}
-	}
-	return m, nil
-}
-
-type resultMsg struct {
-	text string
-	cfg  *config.Config
-	log  *logging.Logger
-}
-
-// filterMsg carries a new multi-select filter query.
-type filterMsg struct{ query string }
-
-// upgradeDoneMsg signals that the running binary was replaced and the TUI
-// should exit so the new version takes over.
-type upgradeDoneMsg struct{}
-
-func (m model) goBack() model {
-	m.screen = screenMain
-	m.items = mainMenuItems()
-	m.cursor = 0
-	m.status = ""
-	m.multi = multiNone
-	m.picked = map[int]bool{}
-	m.opts = nil
-	m.scroll = 0
-	return m
-}
-
-func (m model) setScreen(s screen, items []menuItem) model {
-	m.screen = s
-	m.items = items
-	m.cursor = 0
-	m.status = ""
-	m.scroll = 0
-	return m
-}
-
-// pageSize is the scroll step for the output panel.
-func (m model) pageSize() int {
-	_, h := m.size()
-	return max(h/2, 1)
-}
-
-func (m model) activate() (tea.Model, tea.Cmd) {
-	if m.busy {
+		m.ask = nil
 		return m, nil
 	}
-	m.scroll = 0
-	if m.screen == screenMultiSelect {
-		// cursor indexes opts first, then action items.
-		if m.cursor < len(m.opts) {
-			m.picked[m.cursor] = !m.picked[m.cursor]
-			return m, nil
+	switch msg.String() {
+	case "enter":
+		a.answer(askReply{value: string(a.buf)})
+		m.ask = nil
+	case "backspace":
+		a.fresh = false
+		if len(a.buf) > 0 {
+			a.buf = a.buf[:len(a.buf)-1]
 		}
-		ai := m.cursor - len(m.opts)
-		if ai >= 0 && ai < len(m.items) {
-			// temporarily set cursor to action index for finishMulti
-			saved := m.cursor
-			m.cursor = ai
-			nm, cmd := m.finishMulti()
-			if mm, ok := nm.(model); ok {
-				mm.cursor = saved
-				return mm, cmd
-			}
-			return nm, cmd
-		}
-		return m, nil
-	}
-	if len(m.items) == 0 {
-		return m, nil
-	}
-	id := m.items[m.cursor].id
-
-	switch m.screen {
-	case screenMain:
-		switch id {
-		case "quit":
-			m.quitting = true
-			return m, tea.Quit
-		case "status":
-			return m.setScreen(screenStatus, statusMenuItems()), nil
-		case "services":
-			return m.setScreen(screenServices, servicesMenuItems()), nil
-		case "authkeys":
-			return m.setScreen(screenAuthkeys, authkeysMenuItems()), nil
-		case "config":
-			return m.setScreen(screenConfig, configMenuItems()), nil
-		case "maintenance":
-			return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
-		}
-	case screenStatus:
-		return m.activateStatus(id)
-	case screenServices:
-		return m.activateServices(id)
-	case screenAuthkeys:
-		return m.activateAuthkeys(id)
-	case screenConfig:
-		return m.activateConfig(id)
-	case screenMaintenance:
-		return m.activateMaintenance(id)
-	case screenResult:
-		return m.goBack(), nil
-	}
-	return m, nil
-}
-
-func (m model) activateStatus(id string) (tea.Model, tea.Cmd) {
-	switch id {
-	case "back":
-		return m.goBack(), nil
-	case "overview":
-		deployPath := m.cfg.DeployPath
-		return m.startSequence(func() tea.Msg {
-			st, err := deploy.CollectOverview(deployPath)
-			if err != nil {
-				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
-			}
-			return resultMsg{text: deploy.FormatOverview(st)}
-		})
-	case "deployed":
-		deployPath := m.cfg.DeployPath
-		return m.startSequence(func() tea.Msg {
-			svcs, err := scaletail.ListDeployed(deployPath)
-			if err != nil {
-				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
-			}
-			if len(svcs) == 0 {
-				return resultMsg{text: "No deployed services."}
-			}
-			names := make([]string, 0, len(svcs))
-			for _, s := range svcs {
-				names = append(names, s.Name)
-			}
-			health := deploy.ServiceHealthMap(names)
-			var b strings.Builder
-			for _, s := range svcs {
-				tag := "other"
-				if deploy.IsManaged(s.Dir) {
-					tag = "managed"
-				}
-				fmt.Fprintf(&b, "  - %s\t%s\t[%s]\n", s.Name, tag, health[s.Name])
-			}
-			return resultMsg{text: b.String()}
-		})
-	case "running":
-		return m.startSequence(func() tea.Msg {
-			names, err := deploy.RunningServiceNames()
-			if err != nil {
-				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
-			}
-			if len(names) == 0 {
-				return resultMsg{text: "No running ScaleTail-style containers found."}
-			}
-			return resultMsg{text: "  - " + strings.Join(names, "\n  - ")}
-		})
-	case "summary":
-		cfg := m.cfg
-		return m.startSequence(func() tea.Msg {
-			st, err := deploy.CollectOverview(cfg.DeployPath)
-			if err != nil {
-				return resultMsg{text: styleOrPlain(errStyle, redact.Text(err.Error()))}
-			}
-			return resultMsg{text: deploy.FormatOverview(st) + "\n" + cfg.String() + "\nLog path: " + cfg.LogPath}
-		})
-	}
-	return m, nil
-}
-
-func (m model) activateServices(id string) (tea.Model, tea.Cmd) {
-	switch id {
-	case "back":
-		return m.goBack(), nil
-	case "search":
-		repoPath := m.cfg.RepoPath
-		ui := prompt.NewStd(m.cfg.AssumeYes)
-		return m.startSequence(func() tea.Msg {
-			leaveTUI()
-			query, err := ui.Line("Search services (empty lists all)", "")
-			reenterTUI()
-			if err != nil {
-				return resultMsg{text: "Canceled."}
-			}
-			return resultMsg{text: searchCatalog(repoPath, query)}
-		})
-	case "refresh":
-		cfg := m.cfg
-		return m.startSequence(func() tea.Msg {
-			leaveTUI()
-			defer reenterTUI()
-			return resultMsg{text: runCatalogRefresh(cfg)}
-		})
-	case "deploy":
-		return m.beginMulti(multiDeploy)
-	case "apply":
-		return m.beginMulti(multiApply)
-	case "remove":
-		return m.beginMulti(multiRemove)
-	case "stop":
-		return m.beginMulti(multiStop)
-	case "restart":
-		return m.beginMulti(multiRestart)
-	}
-	return m, nil
-}
-
-func (m model) activateAuthkeys(id string) (tea.Model, tea.Cmd) {
-	ui := prompt.NewStd(m.cfg.AssumeYes)
-	switch id {
-	case "back":
-		return m.goBack(), nil
-	case "list":
-		s, err := authkeys.Load(m.cfg.AuthkeysPath)
-		if err != nil {
-			m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
-			return m, nil
-		}
-		lines := s.RedactedList()
-		if len(lines) == 0 {
-			m.status = "No stored auth keys."
+	case "right", "end":
+		a.fresh = false
+	case "ctrl+u":
+		a.fresh = false
+		a.buf = a.buf[:0]
+	case "ctrl+w":
+		s := strings.TrimRight(string(a.buf), " ")
+		if i := strings.LastIndex(s, " "); i >= 0 {
+			a.buf = []rune(s[:i+1])
 		} else {
-			m.status = "  - " + strings.Join(lines, "\n  - ")
+			a.buf = a.buf[:0]
 		}
-		return m, nil
-	case "add", "rename", "replace", "remove":
-		// Leave the TUI for interactive prompts. ReleaseTerminal/RestoreTerminal
-		// (replacing the alt-screen exit/enter commands) also restore raw mode and
-		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
-		cfg := m.cfg
-		action := id
-		return m.startSequence(func() tea.Msg {
-			leaveTUI()
-			defer reenterTUI()
-			text := runAuthkeyAction(cfg, ui, action)
-			return resultMsg{text: text}
-		})
+	default:
+		if t := cleanLine(msg.Text); t != "" {
+			if a.fresh {
+				a.buf, a.fresh = nil, false
+			}
+			a.buf = append(a.buf, []rune(t)...)
+		}
 	}
 	return m, nil
 }
 
-func runAuthkeyAction(cfg config.Config, ui *prompt.Std, action string) string {
-	// Serialize read-modify-write with a lock next to the store.
-	lock, err := deploy.AcquireLock(deploy.AuthkeysLockPath(cfg.AuthkeysPath), deploy.DefaultLockTimeout)
-	if err != nil {
-		return "Error: authkeys lock: " + err.Error()
+func (m model) handleMenuKey(key string) (tea.Model, tea.Cmd) {
+	mn := m.menu
+	switch key {
+	case "esc", "q":
+		m.menu = nil
+		return m, nil
+	case "up", "k":
+		if mn.cursor > 0 {
+			mn.cursor--
+		}
+		return m, nil
+	case "down", "j":
+		if mn.cursor < len(mn.items)-1 {
+			mn.cursor++
+		}
+		return m, nil
+	case "enter":
+		m.menu = nil
+		return mn.items[mn.cursor].run(m)
 	}
-	defer func() { _ = lock.Release() }()
+	for _, it := range mn.items {
+		if it.key == key {
+			m.menu = nil
+			return it.run(m)
+		}
+	}
+	return m, nil
+}
 
-	s, err := authkeys.Load(cfg.AuthkeysPath)
-	if err != nil {
-		return "Error: " + err.Error()
+func (m model) handleFilterKey(msg tea.KeyPressMsg) model {
+	l := m.list()
+	switch msg.String() {
+	case "enter":
+		m.filtering = false
+	case "esc":
+		m.filtering = false
+		l.filter = ""
+	case "backspace":
+		if r := []rune(l.filter); len(r) > 0 {
+			l.filter = string(r[:len(r)-1])
+		}
+	case "ctrl+u":
+		l.filter = ""
+	case "up":
+		m.moveCursor(-1)
+		return m
+	case "down":
+		m.moveCursor(1)
+		return m
+	default:
+		if t := cleanLine(msg.Text); t != "" {
+			l.filter += t
+		}
 	}
-	switch action {
-	case "add":
-		name, err := ui.Line("New key name", "")
-		if err != nil || name == "" {
-			return "Canceled."
+	m.clampCursor()
+	return m
+}
+
+// list returns the list state of the current tab, or nil for System.
+func (m *model) list() *listState {
+	if m.tab == tabSystem {
+		return nil
+	}
+	return &m.lists[m.tab]
+}
+
+// rows returns the names the current tab lists, after its filter. Picked
+// names always stay, so a filter never hides a selection.
+func (m model) rows() []string {
+	var all []string
+	switch m.tab {
+	case tabServices:
+		if m.status != nil {
+			for _, s := range m.status.Services {
+				all = append(all, s.Name)
+			}
 		}
-		val, err := ui.Secret("TS_AUTHKEY")
-		if err != nil {
-			return "Error: " + err.Error()
+	case tabCatalog:
+		for _, it := range m.catalog {
+			all = append(all, it.Name)
 		}
-		if err := s.Put(name, val); err != nil {
-			return "Error: " + err.Error()
+	case tabKeys:
+		all = m.keyNames
+	default:
+		return nil
+	}
+	l := m.lists[m.tab]
+	if l.filter == "" {
+		return all
+	}
+	match := map[string]bool{}
+	for _, n := range filterNames(all, l.filter) {
+		match[n] = true
+	}
+	var out []string
+	for _, n := range all {
+		if match[n] || l.picked[n] {
+			out = append(out, n)
 		}
-		if err := s.Save(); err != nil {
-			return "Error: " + err.Error()
+	}
+	return out
+}
+
+func (m *model) moveCursor(delta int) {
+	l := m.list()
+	if l == nil {
+		return
+	}
+	l.cursor += delta
+	m.clampCursor()
+}
+
+func (m *model) clampCursor() {
+	for t := range m.lists {
+		saved := m.tab
+		m.tab = tab(t)
+		n := len(m.rows())
+		m.tab = saved
+		l := &m.lists[t]
+		if l.cursor >= n {
+			l.cursor = n - 1
 		}
-		return "Stored auth key: " + name
-	case "rename":
-		if len(s.Order) == 0 {
-			return "No stored keys."
+		if l.cursor < 0 {
+			l.cursor = 0
 		}
-		ui.Printf("Keys: %s\n", strings.Join(s.Order, ", "))
-		old, err := ui.Line("Key to rename", "")
-		if err != nil || old == "" {
-			return "Canceled."
-		}
-		nw, err := ui.Line("New name", "")
-		if err != nil || nw == "" {
-			return "Canceled."
-		}
-		if err := s.Rename(old, nw); err != nil {
-			return "Error: " + err.Error()
-		}
-		if err := s.Save(); err != nil {
-			return "Error: " + err.Error()
-		}
-		return "Renamed to: " + nw
-	case "replace":
-		if len(s.Order) == 0 {
-			return "No stored keys."
-		}
-		ui.Printf("Keys: %s\n", strings.Join(s.Order, ", "))
-		name, err := ui.Line("Key to replace", "")
-		if err != nil || name == "" {
-			return "Canceled."
-		}
-		val, err := ui.Secret("TS_AUTHKEY")
-		if err != nil {
-			return "Error: " + err.Error()
-		}
-		if err := s.Put(name, val); err != nil {
-			return "Error: " + err.Error()
-		}
-		if err := s.Save(); err != nil {
-			return "Error: " + err.Error()
-		}
-		return "Updated auth key: " + name
-	case "remove":
-		if len(s.Order) == 0 {
-			return "No stored keys."
-		}
-		ui.Printf("Keys: %s\n", strings.Join(s.Order, ", "))
-		name, err := ui.Line("Key to remove", "")
-		if err != nil || name == "" {
-			return "Canceled."
-		}
-		ok, err := ui.Confirm("Remove stored auth key "+name+"?", false)
-		if err != nil || !ok {
-			return "Canceled."
-		}
-		if err := s.Remove(name); err != nil {
-			return "Error: " + err.Error()
-		}
-		if err := s.Save(); err != nil {
-			return "Error: " + err.Error()
-		}
-		return "Removed auth key: " + name
+	}
+}
+
+// current returns the name under the cursor, or "".
+func (m model) current() string {
+	rows := m.rows()
+	if l := m.lists[m.tab]; l.cursor < len(rows) {
+		return rows[l.cursor]
 	}
 	return ""
 }
 
-func (m model) activateConfig(id string) (tea.Model, tea.Cmd) {
-	switch id {
-	case "back":
-		return m.goBack(), nil
-	case "view":
-		m.status = m.cfg.String()
+// targets returns the picked rows in list order, or the cursor row when
+// nothing is picked.
+func (m model) targets() []string {
+	var out []string
+	l := m.lists[m.tab]
+	for _, n := range m.rows() {
+		if l.picked[n] {
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		if cur := m.current(); cur != "" {
+			out = []string{cur}
+		}
+	}
+	return out
+}
+
+func (m *model) togglePick(all bool) {
+	l := m.list()
+	if l == nil {
+		return
+	}
+	if all {
+		for _, n := range m.rows() {
+			l.picked[n] = true
+		}
+		return
+	}
+	if cur := m.current(); cur != "" {
+		if l.picked[cur] {
+			delete(l.picked, cur)
+		} else {
+			l.picked[cur] = true
+		}
+		m.moveCursor(1)
+	}
+}
+
+const busyNote = "Another action is running. Wait, or press ctrl+c to cancel it."
+
+func (m model) servicesKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "space":
+		m.togglePick(false)
 		return m, nil
-	case "edit":
-		// Leave the TUI for interactive prompts. ReleaseTerminal/RestoreTerminal
-		// (replacing the alt-screen exit/enter commands) also restore raw mode and
-		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
-		return m.startSequence(func() tea.Msg {
-			leaveTUI()
-			defer reenterTUI()
-			cfg := m.cfg
-			oldLog := m.cfg.LogPath
-			oldMax := m.cfg.LogMaxBytes
-			ui := prompt.NewStd(false)
-			text, saved := editConfigInteractive(&cfg, ui)
-			if !saved {
-				return resultMsg{text: text}
-			}
-			msg := resultMsg{text: text, cfg: &cfg}
-			if cfg.LogPath != oldLog || cfg.LogMaxBytes != oldMax {
-				log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
-				if err := log.Validate(); err != nil {
-					msg.text += "\nWarning: log path: " + redact.Text(err.Error())
-				}
-				msg.log = log
-			}
-			return msg
-		})
+	case "a":
+		m.togglePick(true)
+		return m, nil
+	case "n":
+		m.lists[tabServices].picked = map[string]bool{}
+		return m, nil
+	case "/":
+		m.filtering = true
+		return m, nil
+	case "d":
+		return m.switchTab(tabCatalog)
+	case "enter":
+		if len(m.targets()) == 0 {
+			return m, nil
+		}
+		m.menu = m.servicesMenu()
+		return m, nil
+	case "r":
+		return m.lifecycle(multiRestart)
+	case "s":
+		return m.lifecycle(multiStop)
+	case "A":
+		return m.lifecycle(multiApply)
+	case "X":
+		return m.lifecycle(multiRemove)
 	}
 	return m, nil
 }
 
-// editConfigInteractive edits the values saved in the config file. TAILARR_*
-// environment overrides still apply to the running session but are not saved.
-func editConfigInteractive(cfg *config.Config, ui *prompt.Std) (string, bool) {
-	next, err := config.LoadFile(cfg.ConfigPath)
-	if err != nil {
-		return "Error: " + redact.Text(err.Error()), false
+func (m model) servicesMenu() *actionMenu {
+	run := func(mode multiMode) func(model) (model, tea.Cmd) {
+		return func(m model) (model, tea.Cmd) { return m.lifecycle(mode) }
 	}
-	if keys := config.EnvOverrides(); len(keys) > 0 {
-		ui.Printf("Note: %s set in the environment. The environment wins at runtime; these prompts edit the saved values.\n",
-			strings.Join(keys, ", "))
+	t := m.targets()
+	title := t[0]
+	if len(t) > 1 {
+		title = fmt.Sprintf("%d services", len(t))
 	}
-	var raw string
-	if raw, err = ui.Line("TAILARR_REPO_URL", next.RepoURL); err != nil {
-		return redact.Text(err.Error()), false
-	}
-	raw = strings.TrimSpace(raw)
-	if raw != "" {
-		if err := names.ValidateRepoURL(raw); err != nil {
-			return "Error saving: " + redact.Text(err.Error()), false
-		}
-	}
-	next.RepoURL = raw
-	if next.RepoPath, err = ui.Line("TAILARR_REPO_PATH", next.RepoPath); err != nil {
-		return redact.Text(err.Error()), false
-	}
-	if next.DeployPath, err = ui.Line("TAILARR_DEPLOY_PATH", next.DeployPath); err != nil {
-		return redact.Text(err.Error()), false
-	}
-	if next.LogPath, err = ui.Line("TAILARR_LOG_PATH", next.LogPath); err != nil {
-		return redact.Text(err.Error()), false
-	}
-	if next.AuthkeysPath, err = ui.Line("TAILARR_AUTHKEYS_PATH", next.AuthkeysPath); err != nil {
-		return redact.Text(err.Error()), false
-	}
-	if err := config.Save(next); err != nil {
-		return "Error saving: " + redact.Text(err.Error()), false
-	}
-	effective := next
-	effective.AssumeYes = cfg.AssumeYes
-	if err := config.ApplyEnv(&effective); err != nil {
-		return "Saved config, but the environment override is invalid: " + redact.Text(err.Error()), false
-	}
-	*cfg = effective
-	return "Saved config: " + next.ConfigPath, true
+	return &actionMenu{title: title, items: []menuItem{
+		{key: "r", label: "Restart", desc: "Stop, then start again with compose up", run: run(multiRestart)},
+		{key: "s", label: "Stop", desc: "Stop the containers and keep all files", run: run(multiStop)},
+		{key: "A", label: "Apply catalog", desc: "Copy the latest template files, pull images, and recreate", run: run(multiApply)},
+		{key: "X", label: "Remove", desc: "Back up, take down, and delete the deployment", run: run(multiRemove)},
+	}}
 }
 
-func (m model) activateMaintenance(id string) (tea.Model, tea.Cmd) {
-	switch id {
-	case "back":
-		return m.goBack(), nil
-	case "doctor":
-		cfg := m.cfg
-		return m.startSequence(func() tea.Msg {
-			res := doctor.Run(cfg)
-			var b strings.Builder
-			for _, c := range res.Checks {
-				fmt.Fprintf(&b, "  [%s] %s: %s\n", c.Level, c.Name, c.Message)
-			}
-			return resultMsg{text: b.String()}
-		})
-	case "upgrade":
-		// Leave the TUI: the running binary may be replaced, and prompts/download
-		// progress need the normal terminal. ReleaseTerminal/RestoreTerminal
-		// (replacing the alt-screen exit/enter commands) also restore raw mode and
-		// pause bubbletea's stdin reader so prompt reads don't race the TUI readLoop.
-		cfg := m.cfg
-		log := m.log
-		return m.startSequence(func() tea.Msg {
-			leaveTUI()
-			text, replaced := runUpgradeAction(cfg, log)
-			if replaced {
-				// Binary replaced: print the result, then quit. Do not restore the
-				// terminal after quit - the program's shutdown restores state and
-				// the new version takes over the TTY.
-				_, _ = fmt.Fprintln(os.Stdout, text)
-				return upgradeDoneMsg{}
-			}
-			defer reenterTUI()
-			return resultMsg{text: text}
-		})
-	}
-	return m, nil
-}
-
-func runUpgradeAction(cfg config.Config, log *logging.Logger) (string, bool) {
-	ui := prompt.NewStd(cfg.AssumeYes)
-	opts := upgrade.Options{Current: version.Version, Out: os.Stdout}
-	latest, err := upgrade.Latest(opts)
-	if err != nil {
-		return "Error: " + err.Error(), false
-	}
-	if upgrade.Comparable(version.Version, latest) && upgrade.Compare(version.Version, latest) >= 0 {
-		return fmt.Sprintf("Already up to date (%s)", version.Version), false
-	}
-	question := fmt.Sprintf("Upgrade Tailarr %s to %s?", version.Version, latest)
-	if !upgrade.Comparable(version.Version, latest) {
-		question = fmt.Sprintf("Installed %s is not SemVer; install %s anyway?", version.Version, latest)
-	}
-	ok, err := ui.Confirm(question, true)
-	if err != nil || !ok {
-		return "Canceled.", false
-	}
-	tag, err := upgrade.Upgrade(opts)
-	if err != nil {
-		return "Error: " + err.Error(), false
-	}
-	if log != nil {
-		log.Event("tailarr upgraded to " + tag)
-	}
-	return fmt.Sprintf("Upgraded Tailarr to %s", tag), true
-}
-
-func (m model) beginMulti(mode multiMode) (tea.Model, tea.Cmd) {
-	var names []string
-	var err error
-	switch mode {
-	case multiDeploy:
-		svcs, e := scaletail.ListAvailable(m.cfg.RepoPath)
-		err = e
-		for _, s := range svcs {
-			names = append(names, s.Name)
-		}
-	default:
-		svcs, e := scaletail.ListDeployed(m.cfg.DeployPath)
-		err = e
-		for _, s := range svcs {
-			if deploy.IsManaged(s.Dir) {
-				names = append(names, s.Name)
-			}
-		}
-	}
-	if err != nil {
-		m.status = styleOrPlain(errStyle, redact.Text(err.Error()))
+// lifecycle runs mode on the managed targets of the Services tab.
+func (m model) lifecycle(mode multiMode) (model, tea.Cmd) {
+	if m.busy {
+		m.note = busyNote
 		return m, nil
+	}
+	managed := map[string]bool{}
+	if m.status != nil {
+		for _, s := range m.status.Services {
+			managed[s.Name] = s.Managed
+		}
+	}
+	var names, skipped []string
+	for _, n := range m.targets() {
+		if managed[n] {
+			names = append(names, n)
+		} else {
+			skipped = append(skipped, n)
+		}
 	}
 	if len(names) == 0 {
-		m.status = "No services available for this action."
+		if len(skipped) > 0 {
+			m.note = skipped[0] + " is not managed by Tailarr (no " + ".tailarr.compose.yaml marker)."
+		}
 		return m, nil
 	}
-	m.multi = mode
-	m.multiParent = m.screen
-	m.opts = names
-	m.allOpts = names
-	m.filter = ""
-	m.picked = map[int]bool{}
-	m.screen = screenMultiSelect
-	m.items = []menuItem{
-		{id: "run", label: "Run on selection", desc: "space toggles, a selects all, n clears, / filters, enter runs"},
-		{id: "cancel", label: "Cancel", desc: "Return without changes"},
+	m.lists[tabServices].picked = map[string]bool{}
+	return m.batch(mode, names)
+}
+
+func (m model) batch(mode multiMode, names []string) (model, tea.Cmd) {
+	cfg, log := m.cfg, m.log
+	title := strings.ToLower(multiTitle(mode)) + " " + summarizeNames(names, 3)
+	return m.startOp(title, func(ui prompt.UI) opResult {
+		r := runBatchWith(cfg, log, ui, mode, names)
+		return opResult{lines: []string{r.summary(mode, names)}}
+	})
+}
+
+func (m model) catalogKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "space":
+		m.togglePick(false)
+		return m, nil
+	case "a":
+		m.togglePick(true)
+		return m, nil
+	case "n":
+		m.lists[tabCatalog].picked = map[string]bool{}
+		return m, nil
+	case "/":
+		m.filtering = true
+		return m, nil
+	case "r":
+		if m.busy {
+			m.note = busyNote
+			return m, nil
+		}
+		cfg := m.cfg
+		return m.startOp("refresh catalog", func(prompt.UI) opResult {
+			return opResult{lines: strings.Split(runCatalogRefresh(cfg), "\n")}
+		})
+	case "enter":
+		if m.busy {
+			m.note = busyNote
+			return m, nil
+		}
+		var names, deployed []string
+		for _, n := range m.targets() {
+			if m.isDeployed(n) {
+				deployed = append(deployed, n)
+			} else {
+				names = append(names, n)
+			}
+		}
+		if len(names) == 0 {
+			if len(deployed) > 0 {
+				m.note = deployed[0] + " is already deployed. Use Apply on the Services tab."
+			}
+			return m, nil
+		}
+		m.lists[tabCatalog].picked = map[string]bool{}
+		return m.batch(multiDeploy, names)
 	}
-	m.cursor = 0
-	m.status = ""
 	return m, nil
 }
 
-// promptFilter asks for a multi-select filter query outside the TUI.
-func (m model) promptFilter() (tea.Model, tea.Cmd) {
-	ui := prompt.NewStd(m.cfg.AssumeYes)
-	current := m.filter
-	return m.startSequence(func() tea.Msg {
-		leaveTUI()
-		defer reenterTUI()
-		query, err := ui.Line("Filter services (empty shows all)", "")
-		if err != nil {
-			return filterMsg{query: current}
+func (m model) isDeployed(name string) bool {
+	if m.status == nil {
+		return false
+	}
+	for _, s := range m.status.Services {
+		if s.Name == name {
+			return true
 		}
-		return filterMsg{query: query}
-	})
+	}
+	return false
 }
 
-// applyFilter shows the services that match query. Selected services stay
-// in the list, so a filter never drops a selection.
-func (m model) applyFilter(query string) model {
-	chosen := map[string]bool{}
-	for i, name := range m.opts {
-		if m.picked[i] {
-			chosen[name] = true
+func (m model) keysKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "a":
+		return m.keyAction("add", "")
+	case "e":
+		return m.keyAction("rename", m.current())
+	case "p":
+		return m.keyAction("replace", m.current())
+	case "x":
+		return m.keyAction("remove", m.current())
+	case "enter":
+		cur := m.current()
+		if cur == "" {
+			return m.keyAction("add", "")
 		}
-	}
-	match := map[string]bool{}
-	for _, name := range filterNames(m.allOpts, query) {
-		match[name] = true
-	}
-	opts := []string{}
-	picked := map[int]bool{}
-	for _, name := range m.allOpts {
-		if !match[name] && !chosen[name] {
-			continue
+		act := func(action string) func(model) (model, tea.Cmd) {
+			return func(m model) (model, tea.Cmd) { return m.keyAction(action, cur) }
 		}
-		if chosen[name] {
-			picked[len(opts)] = true
-		}
-		opts = append(opts, name)
-	}
-	m.opts = opts
-	m.picked = picked
-	m.filter = strings.TrimSpace(query)
-	m.cursor = 0
-	m.status = ""
-	if len(opts) == 0 {
-		m.status = fmt.Sprintf("No services match %q.", m.filter)
-	}
-	return m
-}
-
-func (m model) finishMulti() (tea.Model, tea.Cmd) {
-	id := m.items[m.cursor].id
-	if id == "cancel" {
-		if m.multiParent == screenMaintenance {
-			return m.setScreen(screenMaintenance, maintenanceMenuItems()), nil
-		}
-		return m.setScreen(screenServices, servicesMenuItems()), nil
-	}
-	var selected []string
-	for i, name := range m.opts {
-		if m.picked[i] {
-			selected = append(selected, name)
-		}
-	}
-	if len(selected) == 0 {
-		m.status = "No services selected."
+		m.menu = &actionMenu{title: cur, items: []menuItem{
+			{key: "e", label: "Rename", desc: "Give the key a new name; the value stays", run: act("rename")},
+			{key: "p", label: "Replace value", desc: "Paste a new TS_AUTHKEY for this name", run: act("replace")},
+			{key: "x", label: "Remove", desc: "Delete the key from the store", run: act("remove")},
+			{key: "a", label: "Add new key", desc: "Store another named key", run: func(m model) (model, tea.Cmd) { return m.keyAction("add", "") }},
+		}}
 		return m, nil
 	}
-	mode := m.multi
+	return m, nil
+}
+
+func (m model) keyAction(action, name string) (model, tea.Cmd) {
+	if m.busy {
+		m.note = busyNote
+		return m, nil
+	}
+	if action != "add" && name == "" {
+		return m, nil
+	}
 	cfg := m.cfg
-	log := m.log
-	return m.startSequence(func() tea.Msg {
-		// ReleaseTerminal/RestoreTerminal (replacing the alt-screen exit/enter
-		// commands) also restore raw mode and pause bubbletea's stdin reader so
-		// prompt reads don't race the TUI readLoop.
-		leaveTUI()
-		defer reenterTUI()
-		text := runBatch(cfg, log, mode, selected)
-		return resultMsg{text: text}
+	title := action + " key"
+	if name != "" {
+		title += " " + name
+	}
+	return m.startOp(title, func(ui prompt.UI) opResult {
+		return opResult{lines: []string{runAuthkeyAction(cfg, ui, action, name)}}
 	})
 }
 
-func (m model) startSequence(fn func() tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) systemKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "d":
+		if m.doctorBusy {
+			return m, nil
+		}
+		m.doctorBusy = true
+		return m, loadDoctor(m.cfg)
+	case "e":
+		if m.busy {
+			m.note = busyNote
+			return m, nil
+		}
+		cfg := m.cfg
+		return m.startOp("edit config", func(ui prompt.UI) opResult {
+			next := cfg
+			text, saved := editConfigInteractive(&next, ui)
+			res := opResult{lines: []string{text}}
+			if !saved {
+				return res
+			}
+			res.cfg = &next
+			if next.LogPath != cfg.LogPath || next.LogMaxBytes != cfg.LogMaxBytes {
+				log := logging.New(next.LogPath, next.LogMaxBytes)
+				if err := log.Validate(); err != nil {
+					res.lines = append(res.lines, "Warning: log path: "+redact.Text(err.Error()))
+				}
+				res.log = log
+			}
+			return res
+		})
+	case "U":
+		if m.busy {
+			m.note = busyNote
+			return m, nil
+		}
+		log, snd := m.log, m.snd
+		return m.startOp("upgrade tailarr", func(ui prompt.UI) opResult {
+			text, replaced := runUpgradeAction(log, ui, redact.Writer(&lineSink{snd: snd}))
+			return opResult{lines: []string{text}, quit: replaced}
+		})
+	}
+	return m, nil
+}
+
+// startOp runs fn off the event loop. fn prompts through the TUI and its
+// Printf lines, compose output, and result stream into the output panel.
+// Ctrl+C cancels the context that compose, git, and prompts all watch.
+func (m model) startOp(title string, fn func(ui prompt.UI) opResult) (model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
@@ -1063,201 +965,56 @@ func (m model) startSequence(fn func() tea.Msg) (tea.Model, tea.Cmd) {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	m.opCancel = cancel
 	m.busy = true
+	m.opCancel = cancel
+	m.opTitle = title
+	m.opStart = time.Now()
+	m.note = ""
+	m.menu = nil
+	m.filtering = false
+	m.out.reset(title)
+	m.scrollBack = 0
 	interrupt.Set(ctx)
 	prompt.BindCancel(ctx)
+	ui := &tuiUI{snd: m.snd, ctx: ctx, assumeYes: m.cfg.AssumeYes}
 	flight := m.flight
-	if flight != nil {
-		flight.track()
-	}
-	return m, tea.Sequence(func() tea.Msg {
+	flight.track()
+	return m, tea.Batch(func() tea.Msg {
+		defer flight.untrack()
 		defer cancel()
 		defer prompt.BindCancel(parent)
 		defer interrupt.Set(parent)
-		if flight != nil {
-			defer flight.untrack()
-		}
-		return fn()
-	})
+		return opDoneMsg{res: fn(ui)}
+	}, spinTick())
 }
 
-func runCatalogRefresh(cfg config.Config) string {
-	lock, err := deploy.AcquireLock(deploy.RepoLockPath(cfg.RepoPath), deploy.DefaultLockTimeout)
-	if err != nil {
-		return styleOrPlain(errStyle, "repo lock: "+redact.Text(err.Error()))
-	}
-	defer func() { _ = lock.Release() }()
-	msg, err := scaletail.Refresh(cfg.RepoURL, cfg.RepoPath)
-	if err != nil {
-		return styleOrPlain(errStyle, redact.Text(err.Error()))
-	}
-	return refreshSummary(msg)
-}
-
-// refreshSummary turns git output from a catalog refresh into one result.
-func refreshSummary(msg string) string {
-	if strings.HasPrefix(msg, "Using local") {
-		return msg
-	}
-	if strings.TrimSpace(msg) == "" || strings.Contains(msg, "Already up to date") {
-		return "Catalog is up to date."
-	}
-	return "Catalog refreshed.\n" + msg
-}
-
-func runBatch(cfg config.Config, log *logging.Logger, mode multiMode, services []string) string {
-	return runBatchWith(cfg, log, prompt.NewStd(cfg.AssumeYes), mode, services)
-}
-
-// runBatchWith runs mode on each service. It stops at the first interrupt,
-// logs every failure, and asks once before a Deploy, Stop, or Restart batch.
-// Apply and Remove confirm per service.
-func runBatchWith(cfg config.Config, log *logging.Logger, ui prompt.UI, mode multiMode, services []string) string {
-	verb := multiTitle(mode)
-	if mode == multiDeploy || mode == multiStop || mode == multiRestart {
-		ok, err := ui.Confirm(fmt.Sprintf("%s %d service(s): %s?", verb, len(services), summarizeNames(services, 8)), false)
-		if err != nil || !ok {
-			return "Canceled."
+func (m model) finishOp(res opResult) (tea.Model, tea.Cmd) {
+	elapsed := time.Since(m.opStart)
+	m.busy = false
+	m.ask = nil
+	m.opCancel = nil
+	m.note = ""
+	for _, l := range res.lines {
+		if strings.TrimSpace(l) != "" {
+			m.out.add(l)
 		}
 	}
-	mgr := &deploy.Manager{Cfg: &cfg, Log: log, UI: ui}
-	var sharedKey string
-	if mode == multiDeploy && len(services) > 1 {
-		key, err := sharedAuthkey(cfg, ui)
-		if err != nil {
-			return "Error: " + redact.Text(err.Error())
-		}
-		sharedKey = key
+	if elapsed >= time.Second {
+		m.out.title = fmt.Sprintf("%s · %s", m.opTitle, elapsed.Round(time.Second))
 	}
-	var b strings.Builder
-	for i, svc := range services {
-		if interrupt.Context().Err() != nil {
-			for _, rest := range services[i:] {
-				fmt.Fprintf(&b, "==> %s\n  skipped: interrupted\n", rest)
-			}
-			break
-		}
-		fmt.Fprintf(&b, "==> %s\n", svc)
-		var err error
-		switch mode {
-		case multiDeploy:
-			err = mgr.DeployWith(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
-		case multiApply:
-			err = mgr.Apply(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
-		case multiRemove:
-			err = mgr.RemoveWith(svc, deploy.DeployOpts{})
-		case multiStop:
-			err = mgr.Stop(svc)
-		case multiRestart:
-			err = mgr.Restart(svc)
-		}
-		if err == nil {
-			fmt.Fprintf(&b, "  ok\n")
-			continue
-		}
-		fmt.Fprintf(&b, "  error: %s\n", redact.Text(err.Error()))
-		if log != nil {
-			log.Event(fmt.Sprintf("%s %s failed: %v", strings.ToLower(verb), svc, err))
-		}
-		if errors.Is(err, deploy.ErrInterrupted) || errors.Is(err, context.Canceled) {
-			for _, rest := range services[i+1:] {
-				fmt.Fprintf(&b, "==> %s\n  skipped: interrupted\n", rest)
-			}
-			break
-		}
+	if res.cfg != nil {
+		m.cfg = *res.cfg
 	}
-	return b.String()
-}
-
-// sharedAuthkey asks for one auth key for a multi-service deploy. It returns
-// "" when the operator wants per-service prompts.
-func sharedAuthkey(cfg config.Config, ui prompt.UI) (string, error) {
-	ok, err := ui.Confirm("Use one reusable Tailscale auth key for all selected services?", true)
-	if err != nil {
-		return "", err
+	if res.log != nil {
+		m.log = res.log
 	}
-	if !ok {
-		return "", nil
+	if res.quit {
+		exitText = strings.Join(res.lines, "\n")
+		m.quitting = true
+		return m, tea.Quit
 	}
-	s, err := authkeys.Load(cfg.AuthkeysPath)
-	if err != nil {
-		return "", err
-	}
-	if len(s.Order) > 0 {
-		ui.Printf("Stored keys: %s\n", strings.Join(s.Order, ", "))
-		name, err := ui.Line("Auth key name (empty to paste)", "")
-		if err != nil {
-			return "", err
-		}
-		if name != "" {
-			key, ok := s.Keys[name]
-			if !ok {
-				return "", fmt.Errorf("auth key %q not found in store", name)
-			}
-			return key, nil
-		}
-	}
-	val, err := ui.Secret("TS_AUTHKEY for all services (empty to ask per service)")
-	if err != nil {
-		return "", err
-	}
-	if val == "" {
-		return "", nil
-	}
-	if !names.ValidTSAuthkey(val) {
-		return "", fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
-	}
-	return val, nil
-}
-
-// summarizeNames joins up to max names and counts the rest.
-func summarizeNames(list []string, max int) string {
-	if len(list) <= max {
-		return strings.Join(list, ", ")
-	}
-	return fmt.Sprintf("%s and %d more", strings.Join(list[:max], ", "), len(list)-max)
-}
-
-// searchCatalog lists catalog services whose name contains query, ignoring case.
-func searchCatalog(repoPath, query string) string {
-	svcs, err := scaletail.ListAvailable(repoPath)
-	if err != nil {
-		return styleOrPlain(errStyle, redact.Text(err.Error()))
-	}
-	all := make([]string, 0, len(svcs))
-	for _, s := range svcs {
-		all = append(all, s.Name)
-	}
-	found := filterNames(all, query)
-	if len(found) == 0 {
-		if query == "" {
-			return "No valid ScaleTail services found."
-		}
-		return fmt.Sprintf("No services match %q.", query)
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d of %d services", len(found), len(all))
-	if query != "" {
-		fmt.Fprintf(&b, " match %q", query)
-	}
-	b.WriteString(":\n")
-	for _, name := range found {
-		fmt.Fprintf(&b, "  - %s\n", name)
-	}
-	return b.String()
-}
-
-// filterNames returns the names that contain query, ignoring case.
-func filterNames(list []string, query string) []string {
-	q := strings.ToLower(strings.TrimSpace(query))
-	var out []string
-	for _, name := range list {
-		if q == "" || strings.Contains(strings.ToLower(name), q) {
-			out = append(out, name)
-		}
-	}
-	return out
+	m.statusBusy = true
+	return m, tea.Batch(loadStatus(m.cfg.DeployPath), loadCatalog(m.cfg.RepoPath), loadKeys(m.cfg.AuthkeysPath))
 }
 
 func (m model) View() tea.View {
@@ -1266,5 +1023,8 @@ func (m model) View() tea.View {
 	}
 	v := tea.NewView(m.render())
 	v.AltScreen = true
+	v.WindowTitle = "tailarr · " + tabNames[m.tab]
+	// No v.ProgressBar: it uses OSC 9;4, which iTerm2 and kitty show as a
+	// desktop notification. The header spinner shows progress instead.
 	return v
 }

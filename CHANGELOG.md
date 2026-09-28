@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-28
+
+### Added
+
+- The TUI opens on a live service table. Each deployment shows a health dot, its running containers, and its status.
+  The table refreshes every 4 seconds from one `docker ps -a` call. The details panel lists each container.
+- The TUI has four tabs: Services, Catalog, Keys, and System. Tab, Shift+Tab, and `1` to `4` switch tabs.
+- Services: `r`, `s`, `A`, and `X` restart, stop, apply, and remove the picked rows, or the row under the cursor. Enter opens an action menu.
+- Catalog: the details panel shows the first sentence of the README, the image, the port, and the env values that deploy asks for.
+  Deployed services have a mark. `/` filters as you type. `r` clones or pulls ScaleTail.
+- Keys and System act on the row under the cursor. System shows the config and runs doctor checks in the background.
+- Prompts open in a panel inside the TUI. Tailarr no longer leaves the TUI for a prompt, so the screen does not flicker and output stays on screen.
+  A secret shows as dots only. Bracketed paste works. Typing replaces a default, and Backspace edits it.
+- Compose, git, and upgrade output streams into an output panel. Progress lines for the same image layer or container replace each other.
+- A spinner, the elapsed time, and the window title show a running action.
+  Ctrl+C cancels the action and keeps the TUI open.
+
+### Fixed
+
+- A failed compose call now ends with the compose reason, for example `dependency failed to start: container ... is unhealthy`.
+  The error used to say only `exit status 1`, because the reason scrolled away when the TUI came back.
+- The deployment `.env` now wins over exported shell variables. Compose prefers the process environment, so an exported `TZ`, `PUID`, or
+  `SERVICE` replaced the deployed value. `PATH`, `HOME`, `TMPDIR`, `SSH_AUTH_SOCK`, `DOCKER_*`, and `XDG_*` stay.
+- Cancel stops the compose plugin too. Compose runs in its own process group, and cancel sends it SIGINT.
+  The old SIGKILL stopped only the docker CLI, and the plugin kept pulling or starting containers.
+- A multi-service deploy with one shared auth key writes `TS_AUTHKEY` only into a `.env` that declares it.
+- A service whose containers all exited, for example after Stop, shows as stopped instead of exited.
+- Compose errors name the command (`up -d --remove-orphans`) without the repeated `-p` and `-f` flags.
+- The git timeout test passes in containers whose init process does not reap orphans.
+
+### Changed
+
+- Status collects health and running names from one `docker ps -a` pass instead of two docker calls.
+- Body text uses the terminal foreground color, so the TUI stays readable on light themes.
+- Quit waits for a running action to finish its cleanup, so Apply can still restore files.
+
 ## [0.7.0] - 2026-09-24
 
 ### Added
@@ -294,7 +330,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Log rotation runs on every event (not once per process).
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jackspiering/tailarr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jackspiering/tailarr/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/jackspiering/tailarr/compare/v0.5.2...v0.5.3

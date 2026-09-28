@@ -1,25 +1,56 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackspiering/tailarr/internal/interrupt"
+	"github.com/jackspiering/tailarr/internal/scaletail"
 	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
 // composeFn is the compose executor. Tests may replace it with a fake.
 var composeFn = defaultCompose
+
+var (
+	outputMu sync.Mutex
+	output   io.Writer
+)
+
+// SetOutput sends docker compose output to w instead of the terminal. The TUI
+// passes a writer that shows each line in its output panel. Output is always
+// redacted first. A nil w restores os.Stdout and os.Stderr.
+func SetOutput(w io.Writer) {
+	outputMu.Lock()
+	defer outputMu.Unlock()
+	output = w
+}
+
+// composeWriters returns the redacted stdout and stderr for one compose run.
+// With SetOutput both are the same writer, so exec never writes to it from
+// two goroutines at once.
+func composeWriters() (stdout, stderr io.Writer) {
+	outputMu.Lock()
+	defer outputMu.Unlock()
+	if output != nil {
+		w := redact.Writer(output)
+		return w, w
+	}
+	return redact.Writer(os.Stdout), redact.Writer(os.Stderr)
+}
 
 // cleanupTimeout bounds compose calls that must run after an interrupt.
 const cleanupTimeout = 2 * time.Minute
@@ -50,8 +81,8 @@ func composeServiceNames(dir, base string) ([]string, error) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "config", "--services")
 		cmd.Dir = dir
-		cmd.Env, _ = filterComposeEnv(os.Environ())
-		cmd.Stderr = redact.Writer(os.Stderr)
+		cmd.Env, _ = filterComposeEnv(os.Environ(), envFileKeys(dir))
+		_, cmd.Stderr = composeWriters()
 		out, err := cmd.Output()
 		if err == nil {
 			var names []string
@@ -137,39 +168,110 @@ func defaultCompose(parent context.Context, dir string, args ...string) error {
 
 	full := append([]string{"compose"}, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
-	// Bound Wait after cancel so a child that inherited stdio cannot stall restore.
-	cmd.WaitDelay = 5 * time.Second
+	configureComposeCmd(cmd)
+	// Bound Wait after cancel so a child that ignores SIGINT or inherited
+	// stdio cannot stall restore.
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = dir
 	// Redact diagnostics: a compose error echoing the interpolated TS_AUTHKEY
-	// would otherwise print the raw secret to the terminal.
-	stdout := redact.Writer(os.Stdout)
-	stderr := redact.Writer(os.Stderr)
+	// would otherwise print the raw secret to the terminal. Compose never
+	// reads stdin: it must not compete with the TUI for keys.
+	stdout, stderr := composeWriters()
+	tail := &lastLine{}
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = os.Stdin
-	// Compose interpolation prefers shell env over .env, so an exported
-	// TS_AUTHKEY (or any other secret-like var) would silently override the
-	// merged .env. Filtering makes the merged .env authoritative and limits
-	// secret exposure to the compose subprocess.
-	env, dropped := filterComposeEnv(os.Environ())
+	cmd.Stderr = io.MultiWriter(stderr, tail)
+	if stdout == stderr {
+		cmd.Stdout = cmd.Stderr
+	}
+	// Compose interpolation prefers the process environment over .env, so an
+	// exported TZ or TS_AUTHKEY would silently override the deployed values.
+	// Filtering makes the deployment .env authoritative and limits secret
+	// exposure to the compose subprocess.
+	env, dropped := filterComposeEnv(os.Environ(), envFileKeys(dir))
 	cmd.Env = env
 	for _, key := range dropped {
 		_, _ = fmt.Fprintf(stderr, "ignoring %s from the process environment\n", key)
 	}
 	err := cmd.Run()
-	if f, ok := stdout.(interface{ Flush() error }); ok {
-		_ = f.Flush()
-	}
-	if f, ok := stderr.(interface{ Flush() error }); ok {
-		_ = f.Flush()
+	for _, w := range []io.Writer{stdout, stderr} {
+		if f, ok := w.(interface{ Flush() error }); ok {
+			_ = f.Flush()
+		}
 	}
 	if err != nil {
+		verb := composeVerb(args)
 		if ctx.Err() != nil {
-			return fmt.Errorf("%w: docker compose %s: %v", ErrInterrupted, strings.Join(args, " "), err)
+			return fmt.Errorf("%w: docker compose %s: %v", ErrInterrupted, verb, err)
 		}
-		return fmt.Errorf("%w: docker compose %s: %v", ErrComposeFailed, strings.Join(args, " "), err)
+		if reason := tail.String(); reason != "" {
+			return fmt.Errorf("%w: docker compose %s: %v: %s", ErrComposeFailed, verb, err, reason)
+		}
+		return fmt.Errorf("%w: docker compose %s: %v", ErrComposeFailed, verb, err)
 	}
 	return nil
+}
+
+// composeVerb returns args without the -p and -f pairs that every call
+// repeats, so an error names the command ("up -d --remove-orphans").
+func composeVerb(args []string) string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "-p" || args[i] == "-f") && i+1 < len(args) {
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return strings.Join(out, " ")
+}
+
+// lastLine keeps the last non-empty line written to it, redacted and capped.
+// Compose ends a failure with its reason, which the error would otherwise lose
+// once the output scrolls away.
+type lastLine struct {
+	mu   sync.Mutex
+	buf  []byte
+	last string
+}
+
+const maxReasonLen = 240
+
+func (l *lastLine) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf = append(l.buf, p...)
+	for {
+		i := bytes.IndexAny(l.buf, "\r\n")
+		if i < 0 {
+			break
+		}
+		l.keep(l.buf[:i])
+		l.buf = l.buf[i+1:]
+	}
+	// A progress bar without newlines must not grow the buffer forever.
+	if len(l.buf) > 4096 {
+		l.buf = l.buf[len(l.buf)-4096:]
+	}
+	return len(p), nil
+}
+
+func (l *lastLine) keep(line []byte) {
+	if s := strings.TrimSpace(string(line)); s != "" {
+		l.last = s
+	}
+}
+
+// String returns the last line, redacted and at most maxReasonLen bytes.
+func (l *lastLine) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keep(l.buf)
+	l.buf = nil
+	s := redact.Text(l.last)
+	if len(s) > maxReasonLen {
+		s = s[:maxReasonLen] + "..."
+	}
+	return s
 }
 
 // projectNameRE sanitizes service names for Compose -p project names.
@@ -237,10 +339,12 @@ func probeContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(interrupt.Context(), probeTimeout)
 }
 
-// filterComposeEnv drops Tailarr settings, Compose CLI knobs, and secret-like
-// keys so the merged .env is authoritative. DOCKER_* is kept for remote daemons.
-// dropped lists COMPOSE_* key names (never values) for an operator warning.
-func filterComposeEnv(environ []string) (kept, dropped []string) {
+// filterComposeEnv drops Tailarr settings, Compose CLI knobs, secret-like
+// keys, and keys the deployment .env sets (fileKeys), so the merged .env is
+// authoritative. Variables docker itself needs (PATH, HOME, DOCKER_*) are
+// always kept. dropped lists COMPOSE_* key names (never values) for an
+// operator warning.
+func filterComposeEnv(environ []string, fileKeys map[string]bool) (kept, dropped []string) {
 	for _, e := range environ {
 		key, _, _ := strings.Cut(e, "=")
 		switch {
@@ -248,9 +352,35 @@ func filterComposeEnv(environ []string) (kept, dropped []string) {
 			dropped = append(dropped, key)
 		case strings.HasPrefix(key, "TAILARR_") || redact.LooksSecret(key):
 			continue
+		case fileKeys[key] && !dockerNeeds(key):
+			continue
 		default:
 			kept = append(kept, e)
 		}
 	}
 	return kept, dropped
+}
+
+// dockerNeeds reports whether the docker CLI reads key to find its config,
+// credential helpers, or a remote daemon. A .env never replaces those.
+func dockerNeeds(key string) bool {
+	switch key {
+	case "PATH", "HOME", "TMPDIR", "SSH_AUTH_SOCK":
+		return true
+	}
+	return strings.HasPrefix(key, "DOCKER_") || strings.HasPrefix(key, "XDG_")
+}
+
+// envFileKeys returns the keys that dir/.env sets. A missing or unreadable
+// file yields none; compose reports its own error for a broken .env.
+func envFileKeys(dir string) map[string]bool {
+	keys, err := scaletail.ReadEnvKeys(filepath.Join(dir, ".env"))
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set
 }

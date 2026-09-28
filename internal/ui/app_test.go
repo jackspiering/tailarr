@@ -17,115 +17,449 @@ import (
 
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/deploy"
+	"github.com/jackspiering/tailarr/internal/doctor"
 	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/logging"
 	"github.com/jackspiering/tailarr/internal/prompt"
 )
 
-func digitKey(r rune) tea.KeyPressMsg {
+func runeKey(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
-func TestServicesMenuUsesApply(t *testing.T) {
-	ids := map[string]bool{}
-	for _, item := range servicesMenuItems() {
-		ids[item.id] = true
-	}
-	if !ids["apply"] {
-		t.Fatal("services menu must include apply")
-	}
-	if ids["update"] {
-		t.Fatal("update is not an operator verb")
-	}
-	for _, item := range maintenanceMenuItems() {
-		if item.id == "repair" {
-			t.Fatal("repair is not an operator verb")
-		}
-	}
-}
+func enterKey() tea.KeyPressMsg { return tea.KeyPressMsg{Code: tea.KeyEnter} }
 
-func TestMultiSelectNumericShortcutsMatchView(t *testing.T) {
-	t.Setenv("NO_COLOR", "1")
-	base := model{
-		screen: screenMultiSelect,
-		opts:   []string{"web"},
-		items: []menuItem{
-			{id: "run", label: "Run on selection", desc: "run"},
-			{id: "cancel", label: "Cancel", desc: "cancel"},
-		},
-		picked: map[int]bool{},
-	}
-	view := base.render()
-	for _, want := range []string{
-		"1  [ ] web",
-		"2  Run on selection",
-		"3  Cancel",
-		"1-9 select/run",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("view missing %q:\n%s", want, view)
-		}
-	}
+func escKey() tea.KeyPressMsg { return tea.KeyPressMsg{Code: tea.KeyEscape} }
 
-	next, _ := base.Update(digitKey('1'))
-	selected := next.(model)
-	if !selected.picked[0] {
-		t.Fatal("digit 1 should toggle the first service")
-	}
+func ctrlCKey() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl} }
 
-	actionBase := base
-	actionBase.picked = map[int]bool{}
-	next, _ = actionBase.Update(digitKey('2'))
-	action := next.(model)
-	if action.cursor != 1 || action.status != "No services selected." {
-		t.Fatalf("digit 2 should activate Run on selection: cursor=%d status=%q", action.cursor, action.status)
-	}
-}
-
-func enterKey() tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: tea.KeyEnter}
-}
-
-func ctrlCKey() tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
-}
-
-func itemCursor(items []menuItem, id string) int {
-	for i, item := range items {
-		if item.id == id {
-			return i
-		}
-	}
-	return 0
-}
-
-func TestResultMsgDoesNotInstallCfgWithoutPointer(t *testing.T) {
-	m := model{cfg: config.Config{DeployPath: "/old/stacks"}, screen: screenMain}
-	next, _ := m.Update(resultMsg{text: "Error saving: permission denied"})
-	got := next.(model)
-	if got.cfg.DeployPath != "/old/stacks" {
-		t.Fatalf("error result installed cfg: %s", got.cfg.DeployPath)
-	}
-}
-
-func TestResultMsgInstallsLogger(t *testing.T) {
+func testModel(t *testing.T) model {
+	t.Helper()
+	cfg := config.Default()
 	dir := t.TempDir()
+	cfg.DeployPath = filepath.Join(dir, "stacks")
+	cfg.RepoPath = filepath.Join(dir, "scaletail")
+	cfg.AuthkeysPath = filepath.Join(dir, "authkeys.conf")
+	m := newModel(cfg, nil, context.Background(), &workFlight{}, &sender{})
+	m.width, m.height = 120, 36
+	return m
+}
+
+func withServices(m model, svcs ...deploy.ServiceStatus) model {
+	m.status = &deploy.OverviewStats{Services: svcs}
+	return m
+}
+
+func withCatalog(m model, names ...string) model {
+	m.catalogLoaded = true
+	m.catalog = nil
+	for _, n := range names {
+		m.catalog = append(m.catalog, catalogItem{Name: n, Image: n + "/" + n})
+	}
+	return m
+}
+
+func press(t *testing.T, m model, keys ...tea.KeyPressMsg) (model, tea.Cmd) {
+	t.Helper()
+	var cmd tea.Cmd
+	for _, k := range keys {
+		var next tea.Model
+		next, cmd = m.Update(k)
+		m = next.(model)
+	}
+	return m, cmd
+}
+
+func TestTabsSwitchWithKeys(t *testing.T) {
+	m := testModel(t)
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.tab != tabCatalog {
+		t.Fatalf("tab: got %d, want catalog", m.tab)
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.tab != tabServices {
+		t.Fatalf("shift+tab: got %d, want services", m.tab)
+	}
+	m, cmd := press(t, m, runeKey('4'))
+	if m.tab != tabSystem || cmd == nil || !m.doctorBusy {
+		t.Fatalf("4 must open System and start doctor checks: tab=%d busy=%v", m.tab, m.doctorBusy)
+	}
+	m, _ = press(t, m, runeKey('3'))
+	if m.tab != tabKeys {
+		t.Fatalf("3: got %d, want keys", m.tab)
+	}
+}
+
+func TestRefreshSecondKeyYieldsNoCommand(t *testing.T) {
+	m := withCatalog(testModel(t), "web")
+	m.tab = tabCatalog
+	m, cmd := press(t, m, runeKey('r'))
+	if cmd == nil || !m.busy {
+		t.Fatal("refresh should start an operation")
+	}
+	if _, cmd2 := press(t, m, runeKey('r')); cmd2 != nil {
+		t.Fatal("second r must not start another refresh")
+	}
+}
+
+func TestUpgradeSecondKeyYieldsNoCommand(t *testing.T) {
+	m := testModel(t)
+	m.tab = tabSystem
+	m, cmd := press(t, m, runeKey('U'))
+	if cmd == nil || !m.busy {
+		t.Fatal("upgrade should start an operation")
+	}
+	if _, cmd2 := press(t, m, runeKey('U')); cmd2 != nil {
+		t.Fatal("second U must not start another upgrade")
+	}
+}
+
+func TestBusyCtrlCCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := testModel(t)
+	m.busy, m.opCancel = true, cancel
+	m, cmd := press(t, m, ctrlCKey())
+	if cmd != nil {
+		t.Fatal("cancel should not start another command")
+	}
+	if m.quitting {
+		t.Fatal("busy ctrl+c must not quit before in-flight work finishes")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected cancel")
+	}
+	if m.note != "Canceling..." {
+		t.Fatalf("note = %q", m.note)
+	}
+}
+
+func TestIdleCtrlCQuitsAndBusyQDoesNot(t *testing.T) {
+	m := testModel(t)
+	if got, _ := press(t, m, ctrlCKey()); !got.quitting {
+		t.Fatal("idle ctrl+c should quit")
+	}
+	m.busy = true
+	got, _ := press(t, m, runeKey('q'))
+	if got.quitting || !strings.Contains(got.note, "ctrl+c") {
+		t.Fatalf("q while busy must not quit: quitting=%v note=%q", got.quitting, got.note)
+	}
+}
+
+func TestOpDoneInstallsConfigAndLogger(t *testing.T) {
+	dir := t.TempDir()
+	m := testModel(t)
+	m.busy = true
+	m.cfg.DeployPath = "/old/stacks"
+	next, _ := m.Update(opDoneMsg{res: opResult{lines: []string{"Error saving: permission denied"}}})
+	if got := next.(model); got.cfg.DeployPath != "/old/stacks" || got.busy {
+		t.Fatalf("error result installed cfg or stayed busy: %s busy=%v", got.cfg.DeployPath, got.busy)
+	}
 	newLog := filepath.Join(dir, "new.log")
 	log := logging.New(newLog, 1024)
-	m := model{cfg: config.Config{LogPath: filepath.Join(dir, "old.log")}, log: logging.New(filepath.Join(dir, "old.log"), 1024)}
-	next, _ := m.Update(resultMsg{
-		text: "Saved config: x",
-		cfg:  &config.Config{LogPath: newLog, DeployPath: "/new/stacks"},
-		log:  log,
-	})
+	next, _ = m.Update(opDoneMsg{res: opResult{
+		lines: []string{"Saved config: x"},
+		cfg:   &config.Config{LogPath: newLog, DeployPath: filepath.Join(dir, "new")},
+		log:   log,
+	}})
 	got := next.(model)
-	if got.cfg.LogPath != newLog {
-		t.Fatalf("cfg log path = %s", got.cfg.LogPath)
+	if got.cfg.LogPath != newLog || got.log != log {
+		t.Fatalf("cfg/log not installed: %s", got.cfg.LogPath)
 	}
 	got.log.Event("deployed service web")
 	data, err := os.ReadFile(newLog)
 	if err != nil || !strings.Contains(string(data), "deployed service web") {
 		t.Fatalf("event not in new log: %v %q", err, data)
+	}
+	if !strings.Contains(strings.Join(got.out.lines, "\n"), "Saved config: x") {
+		t.Fatalf("result not shown: %v", got.out.lines)
+	}
+}
+
+func TestLifecycleSkipsUnmanagedServices(t *testing.T) {
+	m := withServices(testModel(t), deploy.ServiceStatus{Name: "legacy", Health: deploy.HealthStopped})
+	m, cmd := press(t, m, runeKey('r'))
+	if cmd != nil || m.busy {
+		t.Fatal("restart must not run on an unmanaged service")
+	}
+	if !strings.Contains(m.note, "not managed") {
+		t.Fatalf("note = %q", m.note)
+	}
+	m = withServices(m, deploy.ServiceStatus{Name: "web", Managed: true})
+	if m, cmd = press(t, m, runeKey('s')); cmd == nil || !m.busy {
+		t.Fatal("stop should start on a managed service")
+	}
+}
+
+func TestCatalogEnterSkipsDeployedServices(t *testing.T) {
+	m := withCatalog(withServices(testModel(t), deploy.ServiceStatus{Name: "web", Managed: true}), "web", "api")
+	m.tab = tabCatalog
+	m, cmd := press(t, m, enterKey())
+	if cmd != nil || !strings.Contains(m.note, "already deployed") {
+		t.Fatalf("deploying a deployed service must be refused: note=%q", m.note)
+	}
+	m, cmd = press(t, m, runeKey('j'), enterKey())
+	if cmd == nil || !m.busy || !strings.Contains(m.opTitle, "api") {
+		t.Fatalf("api should deploy: busy=%v title=%q", m.busy, m.opTitle)
+	}
+}
+
+func TestFilterKeepsPicks(t *testing.T) {
+	m := withCatalog(testModel(t), "adguard", "immich", "jellyfin", "plex")
+	m.tab = tabCatalog
+	m, _ = press(t, m, runeKey('G'), tea.KeyPressMsg{Code: tea.KeySpace})
+	if !m.lists[tabCatalog].picked["plex"] {
+		t.Fatal("space should pick plex")
+	}
+	m, _ = press(t, m, runeKey('/'), runeKey('J'), runeKey('E'), runeKey('L'), enterKey())
+	if got := strings.Join(m.rows(), ","); got != "jellyfin,plex" {
+		t.Fatalf("filtered rows = %s", got)
+	}
+	if m.filtering {
+		t.Fatal("enter should end filter editing")
+	}
+	m, _ = press(t, m, escKey())
+	if len(m.rows()) != 4 || !m.lists[tabCatalog].picked["plex"] {
+		t.Fatalf("esc must clear the filter and keep picks: %v", m.rows())
+	}
+	m, _ = press(t, m, runeKey('n'))
+	if len(m.lists[tabCatalog].picked) != 0 {
+		t.Fatal("n must clear the picks")
+	}
+}
+
+func TestTargetsUsePicksThenCursor(t *testing.T) {
+	m := withCatalog(testModel(t), "a", "b", "c")
+	m.tab = tabCatalog
+	m.lists[tabCatalog].cursor = 1
+	if got := strings.Join(m.targets(), ","); got != "b" {
+		t.Fatalf("no picks: targets = %s", got)
+	}
+	m.lists[tabCatalog].picked["c"] = true
+	m.lists[tabCatalog].picked["a"] = true
+	if got := strings.Join(m.targets(), ","); got != "a,c" {
+		t.Fatalf("picks: targets = %s", got)
+	}
+}
+
+func TestActionMenuRunsHotkey(t *testing.T) {
+	m := withServices(testModel(t), deploy.ServiceStatus{Name: "web", Managed: true})
+	m, _ = press(t, m, enterKey())
+	if m.menu == nil || len(m.menu.items) != 4 {
+		t.Fatal("enter should open the action menu")
+	}
+	m, _ = press(t, m, escKey())
+	if m.menu != nil {
+		t.Fatal("esc should close the menu")
+	}
+	m, _ = press(t, m, enterKey())
+	m, cmd := press(t, m, runeKey('s'))
+	if m.menu != nil || cmd == nil || !strings.HasPrefix(m.opTitle, "stop") {
+		t.Fatalf("s in the menu should start stop: title=%q", m.opTitle)
+	}
+}
+
+func startAsk(t *testing.T, fn func(ui *tuiUI) (any, error)) (model, chan tea.Msg, chan any, context.CancelFunc) {
+	t.Helper()
+	msgs := make(chan tea.Msg, 16)
+	snd := &sender{}
+	snd.bind(func(msg tea.Msg) { msgs <- msg })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ui := &tuiUI{snd: snd, ctx: ctx}
+	done := make(chan any, 1)
+	go func() {
+		v, err := fn(ui)
+		if err != nil {
+			done <- err
+			return
+		}
+		done <- v
+	}()
+	m := testModel(t)
+	m.busy, m.opCancel = true, cancel
+	select {
+	case msg := <-msgs:
+		next, _ := m.Update(msg)
+		m = next.(model)
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt did not open")
+	}
+	if m.ask == nil {
+		t.Fatal("askMsg did not open a prompt")
+	}
+	return m, msgs, done, cancel
+}
+
+func waitDone(t *testing.T, done chan any) any {
+	t.Helper()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt did not return")
+	}
+	return nil
+}
+
+func TestTUIConfirmRoundTrip(t *testing.T) {
+	m, _, done, _ := startAsk(t, func(ui *tuiUI) (any, error) { return ui.Confirm("Deploy web?", false) })
+	if !strings.Contains(m.render(), "Deploy web?") {
+		t.Fatal("prompt not rendered")
+	}
+	m, _ = press(t, m, runeKey('y'))
+	if v := waitDone(t, done); v != true || m.ask != nil {
+		t.Fatalf("confirm = %v", v)
+	}
+	m, _, done, _ = startAsk(t, func(ui *tuiUI) (any, error) { return ui.Confirm("Deploy web?", true) })
+	press(t, m, enterKey())
+	if v := waitDone(t, done); v != true {
+		t.Fatalf("enter must pick the default: %v", v)
+	}
+}
+
+func TestTUILineReplacesOrEditsDefault(t *testing.T) {
+	m, _, done, _ := startAsk(t, func(ui *tuiUI) (any, error) { return ui.Line("Stored key name", "default") })
+	press(t, m, runeKey('h'), runeKey('o'), runeKey('m'), runeKey('e'), enterKey())
+	if v := waitDone(t, done); v != "home" {
+		t.Fatalf("typing must replace the default: %v", v)
+	}
+	m, _, done, _ = startAsk(t, func(ui *tuiUI) (any, error) { return ui.Line("Path", "/opt/stacks") })
+	press(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace}, runeKey('x'), enterKey())
+	if v := waitDone(t, done); v != "/opt/stackx" {
+		t.Fatalf("backspace must edit the default: %v", v)
+	}
+	m, _, done, _ = startAsk(t, func(ui *tuiUI) (any, error) { return ui.Line("Path", "/opt/stacks") })
+	press(t, m, enterKey())
+	if v := waitDone(t, done); v != "/opt/stacks" {
+		t.Fatalf("enter must keep the default: %v", v)
+	}
+}
+
+func TestTUIPromptEscAndCtrlC(t *testing.T) {
+	m, _, done, _ := startAsk(t, func(ui *tuiUI) (any, error) { return ui.Line("Name", "") })
+	press(t, m, escKey())
+	if err, _ := waitDone(t, done).(error); !errors.Is(err, prompt.ErrCanceled) {
+		t.Fatalf("esc must cancel the prompt: %v", err)
+	}
+	m, _, done, _ = startAsk(t, func(ui *tuiUI) (any, error) { return ui.Secret("TS_AUTHKEY") })
+	m, _ = press(t, m, ctrlCKey())
+	if err, _ := waitDone(t, done).(error); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ctrl+c must cancel the operation: %v", err)
+	}
+	if m.ask != nil || m.note != "Canceling..." {
+		t.Fatalf("ctrl+c must close the prompt: note=%q", m.note)
+	}
+}
+
+func TestTUIPromptUnblocksOnCancel(t *testing.T) {
+	_, _, done, cancel := startAsk(t, func(ui *tuiUI) (any, error) { return ui.Line("Name", "") })
+	cancel()
+	if err, _ := waitDone(t, done).(error); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context must unblock the prompt: %v", err)
+	}
+}
+
+func TestSecretIsNeverRendered(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m, _, done, _ := startAsk(t, func(ui *tuiUI) (any, error) { return ui.Secret("TS_AUTHKEY") })
+	next, _ := m.Update(tea.PasteMsg{Content: "tskey-auth-SECRET123\n"})
+	m = next.(model)
+	view := m.render()
+	if strings.Contains(view, "SECRET123") || strings.Contains(view, "tskey-auth") {
+		t.Fatalf("secret rendered:\n%s", view)
+	}
+	if !strings.Contains(view, "••••") {
+		t.Fatalf("secret input shows no progress:\n%s", view)
+	}
+	press(t, m, enterKey())
+	if v := waitDone(t, done); v != "tskey-auth-SECRET123" {
+		t.Fatalf("pasted secret = %v", v)
+	}
+	if m.ask != nil && len(m.ask.buf) != 0 {
+		t.Fatal("answered prompt kept the secret in its buffer")
+	}
+}
+
+func TestTUIPrintfRedacts(t *testing.T) {
+	msgs := make(chan tea.Msg, 4)
+	snd := &sender{}
+	snd.bind(func(msg tea.Msg) { msgs <- msg })
+	ui := &tuiUI{snd: snd, ctx: context.Background()}
+	ui.Printf("TS_AUTHKEY=tskey-auth-LEAK\nsecond line\n")
+	first := (<-msgs).(outMsg).line
+	second := (<-msgs).(outMsg).line
+	if strings.Contains(first, "LEAK") || second != "second line" {
+		t.Fatalf("printf lines: %q %q", first, second)
+	}
+}
+
+func TestTUIConfirmAssumeYes(t *testing.T) {
+	msgs := make(chan tea.Msg, 4)
+	snd := &sender{}
+	snd.bind(func(msg tea.Msg) { msgs <- msg })
+	ui := &tuiUI{snd: snd, ctx: context.Background(), assumeYes: true}
+	if ok, err := ui.Confirm("Store this key?", true); !ok || err != nil {
+		t.Fatalf("assume-yes confirm = %v %v", ok, err)
+	}
+	if line := (<-msgs).(outMsg).line; !strings.Contains(line, "auto-yes") {
+		t.Fatalf("auto answer not shown: %q", line)
+	}
+}
+
+func TestLineSinkSplitsAndCleans(t *testing.T) {
+	msgs := make(chan tea.Msg, 8)
+	snd := &sender{}
+	snd.bind(func(msg tea.Msg) { msgs <- msg })
+	sink := &lineSink{snd: snd}
+	_, _ = sink.Write([]byte("\x1b[32m Container app-web Started\x1b[0m\r\n pulling"))
+	_, _ = sink.Write([]byte(" 50%\rdone\n"))
+	var got []string
+	for len(msgs) > 0 {
+		got = append(got, (<-msgs).(outMsg).line)
+	}
+	want := []string{" Container app-web Started", " pulling 50%", "done"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("sink lines = %q, want %q", got, want)
+	}
+}
+
+func TestPasteUsesFirstLineInFilter(t *testing.T) {
+	m := withCatalog(testModel(t), "jellyfin", "plex")
+	m.tab = tabCatalog
+	m.filtering = true
+	next, _ := m.Update(tea.PasteMsg{Content: "jelly\nplex"})
+	if got := next.(model).lists[tabCatalog].filter; got != "jelly" {
+		t.Fatalf("filter = %q", got)
+	}
+}
+
+func TestUpdateStartsNoBlockingWork(t *testing.T) {
+	m := testModel(t)
+	start := time.Now()
+	next, cmd := m.Update(runeKey('4'))
+	if time.Since(start) > time.Second {
+		t.Fatal("tab switch blocked")
+	}
+	if cmd == nil || !next.(model).doctorBusy {
+		t.Fatal("doctor checks should run as a command")
+	}
+	next, _ = next.(model).Update(doctorMsg{checks: []doctor.Check{{Level: doctor.OK, Name: "git", Message: "ok"}}})
+	if got := next.(model); got.doctorBusy || len(got.checks) != 1 {
+		t.Fatal("doctor result not installed")
+	}
+}
+
+func TestPollRefreshesOnlyWhenIdle(t *testing.T) {
+	m := testModel(t)
+	next, cmd := m.Update(pollMsg(time.Now()))
+	if cmd == nil || !next.(model).statusBusy {
+		t.Fatal("idle poll should refresh status")
+	}
+	m.busy = true
+	next, _ = m.Update(pollMsg(time.Now()))
+	if next.(model).statusBusy {
+		t.Fatal("poll must not refresh while an operation runs")
 	}
 }
 
@@ -229,108 +563,6 @@ func TestFirstRunSetupDoesNotKeepFailedEdit(t *testing.T) {
 	}
 }
 
-func TestRefreshSecondEnterYieldsNoCommand(t *testing.T) {
-	items := servicesMenuItems()
-	m := model{screen: screenServices, items: items, cursor: itemCursor(items, "refresh"), picked: map[int]bool{}}
-	next, cmd := m.Update(enterKey())
-	if cmd == nil {
-		t.Fatal("expected refresh command")
-	}
-	got := next.(model)
-	if !got.busy {
-		t.Fatal("refresh should set busy")
-	}
-	_, cmd2 := got.Update(enterKey())
-	if cmd2 != nil {
-		t.Fatal("second enter must not start another refresh")
-	}
-}
-
-func TestUpgradeSecondEnterYieldsNoCommand(t *testing.T) {
-	items := maintenanceMenuItems()
-	m := model{screen: screenMaintenance, items: items, cursor: itemCursor(items, "upgrade"), picked: map[int]bool{}}
-	next, cmd := m.Update(enterKey())
-	if cmd == nil {
-		t.Fatal("expected upgrade command")
-	}
-	got := next.(model)
-	if !got.busy {
-		t.Fatal("upgrade should set busy")
-	}
-	_, cmd2 := got.Update(enterKey())
-	if cmd2 != nil {
-		t.Fatal("second enter must not start another upgrade")
-	}
-}
-
-func TestFinishMultiSetsBusy(t *testing.T) {
-	m := model{
-		screen: screenMultiSelect,
-		multi:  multiApply,
-		opts:   []string{"web"},
-		picked: map[int]bool{0: true},
-		items: []menuItem{
-			{id: "run", label: "Run on selection", desc: "run"},
-			{id: "cancel", label: "Cancel", desc: "cancel"},
-		},
-	}
-	next, cmd := m.Update(digitKey('2'))
-	if cmd == nil {
-		t.Fatal("expected batch command")
-	}
-	got := next.(model)
-	if !got.busy {
-		t.Fatal("finishMulti should set busy")
-	}
-	_, cmd2 := got.Update(digitKey('2'))
-	if cmd2 != nil {
-		t.Fatal("busy batch must ignore a second run")
-	}
-}
-
-func TestBusyCtrlCCancels(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	m := model{busy: true, opCancel: cancel, screen: screenMain, items: mainMenuItems(), picked: map[int]bool{}}
-	next, cmd := m.Update(ctrlCKey())
-	got := next.(model)
-	if cmd != nil {
-		t.Fatal("cancel should not start another command")
-	}
-	if got.quitting {
-		t.Fatal("busy ctrl+c must not quit before in-flight work finishes")
-	}
-	if ctx.Err() == nil {
-		t.Fatal("expected cancel")
-	}
-	if got.status != "Canceling..." {
-		t.Fatalf("status = %q", got.status)
-	}
-}
-
-func TestDoctorAndStatusReturnCommands(t *testing.T) {
-	items := maintenanceMenuItems()
-	m := model{screen: screenMaintenance, items: items, cursor: itemCursor(items, "doctor"), picked: map[int]bool{}}
-	start := time.Now()
-	next, cmd := m.Update(enterKey())
-	if time.Since(start) > time.Second {
-		t.Fatal("doctor Update blocked")
-	}
-	if cmd == nil || !next.(model).busy {
-		t.Fatal("doctor should return a command and set busy")
-	}
-	statusItems := statusMenuItems()
-	sm := model{screen: screenStatus, items: statusItems, cursor: itemCursor(statusItems, "overview"), picked: map[int]bool{}}
-	start = time.Now()
-	snext, scmd := sm.Update(enterKey())
-	if time.Since(start) > time.Second {
-		t.Fatal("status Update blocked")
-	}
-	if scmd == nil || !snext.(model).busy {
-		t.Fatal("status overview should return a command and set busy")
-	}
-}
-
 func TestSignalShutdownWaitsForApplyRestore(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
@@ -419,7 +651,7 @@ func TestSignalShutdownWaitsForApplyRestore(t *testing.T) {
 	}
 	select {
 	case <-quit:
-	case <-time.After(8 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("shutdown did not finish")
 	}
 	data, err := os.ReadFile(filepath.Join(dest, "compose.yaml"))

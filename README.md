@@ -6,7 +6,7 @@ Compose services from a TUI.
 [![CI](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml/badge.svg)](https://github.com/jackspiering/tailarr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![Version](https://img.shields.io/badge/version-0.7.0-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.0-informational)](CHANGELOG.md)
 
 ## Quick start
 
@@ -71,7 +71,7 @@ Run the install one-liner again. See [Quick start](#quick-start).
 The script replaces an existing install in place.
 
 A release-binary install can also upgrade from the TUI.
-Open **Maintenance > Upgrade Tailarr**.
+Open the **System** tab and press `U`.
 Tailarr checks GitHub for a newer release (SemVer).
 It verifies the release asset SHA256 against the published `SHA256SUMS`.
 When `gh` is installed and logged in, it also verifies the GitHub build attestation and stops if that check fails.
@@ -113,7 +113,7 @@ go build -o bin/tailarr ./cmd/tailarr
 
 - The TUI needs a terminal. Tailarr does not run without a TTY.
 - Deploy and lifecycle actions need Docker with Compose v2.
-  **Maintenance > Run doctor checks** verifies the host, paths, and
+  The **System** tab runs doctor checks on the host, paths, and
   Docker/Compose.
 - The install does not need root. Set `INSTALL_DIR` to choose the install path.
   See [Quick start](#quick-start).
@@ -127,13 +127,13 @@ go build -o bin/tailarr ./cmd/tailarr
 | Area | Description |
 | --- | --- |
 | Catalog | Lists ScaleTail services that have a Compose file and a `.env` file. Names: `compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml`. |
-| Lifecycle | Deploy, apply, stop, restart, and remove. Compose runs the actions. Tailarr asks for confirmation. It makes backups. |
+| Lifecycle | Deploy, apply, stop, restart, and remove. Compose runs the actions. Tailarr asks for confirmation. It makes backups. Compose output shows in the TUI. |
 | Auth keys | A named `TS_AUTHKEY` store. You can add, rename, replace, or remove a key. The file mode is `600`. Listings are redacted. |
-| Status | Shows deployed services, running services, Docker, and config. |
+| Status | Shows each deployed service with its health, containers, and status. The list refreshes every 4 seconds. |
 | Deploy env | Tailarr prompts for empty or placeholder env values. You can reuse a stored auth key on more than one service. |
 | Safety | Includes name checks, symlink refusal, backups, mode-600 secrets, path bounds, and ownership-bound locks. |
 | Doctor | Checks the host, paths, Docker/Compose reachability, and the TUN device. |
-| UI | Menus: Status, Services, Tailscale Authentication Keys, Configuration, Maintenance. You can multi-select for batch deploy and lifecycle actions. |
+| UI | Tabs: Services, Catalog, Keys, System. You can pick more than one row for batch deploy and lifecycle actions. Prompts open inside the TUI. |
 
 ## Usage
 
@@ -147,45 +147,49 @@ Without a TTY, Tailarr prints
 to stderr.
 It then exits 1.
 
-Main menu:
+The TUI has four tabs:
 
-- **Status**
-- **Services**
-- **Tailscale Authentication Keys**
-- **Configuration**
-- **Maintenance**
+| Tab | What it shows | Keys |
+| --- | --- | --- |
+| Services | Each deployment, with a health dot, running containers, and status | `r` restart, `s` stop, `A` apply, `X` remove, `enter` actions, `d` catalog |
+| Catalog | ScaleTail templates, with the image, port, and the env values that deploy asks for | `enter` deploy, `/` filter, `r` refresh catalog |
+| Keys | Stored auth keys (redacted) | `a` add, `e` rename, `p` replace, `x` remove |
+| System | Paths, version, and doctor checks | `e` edit config, `d` run doctor, `U` upgrade |
 
-The screen has a header bar, a menu panel, and a details panel.
-The details panel shows the selected action and the active paths.
-Command output opens in an output panel below the menu.
-The footer lists the keys for the current screen.
+The Services tab opens first.
+The details panel on the right shows the row under the cursor.
+The details panel shows when the terminal is at least 92 columns wide.
+Command output opens in an output panel at the bottom.
+Prompts open in a panel above the footer.
+The footer lists the keys for the current tab.
 
-Keys:
+Keys on every tab:
 
-- Arrow keys or `j` and `k` move.
-- Enter selects.
-- `q` or Esc goes back or quits.
-- Number keys jump to an item.
+- Tab and Shift+Tab switch tabs. Number keys `1` to `4` open a tab.
+- Arrow keys or `j` and `k` move. `g` and `G` jump to the first or last row.
 - PgUp and PgDn scroll the output panel. Home and End jump to the top or bottom.
+- Esc clears the filter, then the output.
+- Ctrl+C cancels a running action. When no action runs, Ctrl+C or `q` quits.
 
-For multi-select deploy and lifecycle actions:
+To act on more than one service:
 
-- Space toggles a row.
-- `a` selects all.
-- Run starts the action.
+- Space picks a row. `a` picks all rows. `n` clears the picks.
+- `/` filters the list as you type. Picked rows stay in the list.
+- The action runs on the picked rows.
+  When no row is picked, the action runs on the row under the cursor.
+
+In a prompt, Enter submits and Esc cancels.
+When a prompt shows a default, typing replaces it.
+Backspace edits the default instead.
+Tailarr shows a secret, such as `TS_AUTHKEY`, as dots only.
 
 **Apply** copies catalog template files onto a managed service directory.
 It then pulls images and starts the containers.
 It keeps files that exist only in that directory, including `.env`.
 **Deploy** only creates a new service directory.
 
-Catalog and maintenance:
-
-- **Services > Search available services** lists the ScaleTail catalog.
-- **Services > Refresh catalog** clones or pulls the ScaleTail templates.
-- **Maintenance > Run doctor checks** verifies the host, paths, and
-  Docker/Compose.
-- **Maintenance > Upgrade Tailarr** upgrades a release binary.
+Tailarr shows a service as stopped when all its containers exited, for example after Stop.
+It shows a service as exited when a container restarts in a loop, or exits while another container runs.
 
 On first run, Tailarr offers to create a config file if none exists.
 You can edit that file before you continue.
