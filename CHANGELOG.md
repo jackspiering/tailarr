@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prompts open in a panel inside the TUI. Tailarr no longer leaves the TUI for a prompt, so the screen does not flicker and output stays on screen.
   A secret shows as dots only. Bracketed paste works. Typing replaces a default, and Backspace edits it.
 - Compose, git, and upgrade output streams into an output panel. Progress lines for the same image layer or container replace each other.
-- A spinner, the elapsed time, the window title, and the terminal progress bar show a running action.
+- A spinner, the elapsed time, and the window title show a running action.
   Ctrl+C cancels the action and keeps the TUI open.
 
 ### Fixed

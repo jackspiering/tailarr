@@ -1024,8 +1024,7 @@ func (m model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	v.WindowTitle = "tailarr · " + tabNames[m.tab]
-	if m.busy {
-		v.ProgressBar = tea.NewProgressBar(tea.ProgressBarIndeterminate, 0)
-	}
+	// No v.ProgressBar: it uses OSC 9;4, which iTerm2 and kitty show as a
+	// desktop notification. The header spinner shows progress instead.
 	return v
 }
