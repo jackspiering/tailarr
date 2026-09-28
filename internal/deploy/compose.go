@@ -199,15 +199,30 @@ func defaultCompose(parent context.Context, dir string, args ...string) error {
 		}
 	}
 	if err != nil {
+		verb := composeVerb(args)
 		if ctx.Err() != nil {
-			return fmt.Errorf("%w: docker compose %s: %v", ErrInterrupted, strings.Join(args, " "), err)
+			return fmt.Errorf("%w: docker compose %s: %v", ErrInterrupted, verb, err)
 		}
 		if reason := tail.String(); reason != "" {
-			return fmt.Errorf("%w: docker compose %s: %v: %s", ErrComposeFailed, strings.Join(args, " "), err, reason)
+			return fmt.Errorf("%w: docker compose %s: %v: %s", ErrComposeFailed, verb, err, reason)
 		}
-		return fmt.Errorf("%w: docker compose %s: %v", ErrComposeFailed, strings.Join(args, " "), err)
+		return fmt.Errorf("%w: docker compose %s: %v", ErrComposeFailed, verb, err)
 	}
 	return nil
+}
+
+// composeVerb returns args without the -p and -f pairs that every call
+// repeats, so an error names the command ("up -d --remove-orphans").
+func composeVerb(args []string) string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "-p" || args[i] == "-f") && i+1 < len(args) {
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return strings.Join(out, " ")
 }
 
 // lastLine keeps the last non-empty line written to it, redacted and capped.

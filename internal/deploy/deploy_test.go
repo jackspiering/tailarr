@@ -1650,3 +1650,10 @@ func TestCollectOverviewReportsDockerFailure(t *testing.T) {
 		t.Fatalf("docker failure must mark health unknown: %+v", st)
 	}
 }
+
+func TestComposeVerbDropsProjectAndFiles(t *testing.T) {
+	got := composeVerb([]string{"-p", "tailarr-1234-web", "-f", "compose.yaml", "-f", ".tailarr.compose.yaml", "up", "-d", "--remove-orphans"})
+	if got != "up -d --remove-orphans" {
+		t.Fatalf("composeVerb = %q", got)
+	}
+}
