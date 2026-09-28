@@ -73,16 +73,23 @@ Deployment flow end to end:
    `.tailarr_backups` (keep 2); failure restores them in place and re-runs
    `up`. Container data is never moved, because running containers bind-mount
    it. Remove copies the whole tree first (modes, mtimes, owners as root;
-   sockets and FIFOs skipped).
-5. Status (`deploy.CollectOverview`): one `docker ps -a` pass; health groups by `app-` / `tailscale-` name prefixes.
+   sockets and FIFOs skipped). Compose runs in its own process group; cancel
+   sends the group SIGINT so the plugin child stops too. Env keys that the
+   deployment `.env` sets are dropped from the compose environment (except
+   `PATH`, `HOME`, `DOCKER_*`, and similar), so `.env` wins.
+5. Status (`deploy.CollectOverview`): one `docker ps -a` pass returns each service with its containers; health groups by the
+   `tailarr.service` label or `app-` / `tailscale-` name prefixes. A service whose containers all exited is stopped.
 6. Every event appends a redacted line via `logging.Logger.Event` (size rotation, O_NOFOLLOW).
 
 Key architectural patterns:
 
-- TUI concurrency: one Bubble Tea v2 `model` owns state. Blocking work escapes
-  the event loop as `tea.Sequence(func() tea.Msg { ... })` commands that call
-  `prog.ReleaseTerminal` / `RestoreTerminal`, run prompts or exec directly, and
-  return a `resultMsg`.
+- TUI concurrency: one Bubble Tea v2 `model` owns state. Blocking work runs as
+  a command started by `model.startOp`, which returns an `opDoneMsg`. The work
+  gets a `tuiUI` (the TUI implementation of `prompt.UI`): each prompt sends an
+  `askMsg` and waits on a reply channel or the operation context. `Printf`
+  lines, compose output (`deploy.SetOutput`), and upgrade progress arrive as
+  `outMsg`. The terminal is never released mid-operation. Data loads
+  (status, catalog, keys, doctor) are commands too; `Update` never blocks.
 - Docker integration is subprocess-only: Tailarr execs the `docker compose` CLI. There is no Docker SDK. Git is CLI-only too; there is no go-git.
 - Security posture is fail-closed everywhere: refuse symlink parents and
   destinations, redact secrets at every boundary, filter env before the compose
@@ -155,11 +162,13 @@ Concurrency and locking:
 - `deploy.AcquireLock`: O_EXCL file holding pid+token, non-blocking flock on
   top, stale-owner reclaim via `/proc/<pid>/comm`; `Release` never removes a
   live owner's lock.
-- Platform code splits by build tags: `lock_unix.go`, `lock_linux.go`, `owner_unix.go`, `process_unix.go`, `nofollow_unix.go`, and their `_other` twins.
+- Platform code splits by build tags: `lock_unix.go`, `lock_linux.go`, `owner_unix.go`, `process_unix.go`, `composeproc_unix.go`,
+  `nofollow_unix.go`, and their `_other` twins.
 
 Dependency injection:
 
 - Concrete structs wired in `main` and `ui`. The only interface is `prompt.UI` (`Confirm`, `Line`, `Secret`, `Printf`).
+  `prompt.Std` serves first-run setup; `ui.tuiUI` serves everything inside the TUI.
 - Tests inject fakes through seams, not mocks: swap package var
   `deploy.composeFn`, pass `upgrade.Options{Client, apiBase}` pointing at an
   httptest server, feed `strings.Reader` into `prompt.Std`.
@@ -196,9 +205,12 @@ Git workflow:
 |File|Role|
 |---|---|
 |`cmd/tailarr/main.go`|Entrypoint, non-TTY exit gate|
-|`internal/ui/app.go`|TUI model, screens, terminal release/restore|
+|`internal/ui/app.go`|TUI model, tabs, key handling, operation start and finish|
+|`internal/ui/view.go`|Rendering: header, tabs, tables, detail panes, output and prompt panels|
+|`internal/ui/ask.go`|`tuiUI` (in-TUI `prompt.UI`), output line sink|
+|`internal/ui/ops.go`|Batch lifecycle, auth key, config, refresh, upgrade actions|
 |`internal/deploy/deploy.go`|DeployWith / Apply / Stop / Restart / RemoveWith|
-|`internal/deploy/compose.go`|docker compose exec, project naming, probes|
+|`internal/deploy/compose.go`|docker compose exec, output seam, env filter, project naming, probes|
 |`internal/deploy/lock.go`|pid+flock acquisition and reclaim|
 |`internal/deploy/backup.go`|Full-tree Remove backups, prune|
 |`internal/deploy/snapshot.go`|Apply snapshot of managed files, in-place restore|
@@ -231,7 +243,7 @@ Git workflow:
 
 ## Testing & QA
 
-- Stdlib `testing` only. About 200 test functions across 14 packages; largest suite is `internal/deploy` (about 70 tests).
+- Stdlib `testing` only. About 240 test functions across 14 packages; largest suite is `internal/deploy` (about 80 tests).
 - Guard-clause assertions with `t.Fatal`/`t.Fatalf`; table-driven loops report every row with `t.Errorf`. No testify, no golden files, no `t.Run` subtests.
 - Test names read as behavior specs: `TestLoadRefusesSymlinkFile`, `TestApplyRestoresOnInterrupt`, `TestRemoveFailsClosedOnComposeError`, `TestLockReleaseDoesNotSteal`.
 - Isolation idioms: `t.TempDir()` for filesystem, `t.Setenv()` for env and
@@ -247,4 +259,5 @@ Git workflow:
   missing compose/env, and a symlinked dir that must be skipped. Prefer
   synthesized fixtures in `t.TempDir()` for new tests.
 - `-race` is mandatory locally, in CI, and in release verification. No coverage tooling is configured.
-- UI tests construct the `model` struct directly, set `NO_COLOR=1`, drive `Update` with `tea.KeyPressMsg`, and assert rendered substrings. No teatest framework.
+- UI tests build the model with `testModel(t)`, set `NO_COLOR=1`, drive `Update` with `tea.KeyPressMsg`, and assert rendered substrings.
+  Prompt tests bind a `sender` to a channel and answer `askMsg` through `Update`. No teatest framework.
