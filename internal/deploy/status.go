@@ -135,10 +135,13 @@ func parsePS(raw string) []psRow {
 }
 
 // serviceContainers returns the containers of service, sorted by name, and
-// their worst health. A service without containers is stopped.
+// their worst health. A service without containers, or whose containers all
+// exited (compose stop leaves them so), is stopped: exited only counts as a
+// failure while other containers of the service still run.
 func serviceContainers(rows []psRow, service string) ([]Container, Health) {
 	var out []Container
 	worst := HealthStopped
+	allDown := true
 	for _, r := range rows {
 		if !containerMatchesService(r.name, r.label, service) {
 			continue
@@ -147,9 +150,15 @@ func serviceContainers(rows []psRow, service string) ([]Container, Health) {
 		if len(out) == 0 || healthRank(h) > healthRank(worst) {
 			worst = h
 		}
+		if r.state != "exited" && r.state != "created" {
+			allDown = false
+		}
 		out = append(out, Container{Name: r.name, State: r.state, Status: r.status, Health: h})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	if allDown {
+		worst = HealthStopped
+	}
 	return out, worst
 }
 

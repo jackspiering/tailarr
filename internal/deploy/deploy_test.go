@@ -1614,7 +1614,7 @@ func TestCollectOverviewUsesOneDockerPass(t *testing.T) {
 	if !web.Managed || web.Health != HealthStarting || len(web.Containers) != 2 || web.Containers[0].Name != "app-TEST_web" {
 		t.Fatalf("web: %+v", web)
 	}
-	if other.Managed || other.Health != HealthExited || len(other.Containers) != 1 {
+	if other.Managed || other.Health != HealthStopped || len(other.Containers) != 1 || other.Containers[0].Health != HealthExited {
 		t.Fatalf("other: %+v", other)
 	}
 	if st.ManagedCount != 1 || st.OtherCount != 1 || st.ManagedHealth["web"] != HealthStarting {
@@ -1651,13 +1651,6 @@ func TestCollectOverviewReportsDockerFailure(t *testing.T) {
 	}
 }
 
-func TestComposeVerbDropsProjectAndFiles(t *testing.T) {
-	got := composeVerb([]string{"-p", "tailarr-1234-web", "-f", "compose.yaml", "-f", ".tailarr.compose.yaml", "up", "-d", "--remove-orphans"})
-	if got != "up -d --remove-orphans" {
-		t.Fatalf("composeVerb = %q", got)
-	}
-}
-
 func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
@@ -1683,5 +1676,32 @@ func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
 	}
 	if !strings.Contains(string(api), "TS_AUTHKEY=tskey-auth-shared") {
 		t.Fatalf("declared TS_AUTHKEY not filled:\n%s", api)
+	}
+}
+
+func TestComposeVerbDropsProjectAndFiles(t *testing.T) {
+	got := composeVerb([]string{"-p", "tailarr-1234-web", "-f", "compose.yaml", "-f", ".tailarr.compose.yaml", "up", "-d", "--remove-orphans"})
+	if got != "up -d --remove-orphans" {
+		t.Fatalf("composeVerb = %q", got)
+	}
+}
+
+func TestHealthFromOutputStoppedStackIsNotDown(t *testing.T) {
+	raw := strings.Join([]string{
+		"app-web\texited\tExited (137) 5 seconds ago\t",
+		"tailscale-web\texited\tExited (0) 5 seconds ago\t",
+		"app-api\trestarting\tRestarting (1) 2 seconds ago\t",
+		"app-db\trunning\tUp 1 hour\t",
+		"tailscale-db\texited\tExited (1) 1 minute ago\t",
+	}, "\n")
+	got := healthFromOutput(raw, []string{"web", "api", "db"})
+	if got["web"] != HealthStopped {
+		t.Errorf("all containers exited after stop: got %s, want stopped", got["web"])
+	}
+	if got["api"] != HealthExited {
+		t.Errorf("crash loop: got %s, want exited", got["api"])
+	}
+	if got["db"] != HealthExited {
+		t.Errorf("sidecar died while app runs: got %s, want exited", got["db"])
 	}
 }
