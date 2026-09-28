@@ -3,12 +3,15 @@ name: Tag release
 # Tags a release when a merge to main changes the version in
 # internal/version/version.go and no tag exists for it yet. Dependency, CI,
 # and docs changes never touch that file, so they never tag. The tag goes on
-# the commit that set the version, after the release metadata is checked.
+# the head of main, after the release metadata there is checked. After a
+# release merge, that head is the version bump commit.
 #
-# A tag created with GITHUB_TOKEN does not start other workflows, so this job
-# dispatches the release workflow itself. The protected release environment
-# still gates publication. Run it by hand (workflow_dispatch) to tag a version
-# that is already on main.
+# GITHUB_TOKEN cannot create a ref whose workflow files differ from main (it
+# never has the workflows permission), so the tag cannot go on an older
+# commit. A tag created with GITHUB_TOKEN also does not start other
+# workflows, so this job dispatches the release workflow itself. The
+# protected release environment still gates publication. Run it by hand
+# (workflow_dispatch) to tag a version that is already on main.
 
 on:
   push:
@@ -44,7 +47,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Find the version commit and check release metadata
+      - name: Check the version and release metadata on main
         id: version
         run: |
           set -Eeuo pipefail
@@ -57,11 +60,9 @@ jobs:
           def git(*args):
               return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
-          # The commit that last changed the Version line, not a later merge.
-          commit = git("log", "-1", "--format=%H", "-G", r'^var Version = ', "--",
-                       "internal/version/version.go").strip()
-          if not commit:
-              raise SystemExit("error: no commit sets Version in internal/version/version.go")
+          # The head of main. GITHUB_TOKEN may only create a tag whose workflow
+          # files match main, so an older version commit cannot be tagged.
+          commit = git("rev-parse", "HEAD").strip()
 
           def show(path):
               return git("show", f"{commit}:{path}")

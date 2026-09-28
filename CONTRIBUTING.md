@@ -75,7 +75,7 @@ release metadata is merged into `main`. See [AGENTS.md](AGENTS.md).
 You do not need to push the tag yourself. When a merge to `main` changes the
 version in `internal/version/version.go`, the Tag release workflow
 (`.github/workflows/tag.yml`) checks that the four release locations agree,
-tags the commit that set the version, and starts the release workflow.
+tags the head of `main`, and starts the release workflow.
 Dependency, CI, and docs changes never touch `version.go`, so they never tag.
 It refuses a version that is not newer than the latest release tag. To tag a
 version that is already on `main`, run the Tag release workflow by hand.
