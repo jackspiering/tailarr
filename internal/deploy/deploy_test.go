@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1308,7 +1309,7 @@ func TestFilterComposeEnv(t *testing.T) {
 		"DOCKER_HOST=unix:///var/run/docker.sock",
 		"PATH=/usr/bin",
 		"TZ=UTC",
-	})
+	}, nil)
 	got := strings.Join(kept, "\n")
 	for _, banned := range []string{"COMPOSE_PROFILES", "COMPOSE_FILE", "TAILARR_REPO_PATH", "TS_AUTHKEY"} {
 		if strings.Contains(got, banned) {
@@ -1322,6 +1323,142 @@ func TestFilterComposeEnv(t *testing.T) {
 	}
 	if strings.Join(dropped, ",") != "COMPOSE_PROFILES,COMPOSE_FILE" {
 		t.Fatalf("dropped keys: %v", dropped)
+	}
+}
+
+func TestFilterComposeEnvLetsDotEnvWin(t *testing.T) {
+	fileKeys := map[string]bool{"TZ": true, "SERVICE": true, "PATH": true, "DOCKER_HOST": true, "HOME": true}
+	kept, _ := filterComposeEnv([]string{
+		"TZ=UTC",
+		"SERVICE=other",
+		"PATH=/usr/bin",
+		"HOME=/root",
+		"DOCKER_HOST=unix:///var/run/docker.sock",
+		"LANG=C.UTF-8",
+	}, fileKeys)
+	got := strings.Join(kept, "\n")
+	for _, shadowed := range []string{"TZ=", "SERVICE="} {
+		if strings.Contains(got, shadowed) {
+			t.Errorf("kept %s although .env sets it: %q", shadowed, got)
+		}
+	}
+	for _, want := range []string{"PATH=/usr/bin", "HOME=/root", "DOCKER_HOST=unix:///var/run/docker.sock", "LANG=C.UTF-8"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dropped %s: %q", want, got)
+		}
+	}
+}
+
+func TestDefaultComposeUsesDotEnvOverProcessEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("TZ=Europe/Amsterdam\nSERVICE=web\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(t.TempDir(), "env.txt")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nenv > " + strconv.Quote(envFile) + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TZ", "UTC")
+	t.Setenv("SERVICE", "other")
+	SetOutput(io.Discard)
+	t.Cleanup(func() { SetOutput(nil) })
+	if err := defaultCompose(context.Background(), dir, "up", "-d"); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(dump), "\n") {
+		if line == "TZ=UTC" || line == "SERVICE=other" {
+			t.Errorf("compose inherited %s, which overrides .env", line)
+		}
+	}
+	if !strings.Contains(string(dump), "PATH=") {
+		t.Error("compose lost PATH")
+	}
+}
+
+func TestDefaultComposeKeepsFailureReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell-backed fake docker executable")
+	}
+	dir := t.TempDir()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo ' Container tailscale-web Waiting' >&2\n" +
+		"echo 'dependency failed to start: container tailscale-web is unhealthy (TS_AUTHKEY=tskey-auth-LEAK)' >&2\n" +
+		"echo '' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var out strings.Builder
+	SetOutput(&out)
+	t.Cleanup(func() { SetOutput(nil) })
+	err := defaultCompose(context.Background(), dir, "up", "-d")
+	if !errors.Is(err, ErrComposeFailed) {
+		t.Fatalf("expected ErrComposeFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "dependency failed to start: container tailscale-web is unhealthy") {
+		t.Fatalf("error lost the compose reason: %v", err)
+	}
+	if strings.Contains(err.Error(), "tskey-auth-LEAK") || strings.Contains(out.String(), "tskey-auth-LEAK") {
+		t.Fatalf("secret leaked: err=%v out=%q", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Container tailscale-web Waiting") {
+		t.Fatalf("output not sent to SetOutput writer: %q", out.String())
+	}
+}
+
+func TestDefaultComposeInterruptSignalsPluginChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are unix-only")
+	}
+	dir := t.TempDir()
+	bin := t.TempDir()
+	marks := t.TempDir()
+	cli, plugin, ready := filepath.Join(marks, "cli"), filepath.Join(marks, "plugin"), filepath.Join(marks, "ready")
+	// The fake docker CLI runs a fake plugin in the foreground, as docker
+	// runs docker-compose. Both record the SIGINT they receive.
+	child := "trap 'echo int > " + plugin + "; exit 0' INT; echo up > " + ready + "; while :; do sleep 0.1; done"
+	script := "#!/bin/sh\ntrap 'echo int > " + cli + "; exit 0' INT\nsh -c " + strconv.Quote(child) + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	SetOutput(io.Discard)
+	t.Cleanup(func() { SetOutput(nil) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- defaultCompose(ctx, dir, "up", "-d") }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrInterrupted) {
+			t.Fatalf("expected ErrInterrupted, got %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("compose did not stop after cancel")
+	}
+	for _, mark := range []string{cli, plugin} {
+		if _, err := os.Stat(mark); err != nil {
+			t.Errorf("%s did not receive SIGINT: %v", filepath.Base(mark), err)
+		}
 	}
 }
 
