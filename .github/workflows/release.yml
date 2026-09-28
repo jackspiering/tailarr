@@ -20,7 +20,7 @@ env:
   GO_VERSION: "1.27.1"
   GOLANGCI_LINT_VERSION: v2.13.1
   GOVULNCHECK_VERSION: v1.8.0
-  RUMDL_VERSION: "0.2.75"
+  RUMDL_VERSION: "0.2.77"
 
 concurrency:
   # Dispatch uses its requested tag; tag pushes use the effective ref name.
