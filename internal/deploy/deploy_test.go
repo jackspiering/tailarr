@@ -1657,3 +1657,31 @@ func TestComposeVerbDropsProjectAndFiles(t *testing.T) {
 		t.Fatalf("composeVerb = %q", got)
 	}
 }
+
+func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "SERVICE=web\n")
+	setupTemplate(t, repo, "api", "SERVICE=api\nTS_AUTHKEY=\n")
+	withFakeCompose(t, func(string, ...string) error { return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	for _, svc := range []string{"web", "api"} {
+		if err := m.DeployWith(svc, DeployOpts{ReusableAuthKey: "tskey-auth-shared"}); err != nil {
+			t.Fatalf("deploy %s: %v", svc, err)
+		}
+	}
+	web, err := os.ReadFile(filepath.Join(deployRoot, "web", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(web), "TS_AUTHKEY") {
+		t.Fatalf("shared key written into a .env that does not declare it:\n%s", web)
+	}
+	api, err := os.ReadFile(filepath.Join(deployRoot, "api", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(api), "TS_AUTHKEY=tskey-auth-shared") {
+		t.Fatalf("declared TS_AUTHKEY not filled:\n%s", api)
+	}
+}

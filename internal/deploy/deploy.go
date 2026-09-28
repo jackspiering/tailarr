@@ -407,7 +407,10 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 
 	merged := scaletail.MergeEnv(templateMap, localMap, keys)
 
-	if opts.ReusableAuthKey != "" && scaletail.IsPlaceholder(merged["TS_AUTHKEY"]) {
+	// A shared batch key only fills a TS_AUTHKEY the service declares, so it
+	// is never written into a .env that has no use for it.
+	_, declared := merged["TS_AUTHKEY"]
+	if opts.ReusableAuthKey != "" && declared && scaletail.IsPlaceholder(merged["TS_AUTHKEY"]) {
 		merged["TS_AUTHKEY"] = opts.ReusableAuthKey
 	}
 
