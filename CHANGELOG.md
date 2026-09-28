@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- A merge to `main` that changes the version in `internal/version/version.go` now tags the release and starts the release workflow.
-  Dependency, CI, and docs changes do not tag. The protected `release` environment still gates publication.
-
 ## [0.8.0] - 2026-09-28
 
 ### Added
@@ -47,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status collects health and running names from one `docker ps -a` pass instead of two docker calls.
 - Body text uses the terminal foreground color, so the TUI stays readable on light themes.
 - Quit waits for a running action to finish its cleanup, so Apply can still restore files.
+- A merge to `main` that changes the version in `internal/version/version.go` now tags the release and starts the release workflow.
+  Dependency, CI, and docs changes do not tag. The protected `release` environment still gates publication.
 
 ## [0.7.0] - 2026-09-24
 
