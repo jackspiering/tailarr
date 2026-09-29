@@ -804,23 +804,16 @@ func requireManagedFiles(dest, service string) error {
 	return nil
 }
 
+// safeRemoveTree deletes path, which must lie inside root once both are
+// resolved and must not be or contain a symlink.
 func safeRemoveTree(path, root string) error {
 	if paths.IsSymlink(path) {
 		return fmt.Errorf("%w: refusing to remove symlink: %s", ErrSymlink, path)
 	}
-	ok, err := paths.Within(path, root)
-	if err != nil || !ok {
-		rootAbs, err2 := paths.AbsExistingDir(root)
-		if err2 != nil {
-			return fmt.Errorf("unsafe remove path: %s", path)
-		}
-		pathAbs, err2 := filepath.Abs(path)
-		if err2 != nil {
-			return err2
-		}
-		if !strings.HasPrefix(pathAbs, rootAbs+string(os.PathSeparator)) {
-			return fmt.Errorf("path not within deploy root: %s", path)
-		}
+	if ok, err := paths.Within(path, root); err != nil {
+		return fmt.Errorf("refusing to remove %s: %w", path, err)
+	} else if !ok {
+		return fmt.Errorf("refusing to remove %s: not within %s", path, root)
 	}
 	if found, err := paths.ContainsSymlinks(path); err != nil {
 		return err

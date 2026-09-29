@@ -341,6 +341,24 @@ func TestSafeRemoveTree(t *testing.T) {
 	}
 }
 
+func TestSafeRemoveTreeRefusesPathThroughSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "s")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := safeRemoveTree(filepath.Join(root, "link", "s"), root); err == nil {
+		t.Fatal("expected refusal for a path that resolves outside root")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("directory outside root was removed: %v", err)
+	}
+}
+
 func TestServiceLockPath(t *testing.T) {
 	p, err := ServiceLockPath("/opt/docker/stacks", "web")
 	if err != nil {
