@@ -20,7 +20,7 @@ Options:
 
 ```bash
 # Pin the binary version (default: latest GitHub release)
-TAILARR_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+TAILARR_VERSION=v0.8.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
 
 # Install without root (default falls back here if /usr/local/bin is not writable)
 INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
@@ -39,25 +39,20 @@ It then installs `tailarr` in this order:
 
 Run the script again to upgrade an existing install.
 
-Then:
+Then start the TUI:
 
 ```bash
-tailarr    # interactive TUI (requires a TTY)
+tailarr
 ```
 
-If you see a Python-style `usage: tailarr [-h]`, another `tailarr` is first on
-your `PATH`.
-If you see a "Packet Wizard" TUI, the same problem applies.
-The older binary is often `~/.local/bin/tailarr`, ahead of
-`/usr/local/bin/tailarr`.
-Check with `type -a tailarr`.
+### Another tailarr on PATH
 
-The installer replaces the first `tailarr` on `PATH` when that directory is
-writable.
-Run the one-liner again to upgrade the binary that you invoke.
+If you see a Python-style `usage: tailarr [-h]` or a "Packet Wizard" TUI, another `tailarr` is first on your `PATH`.
+The older binary is often `~/.local/bin/tailarr`, ahead of `/usr/local/bin/tailarr`.
+Run `type -a tailarr` to list each one.
 
-To retire a legacy install, move it aside.
-Then run the Go binary by full path:
+To retire the older binary, move it aside.
+Then run Tailarr by its full path:
 
 ```bash
 mv ~/.local/bin/tailarr ~/.local/bin/tailarr.legacy
@@ -171,7 +166,7 @@ Keys on every tab:
 - Esc clears the filter, then the output.
 - Ctrl+C cancels a running action. When no action runs, Ctrl+C or `q` quits.
 
-To act on more than one service:
+On the Services and Catalog tabs, you can act on more than one service:
 
 - Space picks a row. `a` picks all rows. `n` clears the picks.
 - `/` filters the list as you type. Picked rows stay in the list.
@@ -185,8 +180,9 @@ Tailarr shows a secret, such as `TS_AUTHKEY`, as dots only.
 
 **Apply** copies catalog template files onto a managed service directory.
 It then pulls images and starts the containers.
-It keeps files that exist only in that directory, including `.env`.
-**Deploy** only creates a new service directory.
+It keeps your `.env` values and adds the keys that the template adds.
+It keeps files that exist only in that directory.
+Only **Deploy** creates a new service directory.
 
 Tailarr shows a service as stopped when all its containers exited, for example after Stop.
 It shows a service as exited when a container restarts in a loop, or exits while another container runs.
@@ -224,7 +220,7 @@ Default paths:
 | `TAILARR_LOG_PATH` | Log file |
 | `TAILARR_AUTHKEYS_PATH` | Auth keys file |
 | `TAILARR_LOG_MAX_BYTES` | Log rotation size (default `5242880`, 5 MiB) |
-| `TAILARR_ASSUME_YES` | `1` = auto-confirm default-yes prompts |
+| `TAILARR_ASSUME_YES` | `1` or `true` auto-confirms default-yes prompts |
 
 Precedence, from lowest to highest:
 
@@ -232,8 +228,9 @@ Precedence, from lowest to highest:
 2. Config file
 3. Environment
 
-On first real deploy, create the directories under `/opt/tailarr` and
-`/opt/docker/stacks`.
+Tailarr creates a missing directory when it first needs it.
+A user that is not root cannot create directories under `/opt`.
+In that case, create `/opt/tailarr` and `/opt/docker/stacks` and give your user write access.
 Or set the path overrides above.
 
 Safety:
@@ -257,13 +254,8 @@ Safety:
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
-
-```bash
-go test ./...
-go vet ./...
-```
-
+[CONTRIBUTING.md](CONTRIBUTING.md) lists the setup and the checks to run before you push.
+[AGENTS.md](AGENTS.md) describes the architecture and the conventions.
 Commits use [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## License
