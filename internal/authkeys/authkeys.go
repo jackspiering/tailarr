@@ -11,7 +11,6 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/atomic"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
-	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
 // Store is an in-memory view of the auth key file.
@@ -196,13 +195,4 @@ func (s *Store) Rename(oldName, newName string) error {
 // Names returns ordered key names.
 func (s *Store) Names() []string {
 	return append([]string(nil), s.Order...)
-}
-
-// RedactedList returns "name [redacted]" lines for UI/CLI.
-func (s *Store) RedactedList() []string {
-	lines := make([]string, 0, len(s.Order))
-	for _, name := range s.Order {
-		lines = append(lines, fmt.Sprintf("%s (%s)", name, redact.Preview(s.Keys[name])))
-	}
-	return lines
 }

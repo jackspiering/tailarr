@@ -40,13 +40,8 @@ type ServiceStatus struct {
 	Containers []Container
 }
 
-// OverviewStats summarizes deploy root and docker state.
-type OverviewStats struct {
-	ManagedCount  int
-	OtherCount    int
-	RunningNames  []string
-	DeployedNames []string
-	ManagedHealth map[string]Health
+// Overview lists the deployed services and their containers.
+type Overview struct {
 	// Services lists every deployed service with its containers, by name.
 	Services []ServiceStatus
 	// DockerErr says why docker ps failed. Health is unknown then.
@@ -55,10 +50,8 @@ type OverviewStats struct {
 
 // CollectOverview builds a status overview for the deploy path from a single
 // `docker ps -a` pass.
-func CollectOverview(deployPath string) (OverviewStats, error) {
-	var st OverviewStats
-	st.ManagedHealth = map[string]Health{}
-
+func CollectOverview(deployPath string) (Overview, error) {
+	var st Overview
 	deployed, err := scaletail.ListDeployed(deployPath)
 	if err != nil {
 		return st, err
@@ -72,17 +65,8 @@ func CollectOverview(deployPath string) (OverviewStats, error) {
 		if perr == nil {
 			svc.Containers, svc.Health = serviceContainers(rows, s.Name)
 		}
-		st.DeployedNames = append(st.DeployedNames, s.Name)
-		if svc.Managed {
-			st.ManagedCount++
-			st.ManagedHealth[s.Name] = svc.Health
-		} else {
-			st.OtherCount++
-		}
 		st.Services = append(st.Services, svc)
 	}
-	sort.Strings(st.DeployedNames)
-	st.RunningNames = runningNames(rows)
 	return st, nil
 }
 
@@ -162,38 +146,8 @@ func serviceContainers(rows []psRow, service string) ([]Container, Health) {
 	return out, worst
 }
 
-// runningNames lists ScaleTail-style service names of running containers.
-func runningNames(rows []psRow) []string {
-	seen := map[string]bool{}
-	var names []string
-	for _, r := range rows {
-		if r.state != "running" {
-			continue
-		}
-		name := scaleTailServiceFromContainer(r.name)
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// RunningServiceNames lists ScaleTail-style running service names from docker ps.
-// Recognizes app-* and tailscale-* container name prefixes.
-func RunningServiceNames() ([]string, error) {
-	if !DockerOK() {
-		return nil, nil
-	}
-	rows, err := dockerPS()
-	if err != nil {
-		return nil, err
-	}
-	return runningNames(rows), nil
-}
-
+// scaleTailServiceFromContainer returns the service a ScaleTail container
+// name (app-<service> or tailscale-<service>) belongs to, or "".
 func scaleTailServiceFromContainer(container string) string {
 	switch {
 	case strings.HasPrefix(container, "app-"):
@@ -205,49 +159,15 @@ func scaleTailServiceFromContainer(container string) string {
 	}
 }
 
-// ServiceHealth returns health for a named ScaleTail-style service.
-func ServiceHealth(service string) Health {
-	return ServiceHealthMap([]string{service})[service]
-}
-
-// ServiceHealthMap returns health for each requested service from a single
-// `docker ps -a` pass. Services with no matching container are "stopped";
-// services whose state cannot be read (for example the daemon is down) are
-// "unknown" so failures are not misreported as a stopped stack.
-func ServiceHealthMap(services []string) map[string]Health {
-	out := make(map[string]Health, len(services))
-	// Do not use --filter name=: Docker treats it as a substring, so "web"
-	// would include "web-ui". Match the tailarr.service label or an exact
-	// app-/tailscale- container name.
-	rows, err := dockerPS()
-	for _, s := range services {
-		out[s] = HealthUnknown
-		if err == nil {
-			_, out[s] = serviceContainers(rows, s)
-		}
-	}
-	return out
-}
-
-// healthFromOutput parses `docker ps -a` output for the requested services.
-// Separated from ServiceHealthMap so the parser is testable without Docker.
-func healthFromOutput(raw string, services []string) map[string]Health {
-	rows := parsePS(raw)
-	out := make(map[string]Health, len(services))
-	for _, s := range services {
-		_, out[s] = serviceContainers(rows, s)
-	}
-	return out
-}
-
+// containerMatchesService reports whether a container belongs to service,
+// by its tailarr.service label or an exact app-/tailscale- name. Docker's
+// --filter name= matches substrings, so "web" would include "web-ui".
 func containerMatchesService(container, label, service string) bool {
 	if label != "" && label == service {
 		return true
 	}
-	if container == "app-"+service || container == "tailscale-"+service {
-		return true
-	}
-	return scaleTailServiceFromContainer(container) == service
+	name := scaleTailServiceFromContainer(container)
+	return name != "" && name == service
 }
 
 func classifyHealth(state, status string) Health {
@@ -270,48 +190,20 @@ func classifyHealth(state, status string) Health {
 	}
 }
 
+// healthRank orders health from best (0) to worst.
 func healthRank(h Health) int {
 	switch h {
-	case HealthUnhealthy:
-		return 5
-	case HealthExited:
-		return 4
-	case HealthUnknown:
-		return 3
-	case HealthStarting:
-		return 2
-	case HealthRunning:
-		return 1
 	case HealthHealthy:
 		return 0
-	case HealthStopped:
+	case HealthRunning:
+		return 1
+	case HealthStarting:
+		return 2
+	case HealthExited, HealthStopped:
 		return 4
+	case HealthUnhealthy:
+		return 5
 	default:
 		return 3
 	}
-}
-
-// FormatOverview returns a human-readable overview block.
-func FormatOverview(st OverviewStats) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Managed deployments: %d\n", st.ManagedCount)
-	fmt.Fprintf(&b, "Other compose dirs:  %d\n", st.OtherCount)
-	fmt.Fprintf(&b, "Running (ScaleTail-style names): %d\n", len(st.RunningNames))
-	if len(st.DeployedNames) > 0 {
-		b.WriteString("\nDeployed:\n")
-		for _, name := range st.DeployedNames {
-			h := st.ManagedHealth[name]
-			if h == "" {
-				h = HealthUnknown
-			}
-			fmt.Fprintf(&b, "  - %s [%s]\n", name, h)
-		}
-	}
-	if len(st.RunningNames) > 0 {
-		b.WriteString("\nRunning containers (app-/tailscale- prefix):\n")
-		for _, name := range st.RunningNames {
-			fmt.Fprintf(&b, "  - %s\n", name)
-		}
-	}
-	return b.String()
 }

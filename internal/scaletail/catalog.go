@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
@@ -82,7 +83,6 @@ func ListAvailable(repoPath string) ([]Service, error) {
 		if paths.IsSymlink(dir) {
 			continue
 		}
-		// Use Lstat via Type when possible; re-check directory.
 		fi, err := os.Lstat(dir)
 		if err != nil || !fi.IsDir() {
 			continue
@@ -132,7 +132,7 @@ func ListDeployed(deployPath string) ([]Service, error) {
 	var out []Service
 	for _, e := range entries {
 		name := e.Name()
-		if name == ".tailarr_backups" || name == ".tailarr_locks" {
+		if name == config.BackupDirName || name == config.LockDirName {
 			continue
 		}
 		if !names.ValidServiceName(name) {

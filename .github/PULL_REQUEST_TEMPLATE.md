@@ -14,14 +14,14 @@
 ## Checklist
 
 - [ ] Conventional Commits used (`feat:`, `fix:`, `docs:`, `chore:`, ...)
-- [ ] `go test -race ./...` passes
-- [ ] `go vet ./...` passes
-- [ ] `gofmt` clean (or CI lint green)
+- [ ] `go test -race -tags integration ./...` passes
+- [ ] `go vet ./...`, `gofmt -l .`, and `golangci-lint run` are clean
 - [ ] `rumdl check .` passes
-- [ ] `go mod tidy` clean (no go.mod/go.sum diff)
+- [ ] `go mod tidy` clean (no go.mod/go.sum diff) and `govulncheck ./...` clean
+- [ ] New or changed behavior has a test
 - [ ] No secrets, real `tskey-*` values, or local `/opt` dumps committed
-- [ ] README / CHANGELOG / parity notes updated when behavior changes
-- [ ] Version bump considered (SemVer) if this is a user-visible release change
+- [ ] README and the `[Unreleased]` CHANGELOG section updated when behavior changes
+- [ ] `internal/version/version.go` unchanged (a release is its own `chore(release): prepare vX.Y.Z` pull request)
 
 ## Verification
 

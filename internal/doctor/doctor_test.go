@@ -58,6 +58,16 @@ func fakeDocker(t *testing.T, script string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// healthy reports whether r has no failed check.
+func healthy(r Result) bool {
+	for _, c := range r.Checks {
+		if c.Level == Fail {
+			return false
+		}
+	}
+	return true
+}
+
 // find returns the check with the given name.
 func find(r Result, name string) *Check {
 	for i := range r.Checks {
@@ -66,24 +76,6 @@ func find(r Result, name string) *Check {
 		}
 	}
 	return nil
-}
-
-func TestHealthyFalseOnlyOnFail(t *testing.T) {
-	t.Parallel()
-	ok := Result{Checks: []Check{
-		{Level: OK, Name: "a"},
-		{Level: Warn, Name: "b"},
-	}}
-	if !ok.Healthy() {
-		t.Fatal("result with ok and warn checks must be healthy")
-	}
-	bad := Result{Checks: append(ok.Checks, Check{Level: Fail, Name: "c"})}
-	if bad.Healthy() {
-		t.Fatal("result with a fail check must not be healthy")
-	}
-	if !(Result{}).Healthy() {
-		t.Fatal("empty result must be healthy")
-	}
 }
 
 func TestRunFailsClosedWithoutGitAndDocker(t *testing.T) {
@@ -101,7 +93,7 @@ func TestRunFailsClosedWithoutGitAndDocker(t *testing.T) {
 	if find(r, "compose") != nil {
 		t.Fatal("compose probe must be skipped when docker is missing")
 	}
-	if r.Healthy() {
+	if healthy(r) {
 		t.Fatal("run without git and docker must not be healthy")
 	}
 }
@@ -118,7 +110,7 @@ func TestRunReportsComposeAndDaemonOKWithFakeDocker(t *testing.T) {
 	if daemon == nil || daemon.Level != OK {
 		t.Fatalf("daemon check must pass with succeeding fake docker, got %+v", daemon)
 	}
-	if !r.Healthy() {
+	if !healthy(r) {
 		t.Fatalf("ready host with working probes must be healthy, got %+v", r.Checks)
 	}
 	for _, label := range []string{"config dir", "ScaleTail parent", "deploy path", "log dir", "authkeys dir"} {
@@ -148,7 +140,7 @@ exit 1`)
 	if daemon == nil || daemon.Level != Warn || !strings.Contains(daemon.Message, "not accessible") {
 		t.Fatalf("unreachable daemon must warn, got %+v", daemon)
 	}
-	if !r.Healthy() {
+	if !healthy(r) {
 		t.Fatal("unreachable daemon is a warning, not a failure")
 	}
 }
@@ -162,7 +154,7 @@ func TestRunFailsWhenComposeProbeFails(t *testing.T) {
 	if compose == nil || compose.Level != Fail || !strings.Contains(compose.Message, "Compose v2") {
 		t.Fatalf("failing compose probe must fail the run, got %+v", compose)
 	}
-	if r.Healthy() {
+	if healthy(r) {
 		t.Fatal("missing compose support must not be healthy")
 	}
 }
@@ -204,7 +196,7 @@ func TestRunRefusesSymlinkAncestryInDeployParent(t *testing.T) {
 	if c == nil || c.Level != Fail || !strings.Contains(c.Message, "must not be a symlink") {
 		t.Fatalf("symlinked ancestry must fail closed, got %+v", c)
 	}
-	if r.Healthy() {
+	if healthy(r) {
 		t.Fatal("symlinked ancestry must not be healthy")
 	}
 }
@@ -266,7 +258,7 @@ func TestRunWarnsOnSymlinkedConfigFileOnly(t *testing.T) {
 	if c == nil || c.Level != Warn || !strings.Contains(c.Message, "symlink") {
 		t.Fatalf("symlinked config file must warn, got %+v", c)
 	}
-	if !r.Healthy() {
+	if !healthy(r) {
 		t.Fatal("a symlinked config file is a warning, not a failure")
 	}
 }

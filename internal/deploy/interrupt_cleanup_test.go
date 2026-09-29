@@ -45,7 +45,7 @@ func TestDeployCleansUpAfterInterrupt(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-		errCh <- m.DeployWith("web", DeployOpts{})
+		errCh <- m.Deploy("web", DeployOpts{})
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

@@ -71,7 +71,7 @@ func TestBackupAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := Backup(deployRoot, "demo", svc, BackupCopy)
+	backup, err := Backup(deployRoot, "demo", svc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,6 +341,24 @@ func TestSafeRemoveTree(t *testing.T) {
 	}
 }
 
+func TestSafeRemoveTreeRefusesPathThroughSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "s")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := safeRemoveTree(filepath.Join(root, "link", "s"), root); err == nil {
+		t.Fatal("expected refusal for a path that resolves outside root")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("directory outside root was removed: %v", err)
+	}
+}
+
 func TestServiceLockPath(t *testing.T) {
 	p, err := ServiceLockPath("/opt/docker/stacks", "web")
 	if err != nil {
@@ -419,7 +437,7 @@ func TestRemoveFailsClosedOnComposeError(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.RemoveWith("web", DeployOpts{})
+	err := m.Remove("web")
 	if err == nil {
 		t.Fatal("expected remove to fail when compose down fails")
 	}
@@ -442,7 +460,7 @@ func TestRemoveRejectsUnmanaged(t *testing.T) {
 	}
 	// No Tailarr marker.
 	m := &Manager{Cfg: &config.Config{DeployPath: deployRoot}}
-	err := m.RemoveWith("manual", DeployOpts{})
+	err := m.Remove("manual")
 	if !errors.Is(err, ErrNotManaged) {
 		t.Fatalf("expected ErrNotManaged, got %v", err)
 	}
@@ -464,7 +482,7 @@ func TestDeployRejectsExistingManaged(t *testing.T) {
 	}
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.DeployWith("web", DeployOpts{})
+	err := m.Deploy("web", DeployOpts{})
 	if !errors.Is(err, ErrAlreadyDeployed) {
 		t.Fatalf("expected ErrAlreadyDeployed, got %v", err)
 	}
@@ -800,6 +818,17 @@ func TestApplyFailsWhenTemplateMissing(t *testing.T) {
 	}
 }
 
+// healthFromOutput returns the health of each service in raw `docker ps -a`
+// output, the way CollectOverview classifies it.
+func healthFromOutput(raw string, services []string) map[string]Health {
+	rows := parsePS(raw)
+	out := make(map[string]Health, len(services))
+	for _, s := range services {
+		_, out[s] = serviceContainers(rows, s)
+	}
+	return out
+}
+
 func TestHealthFromOutput(t *testing.T) {
 	raw := strings.Join([]string{
 		"app-web\trunning\tUp 2 hours (healthy)\t",
@@ -857,12 +886,19 @@ func TestDockerStatusCommandsTimeout(t *testing.T) {
 	probeTimeout = 10 * time.Millisecond
 	t.Cleanup(func() { probeTimeout = oldTimeout })
 
-	if _, err := RunningServiceNames(); err == nil {
-		t.Fatal("expected running-service probe timeout")
+	deployRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(deployRoot, "web"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	health := ServiceHealthMap([]string{"web"})
-	if health["web"] != HealthUnknown {
-		t.Fatalf("timed-out health probe = %s", health["web"])
+	if err := os.WriteFile(filepath.Join(deployRoot, "web", "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.DockerErr, "timed out") || len(st.Services) != 1 || st.Services[0].Health != HealthUnknown {
+		t.Fatalf("timed-out docker ps must mark health unknown: %+v", st)
 	}
 }
 
@@ -888,7 +924,7 @@ func TestDeployRejectsEmptyAuthkey(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
-	err := m.DeployWith("web", DeployOpts{})
+	err := m.Deploy("web", DeployOpts{})
 	if !errors.Is(err, ErrEmptyAuthkey) {
 		t.Fatalf("expected ErrEmptyAuthkey, got %v", err)
 	}
@@ -989,25 +1025,6 @@ func TestWriteOverrideSkipsInvalidServiceNames(t *testing.T) {
 	}
 }
 
-func TestLatestBackup(t *testing.T) {
-	root := t.TempDir()
-	b1 := filepath.Join(root, config.BackupDirName, "web-20200101T000000Z")
-	b2 := filepath.Join(root, config.BackupDirName, "web-20200102T000000Z")
-	if err := os.MkdirAll(b1, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(b2, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	got, err := LatestBackup(root, "web")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != b2 {
-		t.Fatalf("got %s want %s", got, b2)
-	}
-}
-
 func TestPruneBackups(t *testing.T) {
 	root := t.TempDir()
 	backupDir := filepath.Join(root, config.BackupDirName)
@@ -1063,12 +1080,12 @@ func TestBackupNameDoesNotCollideWithHyphenPrefix(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := LatestBackup(root, "web")
+	got, err := listServiceBackups(root, "web")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != filepath.Join(backupDir, "web-20200101T000000Z") {
-		t.Fatalf("LatestBackup(web) = %s", got)
+	if len(got) != 1 || got[0] != filepath.Join(backupDir, "web-20200101T000000Z") {
+		t.Fatalf("listServiceBackups(web) = %v", got)
 	}
 	if err := pruneBackups(backupDir, "web", 1); err != nil {
 		t.Fatal(err)
@@ -1086,7 +1103,7 @@ func TestBackupPrunesToNewest(t *testing.T) {
 	}
 	var backups []string
 	for i := 0; i < 3; i++ {
-		b, err := Backup(root, "demo", svc, BackupCopy)
+		b, err := Backup(root, "demo", svc)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1122,7 +1139,7 @@ func TestDeployDoesNotReuseHistoricalBackupAuthkey(t *testing.T) {
 	withFakeCompose(t, func(dir string, args ...string) error { return nil })
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
-	err := m.DeployWith("web", DeployOpts{})
+	err := m.Deploy("web", DeployOpts{})
 	if !errors.Is(err, ErrEmptyAuthkey) {
 		t.Fatalf("expected ErrEmptyAuthkey, got %v", err)
 	}
@@ -1189,7 +1206,7 @@ func TestDeployTakesDownContainersAfterFailedUp(t *testing.T) {
 		return nil
 	})
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.DeployWith("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
+	if err := m.Deploy("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
 		t.Fatalf("expected ErrComposeFailed, got %v", err)
 	}
 	if len(calls) != 2 || !strings.Contains(calls[1], "down --remove-orphans") {
@@ -1208,7 +1225,7 @@ func TestDeployKeepsDestWhenCleanupDownFails(t *testing.T) {
 		return fmt.Errorf("%w: simulated failure", ErrComposeFailed)
 	})
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.DeployWith("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
+	if err := m.Deploy("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
 		t.Fatalf("expected ErrComposeFailed, got %v", err)
 	}
 	dest := filepath.Join(deployRoot, "web")
@@ -1258,7 +1275,7 @@ func TestDeployDoesNotCopyWhileRepoLockHeld(t *testing.T) {
 	t.Cleanup(func() { repoLockTimeout = old })
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
-	err = m.DeployWith("web", DeployOpts{})
+	err = m.Deploy("web", DeployOpts{})
 	if err == nil || !strings.Contains(err.Error(), "holds the lock") {
 		t.Fatalf("expected repo lock error, got %v", err)
 	}
@@ -1617,12 +1634,6 @@ func TestCollectOverviewUsesOneDockerPass(t *testing.T) {
 	if other.Managed || other.Health != HealthStopped || len(other.Containers) != 1 || other.Containers[0].Health != HealthExited {
 		t.Fatalf("other: %+v", other)
 	}
-	if st.ManagedCount != 1 || st.OtherCount != 1 || st.ManagedHealth["web"] != HealthStarting {
-		t.Fatalf("counts: %+v", st)
-	}
-	if strings.Join(st.RunningNames, ",") != "TEST_web" {
-		t.Fatalf("running: %v", st.RunningNames)
-	}
 }
 
 func TestCollectOverviewReportsDockerFailure(t *testing.T) {
@@ -1659,7 +1670,7 @@ func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
 	withFakeCompose(t, func(string, ...string) error { return nil })
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
 	for _, svc := range []string{"web", "api"} {
-		if err := m.DeployWith(svc, DeployOpts{ReusableAuthKey: "tskey-auth-shared"}); err != nil {
+		if err := m.Deploy(svc, DeployOpts{ReusableAuthKey: "tskey-auth-shared"}); err != nil {
 			t.Fatalf("deploy %s: %v", svc, err)
 		}
 	}

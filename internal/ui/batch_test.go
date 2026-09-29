@@ -58,14 +58,14 @@ func batchConfig(t *testing.T) config.Config {
 func TestRunBatchAsksBeforeStopping(t *testing.T) {
 	cfg := batchConfig(t)
 	confirms := 0
-	r := runBatchWith(cfg, nil, scriptUI{confirms: &confirms}, multiStop, []string{"web", "db"})
-	if !r.canceled || r.text != "Canceled." {
+	r := runBatch(cfg, nil, scriptUI{confirms: &confirms}, batchStop, []string{"web", "db"})
+	if !r.canceled || r.ok+r.failed+r.skipped != 0 {
 		t.Fatalf("declined batch must not run, got %+v", r)
 	}
 	if confirms != 1 {
 		t.Fatalf("expected one summary confirm, got %d", confirms)
 	}
-	if got := r.summary(multiStop, []string{"web", "db"}); got != "Canceled." {
+	if got := r.summary(batchStop, []string{"web", "db"}); got != "Canceled." {
 		t.Fatalf("summary = %q", got)
 	}
 }
@@ -74,18 +74,18 @@ func TestRunBatchLogsFailuresAndStreamsProgress(t *testing.T) {
 	cfg := batchConfig(t)
 	log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
 	var printed []string
-	r := runBatchWith(cfg, log, scriptUI{confirm: true, printed: &printed}, multiStop, []string{"web"})
-	if !strings.Contains(r.text, "error:") || r.failed != 1 || r.failedNames[0] != "web" {
+	r := runBatch(cfg, log, scriptUI{confirm: true, printed: &printed}, batchStop, []string{"web"})
+	if r.failed != 1 || r.failedNames[0] != "web" {
 		t.Fatalf("expected an error for a missing deployment, got %+v", r)
 	}
 	data, err := os.ReadFile(cfg.LogPath)
 	if err != nil || !strings.Contains(string(data), "stop web failed") {
 		t.Fatalf("failure not logged: %v %q", err, data)
 	}
-	if len(printed) < 2 || printed[0] != "==>" {
-		t.Fatalf("progress not streamed through Printf: %q", printed)
+	if len(printed) < 2 || printed[0] != "==>" || printed[1] != "error:" {
+		t.Fatalf("progress and error not streamed through Printf: %q", printed)
 	}
-	if got := r.summary(multiStop, []string{"web"}); got != "✖ Stop failed for web · 0 of 1 ok" {
+	if got := r.summary(batchStop, []string{"web"}); got != "✖ Stop failed for web · 0 of 1 ok" {
 		t.Fatalf("summary = %q", got)
 	}
 }
@@ -96,20 +96,40 @@ func TestRunBatchSkipsRemainingAfterInterrupt(t *testing.T) {
 	cancel()
 	interrupt.Set(ctx)
 	t.Cleanup(interrupt.Clear)
-	r := runBatchWith(cfg, nil, scriptUI{confirm: true}, multiRestart, []string{"web", "db"})
-	if strings.Count(r.text, "skipped: interrupted") != 2 || r.skipped != 2 {
-		t.Fatalf("expected both services skipped, got %+v", r)
+	var printed []string
+	r := runBatch(cfg, nil, scriptUI{confirm: true, printed: &printed}, batchRestart, []string{"web", "db"})
+	if strings.Count(strings.Join(printed, "\n"), "skipped: interrupted") != 2 || r.skipped != 2 {
+		t.Fatalf("expected both services skipped, got %+v %q", r, printed)
 	}
-	if got := r.summary(multiRestart, []string{"web", "db"}); got != "✖ Restart interrupted · 0 of 2 ok, 2 skipped" {
+	if got := r.summary(batchRestart, []string{"web", "db"}); got != "✖ Restart interrupted · 0 of 2 ok, 2 skipped" {
+		t.Fatalf("summary = %q", got)
+	}
+}
+
+func TestRunBatchShowsSharedKeyError(t *testing.T) {
+	cfg := batchConfig(t)
+	if err := os.WriteFile(cfg.AuthkeysPath, []byte("home=tskey-auth-home\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var printed []string
+	ui := scriptUI{confirm: true, line: "hom", printed: &printed}
+	r := runBatch(cfg, nil, ui, batchDeploy, []string{"web", "db"})
+	if r.failed != 2 || r.ok != 0 {
+		t.Fatalf("no service may deploy after a shared key error, got %+v", r)
+	}
+	if len(printed) == 0 || printed[len(printed)-1] != "Error:" {
+		t.Fatalf("shared key error not shown: %q", printed)
+	}
+	if got := r.summary(batchDeploy, []string{"web", "db"}); got != "✖ Deploy failed for web, db · 0 of 2 ok" {
 		t.Fatalf("summary = %q", got)
 	}
 }
 
 func TestBatchSummaryOnSuccess(t *testing.T) {
-	if got := (batchResult{ok: 1}).summary(multiDeploy, []string{"web"}); got != "✔ Deployed web" {
+	if got := (batchResult{ok: 1}).summary(batchDeploy, []string{"web"}); got != "✔ Deployed web" {
 		t.Fatalf("single: %q", got)
 	}
-	if got := (batchResult{ok: 3}).summary(multiRestart, []string{"a", "b", "c"}); got != "✔ Restarted 3 services" {
+	if got := (batchResult{ok: 3}).summary(batchRestart, []string{"a", "b", "c"}); got != "✔ Restarted 3 services" {
 		t.Fatalf("many: %q", got)
 	}
 }
@@ -198,7 +218,7 @@ func TestEditConfigDoesNotSaveEnvOverride(t *testing.T) {
 
 func TestBatchSummaryNamesInterrupt(t *testing.T) {
 	r := batchResult{failed: 1, failedNames: []string{"web"}, interrupted: true, skipped: 1}
-	if got := r.summary(multiRestart, []string{"web", "db"}); got != "✖ Restart interrupted · 0 of 2 ok, 1 skipped" {
+	if got := r.summary(batchRestart, []string{"web", "db"}); got != "✖ Restart interrupted · 0 of 2 ok, 1 skipped" {
 		t.Fatalf("summary = %q", got)
 	}
 }

@@ -62,11 +62,6 @@ func Text(s string) string {
 	return out
 }
 
-// Preview always returns the redacted placeholder for UI display of secrets.
-func Preview(_ string) string {
-	return Redacted
-}
-
 // LooksSecret reports whether key name appears to hold a secret.
 // Keywords must match a whole '_' segment so TIMEOUT is not treated as TOKEN.
 func LooksSecret(key string) bool {
@@ -97,24 +92,6 @@ func secretKeyMatch(key, pat string) bool {
 		return true
 	}
 	return false
-}
-
-// EnvLine redacts a single KEY=value line if the key is secret-like or the
-// value looks like a tskey.
-func EnvLine(line string) string {
-	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
-		return line
-	}
-	key, value, ok := strings.Cut(line, "=")
-	if !ok {
-		return Text(line)
-	}
-	key = strings.TrimSpace(key)
-	if LooksSecret(key) || strings.HasPrefix(strings.TrimSpace(value), "tskey-auth-") {
-		return key + "=" + Redacted
-	}
-	return line
 }
 
 // Writer returns a line-atomic redacting writer: each complete line is

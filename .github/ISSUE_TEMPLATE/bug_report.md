@@ -21,11 +21,11 @@ labels: bug
 
 ## Environment
 
-- Tailarr version (shown in the TUI title bar):
+- Tailarr version (shown in the TUI header and on the System tab):
 - OS:
 - Docker / Compose versions (if relevant):
 - Install method (binary / go install / source):
 
 ## Logs
 
-<!-- Redact secrets. The log path is shown under Status > Docker and config summary. Never paste tskey-auth-* values. -->
+<!-- Redact secrets. The System tab shows the log path. Never paste tskey-auth-* values. -->

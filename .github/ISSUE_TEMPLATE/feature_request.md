@@ -15,9 +15,8 @@ labels: enhancement
 
 ## Out of scope
 
-- Web UI or cloud control plane
+- Web UI, subcommands, daemon, or cloud control plane
 - Encrypting auth keys at rest
-- GitHub releases/tags automation (maintainer-managed)
 
 ## Related
 

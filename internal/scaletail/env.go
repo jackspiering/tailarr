@@ -182,17 +182,6 @@ func ReadEnvKeys(path string) ([]string, error) {
 	return keys, err
 }
 
-// MissingRequired returns keys that are empty in merged (common deploy prompts).
-func MissingRequired(merged EnvMap, keys []string) []string {
-	var miss []string
-	for _, k := range keys {
-		if strings.TrimSpace(unquote(merged[k])) == "" {
-			miss = append(miss, k)
-		}
-	}
-	return miss
-}
-
 // IsPlaceholder reports whether a value is empty or a comment-style placeholder.
 func IsPlaceholder(value string) bool {
 	v := strings.TrimSpace(unquote(value))

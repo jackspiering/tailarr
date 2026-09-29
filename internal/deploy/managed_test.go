@@ -101,7 +101,7 @@ func TestRemoveExplainsUnreadableContainerData(t *testing.T) {
 	lockedContainerDir(t, dest)
 	withFakeCompose(t, func(dir string, args ...string) error { return nil })
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.RemoveWith("web", DeployOpts{})
+	err := m.Remove("web")
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("expected a permission error, got %v", err)
 	}

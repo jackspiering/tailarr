@@ -88,7 +88,7 @@ type model struct {
 
 	lists [tabCount]listState
 
-	status     *deploy.OverviewStats
+	status     *deploy.Overview
 	statusErr  string
 	statusBusy bool
 
@@ -233,7 +233,7 @@ func FirstRunSetup(cfg *config.Config) error {
 		msg, saved := editConfigInteractive(cfg, uiPrompt)
 		uiPrompt.Printf("%s\n", msg)
 		if !saved {
-			return fmt.Errorf("%s", msg)
+			return errors.New(msg)
 		}
 		return nil
 	}
@@ -734,19 +734,19 @@ func (m model) servicesKey(key string) (tea.Model, tea.Cmd) {
 		m.menu = m.servicesMenu()
 		return m, nil
 	case "r":
-		return m.lifecycle(multiRestart)
+		return m.lifecycle(batchRestart)
 	case "s":
-		return m.lifecycle(multiStop)
+		return m.lifecycle(batchStop)
 	case "A":
-		return m.lifecycle(multiApply)
+		return m.lifecycle(batchApply)
 	case "X":
-		return m.lifecycle(multiRemove)
+		return m.lifecycle(batchRemove)
 	}
 	return m, nil
 }
 
 func (m model) servicesMenu() *actionMenu {
-	run := func(mode multiMode) func(model) (model, tea.Cmd) {
+	run := func(mode batchMode) func(model) (model, tea.Cmd) {
 		return func(m model) (model, tea.Cmd) { return m.lifecycle(mode) }
 	}
 	t := m.targets()
@@ -755,15 +755,15 @@ func (m model) servicesMenu() *actionMenu {
 		title = fmt.Sprintf("%d services", len(t))
 	}
 	return &actionMenu{title: title, items: []menuItem{
-		{key: "r", label: "Restart", desc: "Stop, then start again with compose up", run: run(multiRestart)},
-		{key: "s", label: "Stop", desc: "Stop the containers and keep all files", run: run(multiStop)},
-		{key: "A", label: "Apply catalog", desc: "Copy the latest template files, pull images, and recreate", run: run(multiApply)},
-		{key: "X", label: "Remove", desc: "Back up, take down, and delete the deployment", run: run(multiRemove)},
+		{key: "r", label: "Restart", desc: "Stop, then start again with compose up", run: run(batchRestart)},
+		{key: "s", label: "Stop", desc: "Stop the containers and keep all files", run: run(batchStop)},
+		{key: "A", label: "Apply catalog", desc: "Copy the latest template files, pull images, and recreate", run: run(batchApply)},
+		{key: "X", label: "Remove", desc: "Back up, take down, and delete the deployment", run: run(batchRemove)},
 	}}
 }
 
 // lifecycle runs mode on the managed targets of the Services tab.
-func (m model) lifecycle(mode multiMode) (model, tea.Cmd) {
+func (m model) lifecycle(mode batchMode) (model, tea.Cmd) {
 	if m.busy {
 		m.note = busyNote
 		return m, nil
@@ -784,7 +784,7 @@ func (m model) lifecycle(mode multiMode) (model, tea.Cmd) {
 	}
 	if len(names) == 0 {
 		if len(skipped) > 0 {
-			m.note = skipped[0] + " is not managed by Tailarr (no " + ".tailarr.compose.yaml marker)."
+			m.note = skipped[0] + " is not managed by Tailarr (no .tailarr.compose.yaml marker)."
 		}
 		return m, nil
 	}
@@ -792,11 +792,11 @@ func (m model) lifecycle(mode multiMode) (model, tea.Cmd) {
 	return m.batch(mode, names)
 }
 
-func (m model) batch(mode multiMode, names []string) (model, tea.Cmd) {
+func (m model) batch(mode batchMode, names []string) (model, tea.Cmd) {
 	cfg, log := m.cfg, m.log
-	title := strings.ToLower(multiTitle(mode)) + " " + summarizeNames(names, 3)
+	title := strings.ToLower(mode.title()) + " " + summarizeNames(names, 3)
 	return m.startOp(title, func(ui prompt.UI) opResult {
-		r := runBatchWith(cfg, log, ui, mode, names)
+		r := runBatch(cfg, log, ui, mode, names)
 		return opResult{lines: []string{r.summary(mode, names)}}
 	})
 }
@@ -844,7 +844,7 @@ func (m model) catalogKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lists[tabCatalog].picked = map[string]bool{}
-		return m.batch(multiDeploy, names)
+		return m.batch(batchDeploy, names)
 	}
 	return m, nil
 }

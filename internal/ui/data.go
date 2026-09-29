@@ -21,7 +21,7 @@ import (
 
 // statusMsg carries a fresh deployment and container snapshot.
 type statusMsg struct {
-	st  deploy.OverviewStats
+	st  deploy.Overview
 	err string
 }
 

@@ -5,7 +5,7 @@ import "errors"
 // Sentinel errors for lifecycle operations.
 var (
 	// ErrAlreadyDeployed is returned when Deploy finds an existing dest.
-	// Create is Deploy only; use Apply on a managed stack.
+	// Only Deploy creates a deployment; use Apply on a managed one.
 	ErrAlreadyDeployed = errors.New("service already deployed")
 	// ErrNotDeployed is returned when a lifecycle op targets a missing deployment.
 	ErrNotDeployed = errors.New("service not deployed")
@@ -14,7 +14,7 @@ var (
 	// ErrNoCompose is returned when a deploy directory has no compose file.
 	ErrNoCompose = errors.New("deployment has no compose file")
 	// ErrEmptyAuthkey is returned when TS_AUTHKEY is required but empty after merge.
-	ErrEmptyAuthkey = errors.New("TS_AUTHKEY is empty; set it in .env, or store an auth key from the Authkeys menu")
+	ErrEmptyAuthkey = errors.New("TS_AUTHKEY is empty; set it in .env, or store an auth key on the Keys tab")
 	// ErrComposeFailed is returned when docker compose fails (wrapped with detail).
 	ErrComposeFailed = errors.New("docker compose failed")
 	// ErrInterrupted is returned when compose is canceled by SIGTERM/SIGINT.

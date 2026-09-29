@@ -24,46 +24,38 @@ import (
 	"github.com/jackspiering/tailarr/internal/version"
 )
 
-// Manager coordinates deploy/apply/stop/restart/remove.
+// Manager coordinates deploy, apply, stop, restart, and remove.
 type Manager struct {
 	Cfg *config.Config
 	Log *logging.Logger
-	// UI is optional interactive prompts. When nil, deploy is non-interactive.
+	// UI prompts for confirmations and env values. When nil, nothing is
+	// asked: Deploy and Apply use the template and stored values as they are.
 	UI prompt.UI
 }
 
 // DeployOpts controls optional deploy and apply behavior.
 type DeployOpts struct {
-	// Interactive prompts for empty/placeholder env values when UI is set.
-	// Default true when UI is non-nil unless set false via SkipInteractive.
-	SkipInteractive bool
 	// ReusableAuthKey is an already-resolved TS_AUTHKEY for batch deploys.
 	ReusableAuthKey string
 }
 
-// TailarrComposeLabel is applied via override so status can detect managed stacks.
-const TailarrComposeLabel = "com.tailarr.managed=true"
-
 // overrideFilename is written next to the service compose file.
 const overrideFilename = ".tailarr.compose.yaml"
+
+// managedMarker is the comment line writeMarkerOnly writes when the compose
+// services cannot be listed for a labeled override.
+const managedMarker = "# Managed: com.tailarr.managed=true"
 
 // managedYAMLLabelRE matches the compose label Tailarr writes in writeOverrideUsing.
 var managedYAMLLabelRE = regexp.MustCompile(`(?m)^\s+tailarr\.managed:\s*"true"\s*$`)
 
-// managedMarkerRE matches the comment form Tailarr writes in writeMarkerOnly.
-var managedMarkerRE = regexp.MustCompile(`(?m)^# Managed: com\.tailarr\.managed=true\s*$`)
+// managedMarkerRE matches managedMarker.
+var managedMarkerRE = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(managedMarker) + `\s*$`)
 
-// DeployWith deploys a service: copies the template into the deploy path,
+// Deploy deploys a service: copies the template into the deploy path,
 // merges env, and runs compose up.
-func (m *Manager) DeployWith(service string, opts DeployOpts) error {
-	if err := names.ValidateServiceName(service); err != nil {
-		return err
-	}
-	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
-	if err != nil {
-		return err
-	}
-	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+func (m *Manager) Deploy(service string, opts DeployOpts) error {
+	lock, err := m.lockService(service)
 	if err != nil {
 		return err
 	}
@@ -81,17 +73,9 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		return fmt.Errorf("deployment root: %w", err)
 	}
 
-	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
-	if paths.IsSymlink(templateDir) {
-		return fmt.Errorf("%w: template must not be a symlink: %s", ErrSymlink, templateDir)
-	}
-	if found, err := paths.ContainsSymlinks(templateDir); err != nil {
-		return fmt.Errorf("template: %w", err)
-	} else if found != "" {
-		return fmt.Errorf("%w: template contains unsupported symlink: %s", ErrSymlink, found)
-	}
-	if !scaletail.HasComposeFile(templateDir) {
-		return fmt.Errorf("template has no compose file: %s", service)
+	templateDir, err := m.catalogTemplate(service)
+	if err != nil {
+		return err
 	}
 
 	dest, err := paths.JoinUnder(m.Cfg.DeployPath, service)
@@ -127,8 +111,7 @@ func (m *Manager) DeployWith(service string, opts DeployOpts) error {
 		// A failed up can leave some containers running. Take them down before
 		// deleting dest; if that fails, keep dest so Remove can clean up later.
 		if started {
-			args := append(composeProjectArgs(m.Cfg.DeployPath, service), "down", "--remove-orphans")
-			if derr := composeCleanup(dest, args...); derr != nil {
+			if derr := composeCleanup(dest, m.projectArgs(service, "down", "--remove-orphans")...); derr != nil {
 				m.log("warning: compose down after failed deploy of %s: %v", service, derr)
 				return fmt.Errorf("%w; compose down also failed, kept %s so Remove can clean up: %v", err, dest, derr)
 			}
@@ -158,18 +141,15 @@ func (m *Manager) finishDeploy(service, templateDir, dest string, tplEnv []byte,
 		return false, err
 	}
 
-	proj := composeProjectArgs(m.Cfg.DeployPath, service)
-	upArgs := append(append([]string{}, proj...),
-		"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
-	return true, Compose(dest, upArgs...)
+	return true, Compose(dest, m.upArgs(service, composeBaseName(dest))...)
 }
 
 // Apply syncs catalog template files onto an existing managed deployment, then
 // pulls images and runs compose up. Dest-only paths and dest .env are kept.
-// Create is Deploy only. Before changing anything, Apply saves the files it
-// may write. A failure puts those files back in place and, when compose up
-// had started, runs up again so the containers match the restored files.
-// Container data is never copied or moved.
+// Only Deploy creates a deployment. Before changing anything, Apply saves the
+// files it may write. A failure puts those files back in place and, when
+// compose up had started, runs up again so the containers match the restored
+// files. Container data is never copied or moved.
 func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err := names.ValidateServiceName(service); err != nil {
 		return err
@@ -192,11 +172,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 			return fmt.Errorf("%w: apply canceled", prompt.ErrCanceled)
 		}
 	}
-	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
-	if err != nil {
-		return err
-	}
-	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	lock, err := m.lockService(service)
 	if err != nil {
 		return err
 	}
@@ -219,17 +195,9 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		return err
 	}
 
-	templateDir := filepath.Join(m.Cfg.RepoPath, "services", service)
-	if paths.IsSymlink(templateDir) {
-		return fmt.Errorf("%w: template must not be a symlink: %s", ErrSymlink, templateDir)
-	}
-	if found, err := paths.ContainsSymlinks(templateDir); err != nil {
-		return fmt.Errorf("template: %w", err)
-	} else if found != "" {
-		return fmt.Errorf("%w: template contains unsupported symlink: %s", ErrSymlink, found)
-	}
-	if !scaletail.HasComposeFile(templateDir) {
-		return fmt.Errorf("template has no compose file: %s", service)
+	templateDir, err := m.catalogTemplate(service)
+	if err != nil {
+		return err
 	}
 	tplEnv, err := readTemplateEnv(templateDir)
 	if err != nil {
@@ -259,9 +227,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		case errors.Is(retErr, ErrInterrupted):
 			retErr = fmt.Errorf("apply interrupted; previous files restored, but containers may not match them (run Restart): %w", retErr)
 		default:
-			upArgs := append(composeProjectArgs(m.Cfg.DeployPath, service),
-				"-f", composeBaseName(dest), "-f", overrideFilename, "up", "-d", "--remove-orphans")
-			if uerr := Compose(dest, upArgs...); uerr != nil {
+			if uerr := Compose(dest, m.upArgs(service, composeBaseName(dest))...); uerr != nil {
 				m.log("warning: compose up with restored files failed for %s: %v", service, uerr)
 				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%v): %w", uerr, retErr)
 				return
@@ -283,20 +249,55 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		return err
 	}
 
-	proj := composeProjectArgs(m.Cfg.DeployPath, service)
-	pullArgs := append(append([]string{}, proj...), "-f", composeFile, "pull")
-	if err := Compose(dest, pullArgs...); err != nil {
+	if err := Compose(dest, m.projectArgs(service, "-f", composeFile, "pull")...); err != nil {
 		return err
 	}
 	upStarted = true
-	upArgs := append(append([]string{}, proj...),
-		"-f", composeFile, "-f", overrideFilename, "up", "-d", "--remove-orphans")
-	if err := Compose(dest, upArgs...); err != nil {
+	if err := Compose(dest, m.upArgs(service, composeFile)...); err != nil {
 		return err
 	}
 	restore = false
 	m.log("applied catalog to service %s", service)
 	return nil
+}
+
+// lockService validates service and takes its lock. ServiceLockPath
+// rejects an invalid name before any path is built.
+func (m *Manager) lockService(service string) (*Lock, error) {
+	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
+	if err != nil {
+		return nil, err
+	}
+	return AcquireLock(lockPath, DefaultLockTimeout)
+}
+
+// catalogTemplate returns the catalog template directory for service. It
+// refuses a template that is or contains a symlink, or has no compose file.
+func (m *Manager) catalogTemplate(service string) (string, error) {
+	dir := filepath.Join(m.Cfg.RepoPath, "services", service)
+	if paths.IsSymlink(dir) {
+		return "", fmt.Errorf("%w: template must not be a symlink: %s", ErrSymlink, dir)
+	}
+	if found, err := paths.ContainsSymlinks(dir); err != nil {
+		return "", fmt.Errorf("template: %w", err)
+	} else if found != "" {
+		return "", fmt.Errorf("%w: template contains unsupported symlink: %s", ErrSymlink, found)
+	}
+	if !scaletail.HasComposeFile(dir) {
+		return "", fmt.Errorf("template has no compose file: %s", service)
+	}
+	return dir, nil
+}
+
+// projectArgs returns the compose project flag for service followed by args.
+func (m *Manager) projectArgs(service string, args ...string) []string {
+	return append(composeProjectArgs(m.Cfg.DeployPath, service), args...)
+}
+
+// upArgs returns the compose args that start service from composeFile and
+// the managed override.
+func (m *Manager) upArgs(service, composeFile string) []string {
+	return m.projectArgs(service, "-f", composeFile, "-f", overrideFilename, "up", "-d", "--remove-orphans")
 }
 
 // requireApplyTarget checks that dest is an existing managed deployment
@@ -415,7 +416,7 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	}
 
 	// Interactive fill for remaining placeholders when a UI is available.
-	if m.UI != nil && !opts.SkipInteractive {
+	if m.UI != nil {
 		if err := m.promptMissingEnv(merged, keys); err != nil {
 			return err
 		}
@@ -543,7 +544,7 @@ func writeOverrideUsing(service, dest, composeFile string) error {
 }
 
 func writeMarkerOnly(dest string) error {
-	body := "# Generated by Tailarr - do not edit by hand\n# Managed: " + TailarrComposeLabel + "\n"
+	body := "# Generated by Tailarr. Do not edit by hand.\n" + managedMarker + "\n"
 	return atomic.WriteFileString(filepath.Join(dest, overrideFilename), body, 0o644)
 }
 
@@ -573,7 +574,7 @@ func copyTemplate(src, dst string) error {
 	})
 }
 
-// storeAuthkey writes a named key using the same lock as the Authkeys menu.
+// storeAuthkey writes a named key under the same lock as the Keys tab.
 func storeAuthkey(path, name, value string) error {
 	lock, err := AcquireLock(AuthkeysLockPath(path), DefaultLockTimeout)
 	if err != nil {
@@ -593,9 +594,7 @@ func storeAuthkey(path, name, value string) error {
 // Stop stops a deployment.
 func (m *Manager) Stop(service string) error {
 	return m.withManagedServiceDir(service, func(dir string) error {
-		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		args := append(append([]string{}, proj...), "stop")
-		if err := Compose(dir, args...); err != nil {
+		if err := Compose(dir, m.projectArgs(service, "stop")...); err != nil {
 			return err
 		}
 		m.log("stopped service %s", service)
@@ -609,14 +608,10 @@ func (m *Manager) Stop(service string) error {
 // starts the sidecar first and waits for its depends_on condition.
 func (m *Manager) Restart(service string) error {
 	return m.withManagedServiceDir(service, func(dir string) error {
-		proj := composeProjectArgs(m.Cfg.DeployPath, service)
-		stopArgs := append(append([]string{}, proj...), "stop")
-		if err := Compose(dir, stopArgs...); err != nil {
+		if err := Compose(dir, m.projectArgs(service, "stop")...); err != nil {
 			return err
 		}
-		upArgs := append(append([]string{}, proj...),
-			"-f", composeBaseName(dir), "-f", overrideFilename, "up", "-d", "--remove-orphans")
-		if err := Compose(dir, upArgs...); err != nil {
+		if err := Compose(dir, m.upArgs(service, composeBaseName(dir))...); err != nil {
 			return fmt.Errorf("restart stopped %s but could not start it again; it is stopped now (fix the cause, then Restart or Apply): %w", service, err)
 		}
 		m.log("restarted service %s", service)
@@ -624,17 +619,10 @@ func (m *Manager) Restart(service string) error {
 	})
 }
 
-// RemoveWith tears down a deployment. Fails closed: directory is only deleted
-// after compose down succeeds.
-func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
-	if err := names.ValidateServiceName(service); err != nil {
-		return err
-	}
-	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
-	if err != nil {
-		return err
-	}
-	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+// Remove backs up and tears down a deployment. It fails closed: the
+// directory is deleted only after compose down succeeds.
+func (m *Manager) Remove(service string) error {
+	lock, err := m.lockService(service)
 	if err != nil {
 		return err
 	}
@@ -662,12 +650,10 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 		}
 	}
 
-	if _, err := Backup(m.Cfg.DeployPath, service, dest, BackupCopy); err != nil {
+	if _, err := Backup(m.Cfg.DeployPath, service, dest); err != nil {
 		return err
 	}
-	proj := composeProjectArgs(m.Cfg.DeployPath, service)
-	args := append(append([]string{}, proj...), "down", "--remove-orphans")
-	if err := Compose(dest, args...); err != nil {
+	if err := Compose(dest, m.projectArgs(service, "down", "--remove-orphans")...); err != nil {
 		return fmt.Errorf("compose down failed; deployment directory left intact: %w", err)
 	}
 	if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
@@ -675,7 +661,7 @@ func (m *Manager) RemoveWith(service string, opts DeployOpts) error {
 	}
 
 	// Offer to delete retained backups (they may contain .env secrets).
-	if m.UI != nil && !opts.SkipInteractive {
+	if m.UI != nil {
 		if backups, _ := listServiceBackups(m.Cfg.DeployPath, service); len(backups) > 0 {
 			m.UI.Printf("%d backup(s) for %s remain under .tailarr_backups and may contain secrets.\n", len(backups), service)
 			if ok, _ := m.UI.Confirm("Delete these backups as well?", false); ok {
@@ -751,15 +737,10 @@ func listServiceBackups(deployPath, service string) ([]string, error) {
 	return out, nil
 }
 
+// withManagedServiceDir runs fn on the directory of a managed deployment
+// while holding its service lock.
 func (m *Manager) withManagedServiceDir(service string, fn func(dir string) error) error {
-	if err := names.ValidateServiceName(service); err != nil {
-		return err
-	}
-	lockPath, err := ServiceLockPath(m.Cfg.DeployPath, service)
-	if err != nil {
-		return err
-	}
-	lock, err := AcquireLock(lockPath, DefaultLockTimeout)
+	lock, err := m.lockService(service)
 	if err != nil {
 		return err
 	}
@@ -823,23 +804,16 @@ func requireManagedFiles(dest, service string) error {
 	return nil
 }
 
+// safeRemoveTree deletes path, which must lie inside root once both are
+// resolved and must not be or contain a symlink.
 func safeRemoveTree(path, root string) error {
 	if paths.IsSymlink(path) {
 		return fmt.Errorf("%w: refusing to remove symlink: %s", ErrSymlink, path)
 	}
-	ok, err := paths.Within(path, root)
-	if err != nil || !ok {
-		rootAbs, err2 := paths.AbsExistingDir(root)
-		if err2 != nil {
-			return fmt.Errorf("unsafe remove path: %s", path)
-		}
-		pathAbs, err2 := filepath.Abs(path)
-		if err2 != nil {
-			return err2
-		}
-		if !strings.HasPrefix(pathAbs, rootAbs+string(os.PathSeparator)) {
-			return fmt.Errorf("path not within deploy root: %s", path)
-		}
+	if ok, err := paths.Within(path, root); err != nil {
+		return fmt.Errorf("refusing to remove %s: %w", path, err)
+	} else if !ok {
+		return fmt.Errorf("refusing to remove %s: not within %s", path, root)
 	}
 	if found, err := paths.ContainsSymlinks(path); err != nil {
 		return err

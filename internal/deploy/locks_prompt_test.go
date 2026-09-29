@@ -41,7 +41,7 @@ func TestDeployReleasesCatalogLockBeforePrompts(t *testing.T) {
 		Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot},
 		UI:  lockProbeUI{lockPath: RepoLockPath(repo), errs: &errs, line: "hi"},
 	}
-	if err := m.DeployWith("web", DeployOpts{}); err != nil {
+	if err := m.Deploy("web", DeployOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(errs) > 0 {
