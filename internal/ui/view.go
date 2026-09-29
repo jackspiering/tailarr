@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -557,7 +558,7 @@ func (m model) serviceDetail(w int) []string {
 		lines = append(lines, styleOrPlain(cs, g)+" "+clip(c.Name, w-2), "  "+styleOrPlain(dimStyle, clip(c.Status, w-2)))
 	}
 	lines = append(lines, "",
-		kv("path", m.cfg.DeployPath+"/"+name, w, dimStyle),
+		kv("path", filepath.Join(m.cfg.DeployPath, name), w, dimStyle),
 		kv("project", deploy.ProjectName(m.cfg.DeployPath, name), w, dimStyle))
 	if svc.Managed {
 		lines = append(lines, "", styleOrPlain(dimStyle, "enter for actions"))
@@ -744,6 +745,9 @@ func (m model) doctorLabel() string {
 	if m.doctorBusy {
 		return m.spinner() + " checking"
 	}
+	if m.checks == nil {
+		return ""
+	}
 	fails, warns := 0, 0
 	for _, c := range m.checks {
 		switch c.Level {
@@ -752,9 +756,6 @@ func (m model) doctorLabel() string {
 		case doctor.Warn:
 			warns++
 		}
-	}
-	if m.checks == nil {
-		return ""
 	}
 	return fmt.Sprintf("%d fail · %d warn", fails, warns)
 }

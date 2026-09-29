@@ -20,53 +20,54 @@ import (
 	"github.com/jackspiering/tailarr/internal/version"
 )
 
-type multiMode int
+// batchMode is the lifecycle action a batch runs on each service.
+type batchMode int
 
 const (
-	multiNone multiMode = iota
-	multiDeploy
-	multiRemove
-	multiApply
-	multiStop
-	multiRestart
+	batchDeploy batchMode = iota
+	batchRemove
+	batchApply
+	batchStop
+	batchRestart
 )
 
-func multiTitle(mode multiMode) string {
-	switch mode {
-	case multiDeploy:
+// title names the action, for example "Deploy".
+func (b batchMode) title() string {
+	switch b {
+	case batchDeploy:
 		return "Deploy"
-	case multiRemove:
+	case batchRemove:
 		return "Remove"
-	case multiApply:
+	case batchApply:
 		return "Apply"
-	case multiStop:
+	case batchStop:
 		return "Stop"
-	case multiRestart:
+	case batchRestart:
 		return "Restart"
 	}
-	return "Select"
+	return "Run"
 }
 
-func multiDone(mode multiMode) string {
-	switch mode {
-	case multiDeploy:
+// done is the verb of a success summary, for example "Deployed".
+func (b batchMode) done() string {
+	switch b {
+	case batchDeploy:
 		return "Deployed"
-	case multiRemove:
+	case batchRemove:
 		return "Removed"
-	case multiApply:
+	case batchApply:
 		return "Applied catalog to"
-	case multiStop:
+	case batchStop:
 		return "Stopped"
-	case multiRestart:
+	case batchRestart:
 		return "Restarted"
 	}
 	return "Done:"
 }
 
-// batchResult is the outcome of runBatchWith. text lists every service with
-// its result; the counts drive the one-line TUI summary.
+// batchResult is the outcome of runBatch. Its counts drive the one-line
+// summary; per-service progress goes to the output panel through ui.Printf.
 type batchResult struct {
-	text                string
 	ok, failed, skipped int
 	failedNames         []string
 	canceled            bool
@@ -74,7 +75,7 @@ type batchResult struct {
 }
 
 // summary returns one line for the output panel.
-func (r batchResult) summary(mode multiMode, services []string) string {
+func (r batchResult) summary(mode batchMode, services []string) string {
 	if r.canceled {
 		return "Canceled."
 	}
@@ -83,11 +84,11 @@ func (r batchResult) summary(mode multiMode, services []string) string {
 		if len(services) == 1 {
 			what = services[0]
 		}
-		return "✔ " + multiDone(mode) + " " + what
+		return "✔ " + mode.done() + " " + what
 	}
-	line := fmt.Sprintf("✖ %s interrupted", multiTitle(mode))
+	line := fmt.Sprintf("✖ %s interrupted", mode.title())
 	if r.failed > 0 && !r.interrupted {
-		line = fmt.Sprintf("✖ %s failed for %s", multiTitle(mode), summarizeNames(r.failedNames, 3))
+		line = fmt.Sprintf("✖ %s failed for %s", mode.title(), summarizeNames(r.failedNames, 3))
 	}
 	line += fmt.Sprintf(" · %d of %d ok", r.ok, len(services))
 	if r.skipped > 0 {
@@ -96,34 +97,31 @@ func (r batchResult) summary(mode multiMode, services []string) string {
 	return line
 }
 
-// runBatchWith runs mode on each service. It stops at the first interrupt,
+// runBatch runs mode on each service. It stops at the first interrupt,
 // logs every failure, and asks once before a Deploy, Stop, or Restart batch.
 // Apply and Remove confirm per service. Progress goes to ui.Printf.
-func runBatchWith(cfg config.Config, log *logging.Logger, ui prompt.UI, mode multiMode, services []string) batchResult {
-	verb := multiTitle(mode)
-	if mode == multiDeploy || mode == multiStop || mode == multiRestart {
-		ok, err := ui.Confirm(fmt.Sprintf("%s %d service(s): %s?", verb, len(services), summarizeNames(services, 8)), false)
+func runBatch(cfg config.Config, log *logging.Logger, ui prompt.UI, mode batchMode, services []string) batchResult {
+	if mode == batchDeploy || mode == batchStop || mode == batchRestart {
+		ok, err := ui.Confirm(fmt.Sprintf("%s %d service(s): %s?", mode.title(), len(services), summarizeNames(services, 8)), false)
 		if err != nil || !ok {
-			return batchResult{text: "Canceled.", canceled: true}
+			return batchResult{canceled: true}
 		}
 	}
 	mgr := &deploy.Manager{Cfg: &cfg, Log: log, UI: ui}
 	var sharedKey string
-	if mode == multiDeploy && len(services) > 1 {
+	if mode == batchDeploy && len(services) > 1 {
 		key, err := sharedAuthkey(cfg, ui)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, prompt.ErrCanceled) {
-				return batchResult{text: "Canceled.", canceled: true}
+				return batchResult{canceled: true}
 			}
-			return batchResult{text: "Error: " + redact.Text(err.Error()), failed: len(services)}
+			return batchResult{failed: len(services)}
 		}
 		sharedKey = key
 	}
 	var r batchResult
-	var b strings.Builder
 	skip := func(rest []string) {
 		for _, name := range rest {
-			fmt.Fprintf(&b, "==> %s\n  skipped: interrupted\n", name)
 			ui.Printf("==> %s\n  skipped: interrupted\n", name)
 			r.skipped++
 		}
@@ -133,34 +131,30 @@ func runBatchWith(cfg config.Config, log *logging.Logger, ui prompt.UI, mode mul
 			skip(services[i:])
 			break
 		}
-		fmt.Fprintf(&b, "==> %s\n", svc)
 		ui.Printf("==> %s\n", svc)
 		var err error
 		switch mode {
-		case multiDeploy:
+		case batchDeploy:
 			err = mgr.Deploy(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
-		case multiApply:
+		case batchApply:
 			err = mgr.Apply(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
-		case multiRemove:
+		case batchRemove:
 			err = mgr.Remove(svc)
-		case multiStop:
+		case batchStop:
 			err = mgr.Stop(svc)
-		case multiRestart:
+		case batchRestart:
 			err = mgr.Restart(svc)
 		}
 		if err == nil {
-			b.WriteString("  ok\n")
 			ui.Printf("  ✔ ok\n")
 			r.ok++
 			continue
 		}
-		msg := redact.Text(err.Error())
-		fmt.Fprintf(&b, "  error: %s\n", msg)
-		ui.Printf("  error: %s\n", msg)
+		ui.Printf("  error: %s\n", redact.Text(err.Error()))
 		r.failed++
 		r.failedNames = append(r.failedNames, svc)
 		if log != nil {
-			log.Event(fmt.Sprintf("%s %s failed: %v", strings.ToLower(verb), svc, err))
+			log.Event(fmt.Sprintf("%s %s failed: %v", strings.ToLower(mode.title()), svc, err))
 		}
 		if errors.Is(err, deploy.ErrInterrupted) || errors.Is(err, context.Canceled) {
 			r.interrupted = true
@@ -168,7 +162,6 @@ func runBatchWith(cfg config.Config, log *logging.Logger, ui prompt.UI, mode mul
 			break
 		}
 	}
-	r.text = b.String()
 	return r
 }
 
