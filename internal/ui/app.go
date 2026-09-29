@@ -233,7 +233,7 @@ func FirstRunSetup(cfg *config.Config) error {
 		msg, saved := editConfigInteractive(cfg, uiPrompt)
 		uiPrompt.Printf("%s\n", msg)
 		if !saved {
-			return fmt.Errorf("%s", msg)
+			return errors.New(msg)
 		}
 		return nil
 	}
