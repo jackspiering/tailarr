@@ -53,30 +53,34 @@ Two layers. `cmd/tailarr/main.go` (~55 lines) loads config, builds the logger, r
 Import direction, arrows point at dependencies:
 
 ```text
-ui       -> config, deploy, scaletail, authkeys, doctor, prompt, upgrade, logging, version
-deploy   -> config, scaletail, authkeys, prompt, logging, version
-security -> atomic, paths, redact, names (leaf helpers imported by nearly everything)
+ui        -> config, deploy, scaletail, authkeys, doctor, prompt, upgrade, logging, interrupt, version
+deploy    -> config, scaletail, authkeys, prompt, logging, interrupt, version
+doctor    -> config, deploy, scaletail
+scaletail -> config, interrupt
+security  -> atomic, paths, redact, names (leaf helpers imported by nearly everything)
 ```
 
 Deployment flow end to end:
 
 1. `config.Default()` + `config.Load()`: file values, overridden by `TAILARR_*` env vars; defaults under `/opt/tailarr`.
 2. Catalog refresh (`internal/scaletail/repo.go`): git CLI clone `--depth 1` or pull `--ff-only`, https/ssh only, 5 minute timeout.
-3. Discovery (`scaletail.ListAvailable`): scans `<repo>/services` for directories with `compose.yaml|yml` plus `.env`; symlinked service dirs are skipped.
-4. Lifecycle (`deploy.Manager` facade): validates the name
-   (`security/names.ValidateServiceName`), merges template `.env` with stored
+3. Discovery (`scaletail.ListAvailable`): scans `<repo>/services` for directories with a Compose file
+   (`compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml`) plus `.env`; symlinked service dirs are skipped.
+4. Lifecycle (`deploy.Manager` facade: `Deploy`, `Apply`, `Stop`, `Restart`,
+   `Remove`): validates the name (`security/names.ValidateServiceName`), takes
+   the service pid+flock lock (`deploy.AcquireLock`, 30 s default) and, while it
+   reads the template, the catalog lock. It merges template `.env` with stored
    values (`ValidateMergedTSAuthkey`), writes env mode 0600 atomically, writes
-   managed override `.tailarr.compose.yaml`, takes a pid+flock lock
-   (`deploy.AcquireLock`, 30 s default), then execs `docker compose` (package
-   var `composeFn`) with filtered env and redacted stdio. Apply first saves
-   only the files it writes (template paths, `.env`, override) to
-   `.tailarr_backups` (keep 2); failure restores them in place and re-runs
-   `up`. Container data is never moved, because running containers bind-mount
-   it. Remove copies the whole tree first (modes, mtimes, owners as root;
-   sockets and FIFOs skipped). Compose runs in its own process group; cancel
-   sends the group SIGINT so the plugin child stops too. Env keys that the
-   deployment `.env` sets are dropped from the compose environment (except
-   `PATH`, `HOME`, `DOCKER_*`, and similar), so `.env` wins.
+   managed override `.tailarr.compose.yaml`, then execs `docker compose`
+   (package var `composeFn`) with filtered env and redacted stdio. Apply first
+   saves only the files it writes (template paths, `.env`, override) to
+   `.tailarr_backups` (keep 2); failure restores them in place and re-runs `up`.
+   Container data is never moved, because running containers bind-mount it.
+   Remove copies the whole tree first (modes, mtimes, owners as root; sockets
+   and FIFOs skipped). Compose runs in its own process group; cancel sends the
+   group SIGINT so the plugin child stops too. Env keys that the deployment
+   `.env` sets are dropped from the compose environment (except `PATH`, `HOME`,
+   `DOCKER_*`, and similar), so `.env` wins.
 5. Status (`deploy.CollectOverview`): one `docker ps -a` pass returns each service with its containers; health groups by the
    `tailarr.service` label or `app-` / `tailscale-` name prefixes. A service whose containers all exited is stopped.
 6. Every event appends a redacted line via `logging.Logger.Event` (size rotation, O_NOFOLLOW).
@@ -100,7 +104,7 @@ Key architectural patterns:
 |Path|Purpose|
 |---|---|
 |`cmd/tailarr/`|Entrypoint: wiring only|
-|`internal/ui/`|Bubble Tea model, screens, menus, first-run setup|
+|`internal/ui/`|Bubble Tea model, tabs, panels, in-TUI prompts, first-run setup|
 |`internal/config/`|KEY=VALUE load/save, `TAILARR_*` overrides|
 |`internal/scaletail/`|Catalog discovery, git refresh, env parse/merge/write|
 |`internal/deploy/`|Lifecycle facade, compose exec, locks, backups, status|
@@ -112,11 +116,13 @@ Key architectural patterns:
 |`internal/prompt/`|Terminal prompts; `UI` interface|
 |`internal/doctor/`|Host readiness checks|
 |`internal/logging/`|Redacted, rotating file log|
+|`internal/interrupt/`|Shared cancel context that compose, git, and backups watch|
 |`internal/upgrade/`|Self-update with checksum verification, SemVer compare|
 |`internal/version/`|ldflags-injected `Version` variable|
 |`testdata/scaletail/services/`|Fixtures for catalog tests|
 |`.github/workflows/`|CI and release pipelines|
 |`.grok/rules/`|README writing rule|
+|`docs/reviews/`|Dated code review and functional check reports (point-in-time, not kept current)|
 
 ## Development Commands
 
@@ -163,7 +169,7 @@ Concurrency and locking:
   top, stale-owner reclaim via `/proc/<pid>/comm`; `Release` never removes a
   live owner's lock.
 - Platform code splits by build tags: `lock_unix.go`, `lock_linux.go`, `owner_unix.go`, `process_unix.go`, `composeproc_unix.go`,
-  `nofollow_unix.go`, and their `_other` twins.
+  `gitproc_unix.go`, `nofollow_unix.go`, and their `_other` twins (`lock_unix_other.go` covers unix outside Linux).
 
 Dependency injection:
 
@@ -217,7 +223,8 @@ Git workflow:
 |`internal/ui/view.go`|Rendering: header, tabs, tables, detail panes, output and prompt panels|
 |`internal/ui/ask.go`|`tuiUI` (in-TUI `prompt.UI`), output line sink|
 |`internal/ui/ops.go`|Batch lifecycle, auth key, config, refresh, upgrade actions|
-|`internal/deploy/deploy.go`|DeployWith / Apply / Stop / Restart / RemoveWith|
+|`internal/deploy/deploy.go`|Deploy / Apply / Stop / Restart / Remove|
+|`internal/deploy/status.go`|`CollectOverview`: services, containers, and health from one `docker ps -a`|
 |`internal/deploy/compose.go`|docker compose exec, output seam, env filter, project naming, probes|
 |`internal/deploy/lock.go`|pid+flock acquisition and reclaim|
 |`internal/deploy/backup.go`|Full-tree Remove backups, prune|
