@@ -216,7 +216,7 @@ func TestBackupSkipsSocketsAndFIFOs(t *testing.T) {
 	var backup string
 	go func() {
 		var err error
-		backup, err = Backup(root, "svc", svc, BackupCopy)
+		backup, err = Backup(root, "svc", svc)
 		done <- err
 	}()
 	select {
@@ -259,7 +259,7 @@ func TestBackupKeepsModesAndMtime(t *testing.T) {
 	if err := os.Chtimes(file, old, old); err != nil {
 		t.Fatal(err)
 	}
-	backup, err := Backup(root, "svc", svc, BackupCopy)
+	backup, err := Backup(root, "svc", svc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestBackupStopsOnInterrupt(t *testing.T) {
 	cancel()
 	interrupt.Set(ctx)
 	t.Cleanup(interrupt.Clear)
-	if _, err := Backup(root, "svc", svc, BackupCopy); !errors.Is(err, ErrInterrupted) {
+	if _, err := Backup(root, "svc", svc); !errors.Is(err, ErrInterrupted) {
 		t.Fatalf("expected ErrInterrupted, got %v", err)
 	}
 }

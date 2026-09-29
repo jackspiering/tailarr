@@ -15,15 +15,9 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
-// BackupMode selects how Backup snapshots a deployment. Production always copies.
-type BackupMode string
-
-const (
-	BackupCopy BackupMode = "copy"
-)
-
-// Backup creates a timestamped backup of servicePath under deployPath/.tailarr_backups.
-func Backup(deployPath, service, servicePath string, mode BackupMode) (string, error) {
+// Backup copies servicePath to a timestamped directory under
+// deployPath/.tailarr_backups and keeps the two newest backups of service.
+func Backup(deployPath, service, servicePath string) (string, error) {
 	if err := names.ValidateServiceName(service); err != nil {
 		return "", err
 	}
@@ -44,9 +38,6 @@ func Backup(deployPath, service, servicePath string, mode BackupMode) (string, e
 		return "", err
 	}
 
-	if mode != BackupCopy {
-		return "", fmt.Errorf("unknown backup mode: %s", mode)
-	}
 	if err := copyTree(servicePath, backupPath); err != nil {
 		_ = os.RemoveAll(backupPath)
 		return "", fmt.Errorf("copy deployment to backup: %w", err)

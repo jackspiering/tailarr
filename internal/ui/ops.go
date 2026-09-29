@@ -138,11 +138,11 @@ func runBatchWith(cfg config.Config, log *logging.Logger, ui prompt.UI, mode mul
 		var err error
 		switch mode {
 		case multiDeploy:
-			err = mgr.DeployWith(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
+			err = mgr.Deploy(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
 		case multiApply:
 			err = mgr.Apply(svc, deploy.DeployOpts{ReusableAuthKey: sharedKey})
 		case multiRemove:
-			err = mgr.RemoveWith(svc, deploy.DeployOpts{})
+			err = mgr.Remove(svc)
 		case multiStop:
 			err = mgr.Stop(svc)
 		case multiRestart:

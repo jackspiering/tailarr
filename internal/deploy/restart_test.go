@@ -89,7 +89,7 @@ func TestRemoveReportsBackupsItCannotDelete(t *testing.T) {
 		Log: logging.New(logPath, 1<<20),
 		UI:  recordUI{out: &out},
 	}
-	if err := m.RemoveWith("web", DeployOpts{}); err != nil {
+	if err := m.Remove("web"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Could not delete "+stuck) {

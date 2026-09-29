@@ -71,7 +71,7 @@ func TestBackupAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backup, err := Backup(deployRoot, "demo", svc, BackupCopy)
+	backup, err := Backup(deployRoot, "demo", svc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestRemoveFailsClosedOnComposeError(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.RemoveWith("web", DeployOpts{})
+	err := m.Remove("web")
 	if err == nil {
 		t.Fatal("expected remove to fail when compose down fails")
 	}
@@ -442,7 +442,7 @@ func TestRemoveRejectsUnmanaged(t *testing.T) {
 	}
 	// No Tailarr marker.
 	m := &Manager{Cfg: &config.Config{DeployPath: deployRoot}}
-	err := m.RemoveWith("manual", DeployOpts{})
+	err := m.Remove("manual")
 	if !errors.Is(err, ErrNotManaged) {
 		t.Fatalf("expected ErrNotManaged, got %v", err)
 	}
@@ -464,7 +464,7 @@ func TestDeployRejectsExistingManaged(t *testing.T) {
 	}
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	err := m.DeployWith("web", DeployOpts{})
+	err := m.Deploy("web", DeployOpts{})
 	if !errors.Is(err, ErrAlreadyDeployed) {
 		t.Fatalf("expected ErrAlreadyDeployed, got %v", err)
 	}
@@ -906,7 +906,7 @@ func TestDeployRejectsEmptyAuthkey(t *testing.T) {
 	})
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
-	err := m.DeployWith("web", DeployOpts{})
+	err := m.Deploy("web", DeployOpts{})
 	if !errors.Is(err, ErrEmptyAuthkey) {
 		t.Fatalf("expected ErrEmptyAuthkey, got %v", err)
 	}
@@ -1085,7 +1085,7 @@ func TestBackupPrunesToNewest(t *testing.T) {
 	}
 	var backups []string
 	for i := 0; i < 3; i++ {
-		b, err := Backup(root, "demo", svc, BackupCopy)
+		b, err := Backup(root, "demo", svc)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1121,7 +1121,7 @@ func TestDeployDoesNotReuseHistoricalBackupAuthkey(t *testing.T) {
 	withFakeCompose(t, func(dir string, args ...string) error { return nil })
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
-	err := m.DeployWith("web", DeployOpts{})
+	err := m.Deploy("web", DeployOpts{})
 	if !errors.Is(err, ErrEmptyAuthkey) {
 		t.Fatalf("expected ErrEmptyAuthkey, got %v", err)
 	}
@@ -1188,7 +1188,7 @@ func TestDeployTakesDownContainersAfterFailedUp(t *testing.T) {
 		return nil
 	})
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.DeployWith("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
+	if err := m.Deploy("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
 		t.Fatalf("expected ErrComposeFailed, got %v", err)
 	}
 	if len(calls) != 2 || !strings.Contains(calls[1], "down --remove-orphans") {
@@ -1207,7 +1207,7 @@ func TestDeployKeepsDestWhenCleanupDownFails(t *testing.T) {
 		return fmt.Errorf("%w: simulated failure", ErrComposeFailed)
 	})
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
-	if err := m.DeployWith("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
+	if err := m.Deploy("web", DeployOpts{}); !errors.Is(err, ErrComposeFailed) {
 		t.Fatalf("expected ErrComposeFailed, got %v", err)
 	}
 	dest := filepath.Join(deployRoot, "web")
@@ -1257,7 +1257,7 @@ func TestDeployDoesNotCopyWhileRepoLockHeld(t *testing.T) {
 	t.Cleanup(func() { repoLockTimeout = old })
 
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: filepath.Join(deployRoot, "keys")}}
-	err = m.DeployWith("web", DeployOpts{})
+	err = m.Deploy("web", DeployOpts{})
 	if err == nil || !strings.Contains(err.Error(), "holds the lock") {
 		t.Fatalf("expected repo lock error, got %v", err)
 	}
@@ -1652,7 +1652,7 @@ func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
 	withFakeCompose(t, func(string, ...string) error { return nil })
 	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
 	for _, svc := range []string{"web", "api"} {
-		if err := m.DeployWith(svc, DeployOpts{ReusableAuthKey: "tskey-auth-shared"}); err != nil {
+		if err := m.Deploy(svc, DeployOpts{ReusableAuthKey: "tskey-auth-shared"}); err != nil {
 			t.Fatalf("deploy %s: %v", svc, err)
 		}
 	}

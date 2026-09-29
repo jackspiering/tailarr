@@ -120,8 +120,8 @@ func waitFor(t *testing.T, timeout time.Duration, what string, fn func() bool) {
 
 func TestIntegrationDeployStartsService(t *testing.T) {
 	f := newIntegrationFixture(t, "tester")
-	if err := f.m.DeployWith(f.service, DeployOpts{}); err != nil {
-		t.Fatalf("DeployWith failed: %v", err)
+	if err := f.m.Deploy(f.service, DeployOpts{}); err != nil {
+		t.Fatalf("Deploy failed: %v", err)
 	}
 	t.Cleanup(func() { f.downProject(t) })
 
@@ -158,8 +158,8 @@ func TestIntegrationDeployStartsService(t *testing.T) {
 
 func TestIntegrationStopThenRemove(t *testing.T) {
 	f := newIntegrationFixture(t, "removetest")
-	if err := f.m.DeployWith(f.service, DeployOpts{}); err != nil {
-		t.Fatalf("DeployWith failed: %v", err)
+	if err := f.m.Deploy(f.service, DeployOpts{}); err != nil {
+		t.Fatalf("Deploy failed: %v", err)
 	}
 	t.Cleanup(func() { f.downProject(t) })
 	waitFor(t, 60*time.Second, "container running before stop", func() bool {
@@ -176,8 +176,8 @@ func TestIntegrationStopThenRemove(t *testing.T) {
 	})
 
 	dest := filepath.Join(f.deploy, f.service)
-	if err := f.m.RemoveWith(f.service, DeployOpts{}); err != nil {
-		t.Fatalf("RemoveWith failed: %v", err)
+	if err := f.m.Remove(f.service); err != nil {
+		t.Fatalf("Remove failed: %v", err)
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {
 		t.Fatalf("deployment directory must be gone after remove, stat err: %v", err)
@@ -186,9 +186,9 @@ func TestIntegrationStopThenRemove(t *testing.T) {
 		t.Fatalf("container %s must be removed from docker", f.container)
 	}
 
-	err := f.m.RemoveWith(f.service, DeployOpts{})
+	err := f.m.Remove(f.service)
 	if !errors.Is(err, ErrNotDeployed) {
-		t.Fatalf("second RemoveWith must return ErrNotDeployed, got %v", err)
+		t.Fatalf("second Remove must return ErrNotDeployed, got %v", err)
 	}
 }
 
@@ -208,8 +208,8 @@ func TestIntegrationUnmanagedRefused(t *testing.T) {
 	if err := f.m.Stop(f.service); !errors.Is(err, ErrNotManaged) {
 		t.Fatalf("Stop on unmanaged dir must return ErrNotManaged, got %v", err)
 	}
-	if err := f.m.RemoveWith(f.service, DeployOpts{}); !errors.Is(err, ErrNotManaged) {
-		t.Fatalf("RemoveWith on unmanaged dir must return ErrNotManaged, got %v", err)
+	if err := f.m.Remove(f.service); !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("Remove on unmanaged dir must return ErrNotManaged, got %v", err)
 	}
 	if _, err := os.Stat(dest); err != nil {
 		t.Fatalf("unmanaged directory must stay intact, stat err: %v", err)
@@ -254,8 +254,8 @@ func containerRunning(name string) bool {
 
 func TestIntegrationRestartKeepsSidecarAppRunning(t *testing.T) {
 	f := newSidecarFixture(t, "restarttest")
-	if err := f.m.DeployWith(f.service, DeployOpts{}); err != nil {
-		t.Fatalf("DeployWith failed: %v", err)
+	if err := f.m.Deploy(f.service, DeployOpts{}); err != nil {
+		t.Fatalf("Deploy failed: %v", err)
 	}
 	t.Cleanup(func() { f.downProject(t) })
 	waitFor(t, 60*time.Second, "app running before restart", func() bool { return containerRunning(f.container) })
@@ -292,8 +292,8 @@ func TestIntegrationFailedApplyKeepsContainerData(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tpl, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.m.DeployWith(f.service, DeployOpts{}); err != nil {
-		t.Fatalf("DeployWith failed: %v", err)
+	if err := f.m.Deploy(f.service, DeployOpts{}); err != nil {
+		t.Fatalf("Deploy failed: %v", err)
 	}
 	t.Cleanup(func() { f.downProject(t) })
 	heartbeat := filepath.Join(f.deploy, f.service, "data", "heartbeat")
