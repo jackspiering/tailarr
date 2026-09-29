@@ -75,7 +75,7 @@ func Run(cfg config.Config) Result {
 	if st, err := os.Stat(filepath.Join(cfg.RepoPath, "services")); err == nil && st.IsDir() {
 		r.add(OK, "catalog", "ScaleTail services directory present")
 	} else {
-		r.add(Warn, "catalog", "ScaleTail services directory not found (use Services > Refresh catalog)")
+		r.add(Warn, "catalog", "ScaleTail services directory not found (press r on the Catalog tab to clone it)")
 	}
 
 	r.checkTun()
