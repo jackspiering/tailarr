@@ -4,8 +4,8 @@ Thanks for helping with Tailarr.
 
 ## Development setup
 
-Requirements: Go (see `go.mod`), Git, and optionally Docker Compose v2 for
-manual integration checks.
+Requirements: Go (see `go.mod`) and Git. The integration tests also need
+Docker with Compose v2; they skip without it.
 
 ```bash
 git clone https://github.com/jackspiering/tailarr.git
@@ -32,10 +32,12 @@ Tailarr is TUI-only; run `./bin/tailarr` inside a terminal.
 ## Pull requests
 
 - Fill out the PR template.
-- Keep PRs focused; bootstrap "initial project" PRs may be larger.
-- Paste verification output (`go test -race ./...`, and lint if you run it locally).
+- Keep PRs focused.
+- Paste verification output (`go test -race ./...` at least).
 
 ## Before you push
+
+CI runs each of these. Run them locally first:
 
 ```bash
 go test -race ./...
@@ -43,59 +45,53 @@ go test -race -tags integration ./...
 go vet ./...
 gofmt -l .
 rumdl check .
+golangci-lint run
 go mod tidy && git diff --exit-code go.mod go.sum
+govulncheck ./...
 ```
 
-`rumdl` is a standalone binary, not a Go tool; install it from its releases
-and run `rumdl check .` as shown.
-
-Optional: `golangci-lint run` (version pinned in CI, includes staticcheck and gofmt checks).
+`rumdl` is a standalone binary, not a Go tool; install it from its releases.
+CI pins the versions of `golangci-lint`, `govulncheck`, and `rumdl` in
+`.github/workflows/ci.yml`.
 
 ## Releases
 
-Releases are cut from `main` only after the release change has been reviewed and
-merged. Release metadata must agree before the tag is created:
+A release is a reviewed and merged `chore(release): prepare vX.Y.Z` pull
+request. It sets the same version in four places:
 
-- `internal/version/version.go` contains the release version.
-- The README version badge and `CHANGELOG.md` entry use that version.
-- `scripts/install.sh` has the matching installer fallback version.
+- `internal/version/version.go`
+- the README version badge
+- a `CHANGELOG.md` entry with its link (move the `[Unreleased]` notes under it)
+- `DEFAULT_VERSION` in `scripts/install.sh`
 
-Use a strict SemVer tag in one of these forms: `vMAJOR.MINOR.PATCH`,
-`vMAJOR.MINOR.PATCH-PRERELEASE`, `vMAJOR.MINOR.PATCH+BUILD`, or
-`vMAJOR.MINOR.PATCH-PRERELEASE+BUILD`. Suffix identifiers are dot-separated
-ASCII alphanumerics or hyphens; numeric prerelease identifiers must not have
-leading zeroes. Do not use other tag names or a `v`-less version.
+Do not change `version.go` in any other pull request.
 
-The tag must name a commit already reachable from the default branch (`main`),
-not an unmerged branch commit. Creating or pushing a release tag is a separate
-operation from creating or publishing a GitHub release. AI coding agents may
-create and push tags, dispatch a release, and publish a release once the
-release metadata is merged into `main`. See [AGENTS.md](AGENTS.md).
+When that pull request merges, the Tag release workflow
+(`.github/workflows/tag.yml`) checks that the four places agree, refuses a
+version that is not newer than the latest tag, tags the head of `main`, and
+starts the release workflow. Dependency, CI, and docs changes never touch
+`version.go`, so they never tag. To tag a version that is already on `main`,
+run the Tag release workflow by hand.
 
-You do not need to push the tag yourself. When a merge to `main` changes the
-version in `internal/version/version.go`, the Tag release workflow
-(`.github/workflows/tag.yml`) checks that the four release locations agree,
-tags the head of `main`, and starts the release workflow.
-Dependency, CI, and docs changes never touch `version.go`, so they never tag.
-It refuses a version that is not newer than the latest release tag. To tag a
-version that is already on `main`, run the Tag release workflow by hand.
+Tags are strict SemVer with a `v` prefix: `vMAJOR.MINOR.PATCH`, optionally
+followed by `-PRERELEASE` and `+BUILD`. Suffix identifiers are dot-separated
+ASCII alphanumerics or hyphens, and numeric prerelease identifiers have no
+leading zeroes. A tag must name a commit reachable from `main`.
 
-After a tag is pushed, the release workflow runs the full repository
-CI gates before publication. Its verification job builds and checks the
-platform binaries, checksums, release metadata, installer fallback, and
-extracted release notes, then uploads one bundle containing the validated
-artifacts and notes. The publication job downloads that bundle, creates the
-provenance attestations for the release assets, and, after the protected
-`release` environment gate, creates a draft GitHub release. The owner or an agent
-reviews the draft assets, notes, checksums, and attestations, then publishes
-the draft.
+The release workflow (`.github/workflows/release.yml`) runs the CI gates
+again, builds and checks the linux and darwin binaries for amd64 and arm64,
+writes `SHA256SUMS`, and extracts the release notes from `CHANGELOG.md`. After
+the protected `release` environment approves the publish job, it attests the
+assets and creates a draft GitHub release. The owner or an agent reviews the
+draft assets, notes, checksums, and attestations, then publishes the draft.
+Never publish a draft whose workflow run failed. AI coding agents may tag,
+dispatch, and publish once the release pull request is merged; see
+[AGENTS.md](AGENTS.md).
 
-The `release` environment and its required reviewers are repository
-configuration: an owner must create or select `release` in Settings >
-Environments and configure required reviewers (and any other protection rules)
-there. Referencing an environment in workflow YAML does not create reviewers
-or protection rules. Keep the release draft until that review is complete;
-a successful tag workflow alone is not a reason to publish.
+The `release` environment and its required reviewers are repository settings:
+an owner creates `release` in Settings > Environments and adds reviewers
+there. Naming an environment in workflow YAML does not create reviewers or
+protection rules.
 
 ## Documentation
 
