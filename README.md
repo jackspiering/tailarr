@@ -20,11 +20,14 @@ Options:
 
 ```bash
 # Pin the binary version (default: latest GitHub release)
-TAILARR_VERSION=v0.8.0 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | TAILARR_VERSION=v0.8.0 sh
 
 # Install without root (default falls back here if /usr/local/bin is not writable)
-INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
 ```
+
+Set these variables on `sh`, not on `curl`.
+A variable set before `curl` does not reach the installer.
 
 The script detects your OS and architecture.
 It downloads the matching release asset.

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A multi-service deploy that stops at the shared auth key step now shows why, for example `auth key "hom" not found in store`.
   The output panel used to show only `Deploy failed for` with no reason and no service names.
+- The README install options set `TAILARR_VERSION` and `INSTALL_DIR` on `sh`, where the installer reads them.
+  The old examples set them on `curl`, so the installer ignored the pin and the install directory.
 - Doctor tells you to press `r` on the Catalog tab when the ScaleTail clone is missing. It used to name a menu that no longer exists.
 
 ## [0.8.0] - 2026-09-28
