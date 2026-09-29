@@ -61,7 +61,7 @@ func TestRenderFitsTerminal(t *testing.T) {
 	menu.menu = menu.servicesMenu()
 	states = append(states, menu)
 	empty := testModel(t)
-	empty.status = &deploy.OverviewStats{}
+	empty.status = &deploy.Overview{}
 	empty.catalogLoaded = true
 	states = append(states, empty)
 

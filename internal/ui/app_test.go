@@ -46,7 +46,7 @@ func testModel(t *testing.T) model {
 }
 
 func withServices(m model, svcs ...deploy.ServiceStatus) model {
-	m.status = &deploy.OverviewStats{Services: svcs}
+	m.status = &deploy.Overview{Services: svcs}
 	return m
 }
 

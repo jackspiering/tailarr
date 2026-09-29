@@ -88,7 +88,7 @@ type model struct {
 
 	lists [tabCount]listState
 
-	status     *deploy.OverviewStats
+	status     *deploy.Overview
 	statusErr  string
 	statusBusy bool
 

@@ -800,6 +800,17 @@ func TestApplyFailsWhenTemplateMissing(t *testing.T) {
 	}
 }
 
+// healthFromOutput returns the health of each service in raw `docker ps -a`
+// output, the way CollectOverview classifies it.
+func healthFromOutput(raw string, services []string) map[string]Health {
+	rows := parsePS(raw)
+	out := make(map[string]Health, len(services))
+	for _, s := range services {
+		_, out[s] = serviceContainers(rows, s)
+	}
+	return out
+}
+
 func TestHealthFromOutput(t *testing.T) {
 	raw := strings.Join([]string{
 		"app-web\trunning\tUp 2 hours (healthy)\t",
@@ -857,12 +868,19 @@ func TestDockerStatusCommandsTimeout(t *testing.T) {
 	probeTimeout = 10 * time.Millisecond
 	t.Cleanup(func() { probeTimeout = oldTimeout })
 
-	if _, err := RunningServiceNames(); err == nil {
-		t.Fatal("expected running-service probe timeout")
+	deployRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(deployRoot, "web"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	health := ServiceHealthMap([]string{"web"})
-	if health["web"] != HealthUnknown {
-		t.Fatalf("timed-out health probe = %s", health["web"])
+	if err := os.WriteFile(filepath.Join(deployRoot, "web", "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.DockerErr, "timed out") || len(st.Services) != 1 || st.Services[0].Health != HealthUnknown {
+		t.Fatalf("timed-out docker ps must mark health unknown: %+v", st)
 	}
 }
 
@@ -989,25 +1007,6 @@ func TestWriteOverrideSkipsInvalidServiceNames(t *testing.T) {
 	}
 }
 
-func TestLatestBackup(t *testing.T) {
-	root := t.TempDir()
-	b1 := filepath.Join(root, config.BackupDirName, "web-20200101T000000Z")
-	b2 := filepath.Join(root, config.BackupDirName, "web-20200102T000000Z")
-	if err := os.MkdirAll(b1, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(b2, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	got, err := LatestBackup(root, "web")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != b2 {
-		t.Fatalf("got %s want %s", got, b2)
-	}
-}
-
 func TestPruneBackups(t *testing.T) {
 	root := t.TempDir()
 	backupDir := filepath.Join(root, config.BackupDirName)
@@ -1063,12 +1062,12 @@ func TestBackupNameDoesNotCollideWithHyphenPrefix(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := LatestBackup(root, "web")
+	got, err := listServiceBackups(root, "web")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != filepath.Join(backupDir, "web-20200101T000000Z") {
-		t.Fatalf("LatestBackup(web) = %s", got)
+	if len(got) != 1 || got[0] != filepath.Join(backupDir, "web-20200101T000000Z") {
+		t.Fatalf("listServiceBackups(web) = %v", got)
 	}
 	if err := pruneBackups(backupDir, "web", 1); err != nil {
 		t.Fatal(err)
@@ -1616,12 +1615,6 @@ func TestCollectOverviewUsesOneDockerPass(t *testing.T) {
 	}
 	if other.Managed || other.Health != HealthStopped || len(other.Containers) != 1 || other.Containers[0].Health != HealthExited {
 		t.Fatalf("other: %+v", other)
-	}
-	if st.ManagedCount != 1 || st.OtherCount != 1 || st.ManagedHealth["web"] != HealthStarting {
-		t.Fatalf("counts: %+v", st)
-	}
-	if strings.Join(st.RunningNames, ",") != "TEST_web" {
-		t.Fatalf("running: %v", st.RunningNames)
 	}
 }
 

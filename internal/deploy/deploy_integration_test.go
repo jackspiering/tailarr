@@ -134,17 +134,17 @@ func TestIntegrationDeployStartsService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectOverview failed: %v", err)
 	}
-	found := false
-	for _, n := range st.RunningNames {
-		if n == f.service {
-			found = true
+	var svc *ServiceStatus
+	for i := range st.Services {
+		if st.Services[i].Name == f.service {
+			svc = &st.Services[i]
 		}
 	}
-	if !found {
-		t.Fatalf("running services from docker ps must contain %q, got %v", f.service, st.RunningNames)
+	if svc == nil || !svc.Managed || len(svc.Containers) == 0 {
+		t.Fatalf("overview must list managed %q with its containers, got %+v", f.service, st.Services)
 	}
-	if h := st.ManagedHealth[f.service]; h != HealthRunning {
-		t.Fatalf("managed health for %q must be running, got %s", f.service, h)
+	if svc.Health != HealthRunning {
+		t.Fatalf("health for %q must be running, got %s", f.service, svc.Health)
 	}
 
 	info, err := os.Stat(filepath.Join(f.deploy, f.service, ".env"))
