@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A multi-service deploy that stops at the shared auth key step now shows why, for example `auth key "hom" not found in store`.
+  The output panel used to show only `Deploy failed for` with no reason and no service names.
+
 ## [0.8.0] - 2026-09-28
 
 ### Added

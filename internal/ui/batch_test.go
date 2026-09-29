@@ -106,6 +106,25 @@ func TestRunBatchSkipsRemainingAfterInterrupt(t *testing.T) {
 	}
 }
 
+func TestRunBatchShowsSharedKeyError(t *testing.T) {
+	cfg := batchConfig(t)
+	if err := os.WriteFile(cfg.AuthkeysPath, []byte("home=tskey-auth-home\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var printed []string
+	ui := scriptUI{confirm: true, line: "hom", printed: &printed}
+	r := runBatch(cfg, nil, ui, batchDeploy, []string{"web", "db"})
+	if r.failed != 2 || r.ok != 0 {
+		t.Fatalf("no service may deploy after a shared key error, got %+v", r)
+	}
+	if len(printed) == 0 || printed[len(printed)-1] != "Error:" {
+		t.Fatalf("shared key error not shown: %q", printed)
+	}
+	if got := r.summary(batchDeploy, []string{"web", "db"}); got != "✖ Deploy failed for web, db · 0 of 2 ok" {
+		t.Fatalf("summary = %q", got)
+	}
+}
+
 func TestBatchSummaryOnSuccess(t *testing.T) {
 	if got := (batchResult{ok: 1}).summary(batchDeploy, []string{"web"}); got != "✔ Deployed web" {
 		t.Fatalf("single: %q", got)

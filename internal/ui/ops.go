@@ -115,7 +115,8 @@ func runBatch(cfg config.Config, log *logging.Logger, ui prompt.UI, mode batchMo
 			if errors.Is(err, context.Canceled) || errors.Is(err, prompt.ErrCanceled) {
 				return batchResult{canceled: true}
 			}
-			return batchResult{failed: len(services)}
+			ui.Printf("Error: %s\n", redact.Text(err.Error()))
+			return batchResult{failed: len(services), failedNames: services}
 		}
 		sharedKey = key
 	}
