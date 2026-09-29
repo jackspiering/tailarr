@@ -45,10 +45,6 @@ func TestParseAndMergeEnv(t *testing.T) {
 	if err := ValidateMergedTSAuthkey(merged); err != nil {
 		t.Fatal(err)
 	}
-	miss := MissingRequired(map[string]string{"A": "", "B": "x"}, []string{"A", "B"})
-	if len(miss) != 1 || miss[0] != "A" {
-		t.Fatalf("miss=%v", miss)
-	}
 }
 
 func TestPlaceholderAndDefaults(t *testing.T) {

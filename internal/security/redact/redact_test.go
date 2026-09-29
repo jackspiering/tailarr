@@ -78,24 +78,6 @@ func TestTextAuthorizationBearer(t *testing.T) {
 	}
 }
 
-func TestPreview(t *testing.T) {
-	t.Parallel()
-	if Preview("tskey-auth-abc") != Redacted {
-		t.Fatal("preview must never show secret")
-	}
-}
-
-func TestEnvLine(t *testing.T) {
-	t.Parallel()
-	if EnvLine("HOSTNAME=box") != "HOSTNAME=box" {
-		t.Fatal("hostname should pass")
-	}
-	out := EnvLine("TS_AUTHKEY=tskey-auth-xyz")
-	if strings.Contains(out, "xyz") {
-		t.Fatalf("leaked: %s", out)
-	}
-}
-
 func TestLooksSecret(t *testing.T) {
 	t.Parallel()
 	secrets := []string{

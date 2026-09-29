@@ -38,16 +38,6 @@ type Result struct {
 	Checks []Check
 }
 
-// Healthy is true when no Fail checks exist.
-func (r Result) Healthy() bool {
-	for _, c := range r.Checks {
-		if c.Level == Fail {
-			return false
-		}
-	}
-	return true
-}
-
 // Run performs non-privileged host checks.
 func Run(cfg config.Config) Result {
 	var r Result

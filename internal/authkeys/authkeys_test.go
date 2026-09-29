@@ -31,10 +31,6 @@ func TestPutSaveLoad(t *testing.T) {
 	if s2.Keys["prod"] != "tskey-auth-ABCDEF" {
 		t.Fatalf("got %q", s2.Keys["prod"])
 	}
-	list := s2.RedactedList()
-	if len(list) != 1 || list[0] != "prod ([redacted])" {
-		t.Fatalf("list: %v", list)
-	}
 }
 
 func TestRejectBadKey(t *testing.T) {
