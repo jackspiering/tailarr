@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The old examples set them on `curl`, so the installer ignored the pin and the install directory.
 - Doctor tells you to press `r` on the Catalog tab when the ScaleTail clone is missing. It used to name a menu that no longer exists.
 
+### Security
+
+- Remove no longer deletes a directory outside the deploy root through a symlinked parent. A lexical fallback in the path check let
+  `RemoveAll` follow the symlink. Tailarr now refuses to remove a path that resolves outside the root.
+
 ## [0.8.0] - 2026-09-28
 
 ### Added
@@ -364,5 +369,6 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jackspiering/tailarr/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0
