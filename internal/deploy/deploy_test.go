@@ -1254,6 +1254,45 @@ func TestMergeEnvQuotesPromptedValuesAndKeepsTemplateLines(t *testing.T) {
 	}
 }
 
+// keyKindUI records which prompt kind asked for each key.
+type keyKindUI struct {
+	secrets, lines []string
+}
+
+func (u *keyKindUI) Confirm(string, bool) (bool, error) { return false, nil }
+func (u *keyKindUI) Line(key, _ string) (string, error) {
+	u.lines = append(u.lines, key)
+	return "visible", nil
+}
+func (u *keyKindUI) Secret(key string) (string, error) {
+	u.secrets = append(u.secrets, key)
+	return "hidden", nil
+}
+func (u *keyKindUI) Printf(string, ...any) {}
+
+func TestMergeEnvPromptsSecretCatalogKeysWithoutEcho(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	env := "ENCRYPTION_KEY=\nAPP_KEY=\nMEILI_MASTER_KEY=\nGOTIFY_DEFAULTUSER_PASS=\nGREETING=\n"
+	templateDir := setupTemplate(t, repo, "web", env)
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(templateDir, dest); err != nil {
+		t.Fatal(err)
+	}
+	ui := &keyKindUI{}
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}, UI: ui}
+	if err := m.mergeAndWriteEnv([]byte(env), dest, DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ENCRYPTION_KEY", "APP_KEY", "MEILI_MASTER_KEY", "GOTIFY_DEFAULTUSER_PASS"}
+	if strings.Join(ui.secrets, ",") != strings.Join(want, ",") {
+		t.Fatalf("Secret prompts = %v, want %v", ui.secrets, want)
+	}
+	if strings.Join(ui.lines, ",") != "GREETING" {
+		t.Fatalf("Line prompts = %v, want [GREETING]", ui.lines)
+	}
+}
+
 func TestDeployTakesDownContainersAfterFailedUp(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()

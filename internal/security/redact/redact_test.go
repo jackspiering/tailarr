@@ -185,3 +185,66 @@ func TestWriterCloseFlushesResidual(t *testing.T) {
 		t.Fatalf("residual not redacted: %s", out)
 	}
 }
+
+func TestLooksSecretCatalogKeys(t *testing.T) {
+	t.Parallel()
+	for _, k := range []string{
+		"ENCRYPTION_KEY", "APP_KEY", "APP_ENCRYPTION_KEY", "MEILI_MASTER_KEY",
+		"MAXMIND_LICENSE_KEY", "GOTIFY_DEFAULTUSER_PASS", "HBOX_AUTH_API_KEY_PEPPER",
+		"SECRET_KEY_BASE", "DB_PASSWD", "GPG_PASSPHRASE", "REGISTRY_CREDENTIALS",
+		"PASSWORD_SALT", "key",
+	} {
+		if !LooksSecret(k) {
+			t.Errorf("LooksSecret(%q) = false, want true", k)
+		}
+	}
+	for _, k := range []string{"KEYBOARD_LAYOUT", "MONKEY", "PASSENGER", "BYPASS_CACHE", "SALTY", "KEYS"} {
+		if LooksSecret(k) {
+			t.Errorf("LooksSecret(%q) = true, want false", k)
+		}
+	}
+}
+
+func TestTextRedactsTable(t *testing.T) {
+	t.Parallel()
+	rows := []struct{ in, leak string }{
+		{"ENCRYPTION_KEY=abc123", "abc123"},
+		{"x KEY=abc123", "abc123"},
+		{"GOTIFY_DEFAULTUSER_PASS=hunter2", "hunter2"},
+		{"DB_PASSWORD: hunter2", "hunter2"},
+		{"client_secret: xyz789", "xyz789"},
+		{"db_pass: hunter2", "hunter2"},
+		{"connect postgres://user:pass@db/x now", "pass@"},
+		{"redis://:s3cr3t@cache:6379", "s3cr3t"},
+		{"key tskey-client-kAbC123-SeCrEt", "SeCrEt"},
+		{"key tskey-api-kAbC123-SeCrEt", "SeCrEt"},
+		{"tskey-auth-kAbC123-SeCrEt", "SeCrEt"},
+		{"Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"},
+		{`{"MEILI_MASTER_KEY":"abc123"}`, "abc123"},
+	}
+	for _, r := range rows {
+		out := Text(r.in)
+		if strings.Contains(out, r.leak) {
+			t.Errorf("Text(%q) leaked %q: %s", r.in, r.leak, out)
+		}
+		if !strings.Contains(out, Redacted) && !strings.Contains(out, "redacted@") {
+			t.Errorf("Text(%q) shows no redaction: %s", r.in, out)
+		}
+	}
+}
+
+func TestTextKeepsNonSecretKeys(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		"KEYBOARD_LAYOUT=us",
+		"MONKEY=banana",
+		"BYPASS_CACHE=1",
+		"HOSTNAME=box",
+		"https://example.com/repo.git",
+		"service: web",
+	} {
+		if out := Text(in); out != in {
+			t.Errorf("Text(%q) = %q, want unchanged", in, out)
+		}
+	}
+}

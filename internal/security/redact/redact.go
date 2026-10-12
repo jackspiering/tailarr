@@ -12,44 +12,59 @@ import (
 const Redacted = "[redacted]"
 
 // secretKeywords is the single source of truth for key names that hold
-// secrets (union of the redact and scaletail/env keyword lists).
+// secrets (union of the redact and scaletail/env keyword lists). Each entry
+// must match a whole '_' segment of the key name.
 var secretKeywords = []string{
 	"TS_AUTHKEY",
 	"AUTHKEY", "AUTH_KEY",
-	"PASSWORD",
+	"PASSWORD", "PASSWD", "PASSPHRASE", "PASS",
 	"SECRET",
 	"TOKEN",
 	"PRIVATE", "PRIVATE_KEY",
 	"API_KEY", "APIKEY",
+	"KEY",
+	"CREDENTIAL", "CREDENTIALS",
+	"SALT", "PEPPER",
 }
 
-// secretKeyPattern is the regexp twin of secretKeywords: it matches the same
-// key names (with and without underscore variants) inside redaction patterns.
-const secretKeyPattern = `(?:TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE(?:_?KEY)?|API_?KEY)`
+// looseKeyPattern matches the long keywords anywhere inside a key name, so
+// client_secret and access_token redact (redaction over-covers by design).
+const looseKeyPattern = `(?:TS_AUTHKEY|AUTH_?KEY|PASSWORD|SECRET|TOKEN|PRIVATE(?:_?KEY)?|API_?KEY)`
+
+// segmentKeyPattern matches the short keywords. They count only as a whole
+// '_' segment, so KEY= redacts but KEYBOARD_LAYOUT= and MONKEY= do not.
+const segmentKeyPattern = `(?:KEY|PASSWD|PASSPHRASE|PASS|CREDENTIALS?|SALT|PEPPER)`
+
+// secretNamePattern matches a whole key name that looks sensitive: the
+// regexp twin of secretKeywords.
+const secretNamePattern = `(?:[A-Za-z0-9_]*?` + looseKeyPattern + `[A-Za-z0-9_]*|\b(?:[A-Za-z0-9_]*_)?` + segmentKeyPattern + `(?:_[A-Za-z0-9_]*)?)`
 
 // lineSecretRE matches KEY=value forms where KEY looks sensitive. The value
 // runs to end of line so whitespace-containing secrets are fully redacted
 // (redaction over-covers by design; a partial secret is worse than losing
 // trailing text from a diagnostic line).
-var lineSecretRE = regexp.MustCompile(`(?i)([A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*)=([^\n]*)`)
+var lineSecretRE = regexp.MustCompile(`(?i)(` + secretNamePattern + `)=([^\n]*)`)
 
 // jsonSecretRE matches "KEY":"value" JSON object members.
 // Prefix/suffix wildcards allow client_secret, access_token, etc.
-var jsonSecretRE = regexp.MustCompile(`(?i)("[A-Za-z0-9_]*?` + secretKeyPattern + `[A-Za-z0-9_]*"\s*:\s*")[^"]*(")`)
+var jsonSecretRE = regexp.MustCompile(`(?i)("` + secretNamePattern + `"\s*:\s*")[^"]*(")`)
 
-// colonSecretRE matches KEY: value forms where KEY looks sensitive.
+// colonSecretRE matches KEY: value forms where KEY looks sensitive, with the
+// same prefix and suffix wildcards as the line form (DB_PASSWORD: x).
 // Value runs to end of line so multi-word secrets are fully redacted.
-var colonSecretRE = regexp.MustCompile(`(?i)(\b` + secretKeyPattern + `\b\s*:\s*)[^\n]+`)
+var colonSecretRE = regexp.MustCompile(`(?i)(\b` + secretNamePattern + `\s*:\s*)[^\n]+`)
 
 // urlUserinfoRE matches scheme://userinfo@ so URL credentials never reach logs.
-// Allows any non-space chars up to last @, including '/' in passwords (percent-encoded or raw).
-var urlUserinfoRE = regexp.MustCompile(`(?i)(https?|ssh)://[^@\s]+@`)
+// Any scheme counts (postgres://, redis://, and so on). Allows any non-space
+// chars up to last @, including '/' in passwords (percent-encoded or raw).
+var urlUserinfoRE = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*)://[^@\s]+@`)
 
-// bearerRE matches Authorization: Bearer <token>.
-var bearerRE = regexp.MustCompile(`(?i)(\bAuthorization\s*:\s*Bearer\s+)[^\s,;]+`)
+// authHeaderRE matches Authorization: Bearer <token> and Basic <credentials>.
+var authHeaderRE = regexp.MustCompile(`(?i)(\bAuthorization\s*:\s*(?:Bearer|Basic)\s+)[^\s,;]+`)
 
-// tskeyRE matches raw Tailscale auth key material in free text.
-var tskeyRE = regexp.MustCompile(`tskey-auth-[A-Za-z0-9_-]+`)
+// tskeyRE matches raw Tailscale key material in free text: auth keys, OAuth
+// client secrets, and API keys.
+var tskeyRE = regexp.MustCompile(`tskey-[a-z]+-[A-Za-z0-9_-]+`)
 
 // Text redacts secret-looking material from s for safe logging.
 func Text(s string) string {
@@ -57,7 +72,7 @@ func Text(s string) string {
 	out = urlUserinfoRE.ReplaceAllString(out, `${1}://redacted@`)
 	out = jsonSecretRE.ReplaceAllString(out, `${1}`+Redacted+`${2}`)
 	out = colonSecretRE.ReplaceAllString(out, `${1}`+Redacted)
-	out = bearerRE.ReplaceAllString(out, `${1}`+Redacted)
+	out = authHeaderRE.ReplaceAllString(out, `${1}`+Redacted)
 	out = tskeyRE.ReplaceAllString(out, Redacted)
 	return out
 }

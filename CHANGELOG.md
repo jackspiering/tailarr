@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apply no longer deletes the backup that Remove made. Apply snapshots now live in `.tailarr_backups/apply-snapshots` and have their own
   keep-2 retention, so the copy of container data from a removed service survives later Apply runs. Prune never removes the backup that
   was just created, even when the clock is behind older backups. Remove offers to delete the snapshots of the removed service too.
+- Deploy and Apply now ask for secret catalog keys through the hidden prompt. Keys such as `ENCRYPTION_KEY`, `APP_KEY`, `MEILI_MASTER_KEY`,
+  and `GOTIFY_DEFAULTUSER_PASS` used to show in clear text. Key names with a whole `KEY`, `PASS`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`,
+  `CREDENTIALS`, `SALT`, or `PEPPER` segment now count as secret. Tailarr also drops host variables with such names from the Compose environment.
+- Output and log redaction now covers `DB_PASSWORD: value`, URLs with credentials for any scheme such as `postgres://`, `tskey-client-` and
+  `tskey-api-` keys, and `Authorization: Basic` headers. It also covers the new key names above.
 - A multi-service deploy that stops at the shared auth key step now shows why, for example `auth key "hom" not found in store`.
   The output panel used to show only `Deploy failed for` with no reason and no service names.
 - The README install options set `TAILARR_VERSION` and `INSTALL_DIR` on `sh`, where the installer reads them.
