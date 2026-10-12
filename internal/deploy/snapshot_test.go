@@ -305,3 +305,109 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyKeepsRemoveBackupOfContainerData(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	managedDeploy(t, repo, deployRoot)
+	removed := filepath.Join(deployRoot, config.BackupDirName, "web-20200101T000000Z")
+	if err := os.MkdirAll(filepath.Join(removed, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dataFile := filepath.Join(removed, "data", "db")
+	if err := os.WriteFile(dataFile, []byte("only copy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withFakeCompose(t, func(string, ...string) error { return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	for i := 0; i < 3; i++ {
+		if err := m.Apply("web", DeployOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := os.ReadFile(dataFile); err != nil || string(b) != "only copy\n" {
+		t.Fatalf("Apply pruned the Remove backup: %v %q", err, b)
+	}
+	snaps, err := os.ReadDir(applySnapshotRoot(deployRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("expected 2 apply snapshots, got %d", len(snaps))
+	}
+}
+
+func TestApplyRestoresWhenOlderBackupsHaveFutureStamps(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	dest := managedDeploy(t, repo, deployRoot)
+	orig, _ := os.ReadFile(filepath.Join(dest, "compose.yaml"))
+	snapRoot := applySnapshotRoot(deployRoot)
+	for _, name := range []string{"web-29990101T000000Z", "web-29990102T000000Z"} {
+		if err := os.MkdirAll(filepath.Join(snapRoot, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "services", "web", "compose.yaml"), []byte("services:\n  app:\n    image: new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withFakeCompose(t, func(dir string, args ...string) error {
+		if strings.Contains(strings.Join(args, " "), "pull") {
+			return fmt.Errorf("%w: pull failed", ErrComposeFailed)
+		}
+		return nil
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if !errors.Is(err, ErrComposeFailed) || !strings.Contains(err.Error(), "previous deployment restored") {
+		t.Fatalf("expected restored failure, got %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "compose.yaml")); string(b) != string(orig) {
+		t.Fatalf("compose.yaml not restored: %q", b)
+	}
+}
+
+func TestPruneBackupsKeepingNeverRemovesProtectedPath(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"web-20200101T000000Z", "web-29990101T000000Z", "web-29990102T000000Z"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	protect := filepath.Join(root, "web-20200101T000000Z")
+	if err := pruneBackupsKeeping(root, "web", 2, protect); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(protect); err != nil {
+		t.Fatalf("protected backup removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "web-29990102T000000Z")); err != nil {
+		t.Fatalf("newest other backup removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "web-29990101T000000Z")); !os.IsNotExist(err) {
+		t.Fatal("expected the older other backup to be pruned")
+	}
+}
+
+func TestRemoveOffersToDeleteApplySnapshots(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	managedDeploy(t, repo, deployRoot)
+	withFakeCompose(t, func(string, ...string) error { return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Apply("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	m.UI = recordUI{out: &out}
+	if err := m.Remove("web"); err != nil {
+		t.Fatal(err)
+	}
+	left, err := listServiceBackups(deployRoot, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("Remove left backups after the operator accepted deletion: %v", left)
+	}
+}
