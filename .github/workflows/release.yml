@@ -66,12 +66,13 @@ jobs:
             echo "error: release tag is not a valid Git tag: $tag" >&2
             exit 1
           fi
-          # vMAJOR.MINOR.PATCH with optional standard SemVer prerelease/build metadata.
+          # vMAJOR.MINOR.PATCH with an optional standard SemVer prerelease. Build
+          # metadata (+BUILD) is rejected: the upgrade command and installer cannot use it.
           # Numeric prerelease identifiers may not contain leading zeroes.
           # Reject this input before writing either GITHUB_OUTPUT or GITHUB_ENV.
-          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
           if [[ ! "$tag" =~ $semver ]]; then
-            echo "error: release tag must be strict SemVer with a v prefix: $tag" >&2
+            echo "error: release tag must be strict SemVer without build metadata and with a v prefix: $tag" >&2
             exit 1
           fi
 
@@ -189,83 +190,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           trap 'echo "error: release metadata verification failed at line $LINENO" >&2' ERR
-          python3 - "$VERSION" <<'PY'
-          import re
-          import subprocess
-          import sys
-          from pathlib import Path
-
-          version = sys.argv[1]
-          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
-          readme = Path("README.md").read_text(encoding="utf-8")
-          version_go = Path("internal/version/version.go").read_text(encoding="utf-8")
-          installer = Path("scripts/install.sh").read_text(encoding="utf-8")
-
-          def outside_fence_lines(lines):
-              in_fence = False
-              fence_char = ""
-              fence_length = 0
-              for line in lines:
-                  match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-                  if match:
-                      marker = match.group(1)
-                      if not in_fence:
-                          in_fence = True
-                          fence_char = marker[0]
-                          fence_length = len(marker)
-                      elif marker[0] == fence_char and len(marker) >= fence_length:
-                          in_fence = False
-                      yield line, not in_fence
-                  else:
-                      yield line, not in_fence
-
-          escaped = re.escape(version)
-          heading_re = re.compile(rf"^## \[{escaped}\](?: - [0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})?$")
-          link_re = re.compile(rf"^\[{escaped}\]:\s+(\S+)\s*$")
-          visible = list(outside_fence_lines(changelog))
-          headings = [i for i, (line, outside) in enumerate(visible) if outside and heading_re.fullmatch(line)]
-          links = [line for line, outside in visible if outside and link_re.fullmatch(line)]
-          if len(headings) != 1:
-              raise SystemExit(f"error: expected exactly one CHANGELOG heading for [{version}], found {len(headings)}")
-          if len(links) != 1:
-              raise SystemExit(f"error: expected exactly one CHANGELOG link for [{version}], found {len(links)}")
-
-          start = headings[0] + 1
-          notes = []
-          in_fence = False
-          fence_char = ""
-          fence_length = 0
-          for line in changelog[start:]:
-              match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-              if match:
-                  marker = match.group(1)
-                  if not in_fence:
-                      in_fence = True
-                      fence_char = marker[0]
-                      fence_length = len(marker)
-                  elif marker[0] == fence_char and len(marker) >= fence_length:
-                      in_fence = False
-              if not in_fence and re.match(r"^## ", line):
-                  break
-              notes.append(line)
-          notes_text = "\n".join(notes).strip()
-          if not notes_text:
-              raise SystemExit(f"error: release notes for [{version}] are empty or whitespace-only")
-          Path("release-notes.md").write_text(notes_text + "\n", encoding="utf-8")
-
-          declarations = re.findall(r'^var Version = "([^"]+)"\s*$', version_go, re.MULTILINE)
-          if declarations != [version]:
-              raise SystemExit(f"error: internal/version/version.go must declare Version exactly once as {version!r}")
-
-          badges = re.findall(r"https://img\.shields\.io/badge/version-([^)]*)-informational", readme)
-          if badges != [version]:
-              raise SystemExit(f"error: README must contain exactly one version badge for {version}")
-
-          defaults = re.findall(r'^DEFAULT_VERSION="([^"]+)"\s*$', installer, re.MULTILINE)
-          if defaults != [f"v{version}"]:
-              raise SystemExit(f"error: scripts/install.sh DEFAULT_VERSION must be exactly v{version}")
-          subprocess.run(["sh", "-n", "scripts/install.sh"], check=True)
-          PY
+          # The notes go outside the checkout so the build tree stays clean and
+          # the binaries are not stamped vcs.modified=true. The tag workflow
+          # runs the same script.
+          python3 .github/scripts/release_metadata.py "$VERSION" --notes-out "$RUNNER_TEMP/release-notes.md"
 
       - name: Build release assets
         env:
@@ -300,6 +228,10 @@ jobs:
               echo "error: build revision mismatch in $bin" >&2
               exit 1
             }
+            go version -m "$bin" | grep -F "vcs.modified=false" >/dev/null || {
+              echo "error: $bin was built from a modified tree" >&2
+              exit 1
+            }
             strings -a "$bin" | grep -F -q "$VERSION" || {
               echo "error: build version $VERSION missing from $bin" >&2
               exit 1
@@ -312,8 +244,8 @@ jobs:
           done
           (cd dist && sha256sum -c SHA256SUMS)
           test -s dist/install.sh
-          test -s release-notes.md
-          cp dist/tailarr-* dist/SHA256SUMS dist/install.sh release-notes.md release-bundle/
+          test -s "$RUNNER_TEMP/release-notes.md"
+          cp dist/tailarr-* dist/SHA256SUMS dist/install.sh "$RUNNER_TEMP/release-notes.md" release-bundle/
 
       - name: Upload verified release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -366,10 +298,17 @@ jobs:
             echo "error: verified release notes are missing or empty" >&2
             exit 1
           }
+          # A prerelease must not become "latest": the upgrade command and the
+          # installer both read /releases/latest.
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
           gh release create "$RELEASE_TAG" \
             release-bundle/tailarr-* release-bundle/SHA256SUMS release-bundle/install.sh \
             --repo "$GH_REPO" \
             --title "$RELEASE_TAG" \
             --notes-file release-bundle/release-notes.md \
             --verify-tag \
+            "${prerelease[@]}" \
             --draft
