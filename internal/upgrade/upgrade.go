@@ -36,7 +36,8 @@ const DefaultRepo = "jackspiering/tailarr"
 type Options struct {
 	// Repo is the GitHub owner/repository (default DefaultRepo).
 	Repo string
-	// Current is the installed version string (default: version.Version).
+	// Current is the installed version string. When it is empty or not
+	// SemVer, Upgrade cannot compare it and installs the latest release.
 	Current string
 	// Force reinstalls even when Current already matches the latest release.
 	Force bool

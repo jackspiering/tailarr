@@ -84,6 +84,9 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: go vet (integration tests)
+        run: go vet -tags integration ./...
+
       - name: go mod tidy check
         run: |
           go mod tidy
@@ -139,7 +142,7 @@ jobs:
         env:
           # Stay on the go.mod toolchain instead of auto-switching to a newer one.
           GOTOOLCHAIN: local
-        run: go test ./...
+        run: go test -race ./...
 
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
