@@ -871,7 +871,8 @@ func (m model) promptPanel(w int) []string {
 		lines = append(lines, " "+styleOrPlain(cursorStyle, "› ")+dots+styleOrPlain(cursorStyle, "▏")+
 			styleOrPlain(dimStyle, "  hidden"))
 	default:
-		val := string(a.buf)
+		// A key pasted into a name prompt must not echo.
+		val := redact.Text(string(a.buf))
 		if lipgloss.Width(val) > iw-4 {
 			val = "…" + tailFit(val, iw-5)
 		}

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Services cursor now stays on the same service when the 4 second refresh adds or removes rows, and the action menu acts on the
+  services it names. A menu titled `beta` could act on another service after a refresh.
+- A status error, for example an unreadable deploy path, now replaces the stale service table instead of hiding behind it.
+- The output panel keeps its scroll position while Compose rewrites progress lines, End edits a prefilled Line prompt instead of scrolling,
+  result lines are cleaned and redacted, and a key pasted into a name prompt no longer echoes.
+- Doctor results are cleared when the config changes, and the System tab runs the checks again.
 - The TUI no longer crashes on wide characters. Pasting about 37 CJK or emoji characters into a prompt, or showing a long wide word in a
   panel, used to cut a string at the wrong place and panic. A very small terminal with the action menu open could also crash it.
 - Ctrl+C now stops a self-upgrade. The download, the attestation check, and the lock wait all end on cancel, and a canceled upgrade no longer
