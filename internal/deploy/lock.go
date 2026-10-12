@@ -42,7 +42,7 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 		timeout = DefaultLockTimeout
 	}
 	dir := filepath.Dir(path)
-	if err := paths.EnsureDirMode(dir, "lock directory", 0o700); err != nil {
+	if err := ensureLockDir(dir); err != nil {
 		return nil, err
 	}
 	if err := paths.RefuseSymlinkAncestry(dir); err != nil {
@@ -98,6 +98,25 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 			return nil, fmt.Errorf("another Tailarr process holds the lock: %s", path)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// ensureLockDir creates the directory that holds a lock file. Tailarr sets
+// mode 0700 only on a directory it creates or owns (the .tailarr_locks
+// directory). An existing directory such as /opt or /srv, the parent of a
+// configured repo or auth key path, keeps its mode.
+func ensureLockDir(dir string) error {
+	if filepath.Base(dir) == config.LockDirName {
+		return paths.EnsureDirMode(dir, "lock directory", 0o700)
+	}
+	_, err := os.Lstat(dir)
+	switch {
+	case err == nil:
+		return paths.EnsureDir(dir, "lock directory")
+	case os.IsNotExist(err):
+		return paths.EnsureDirMode(dir, "lock directory", 0o700)
+	default:
+		return err
 	}
 }
 

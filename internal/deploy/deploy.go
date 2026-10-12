@@ -717,22 +717,29 @@ func formatBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
+// listServiceBackups returns the Remove backups and Apply snapshots of
+// service, both of which can hold .env secrets.
 func listServiceBackups(deployPath, service string) ([]string, error) {
 	root := filepath.Join(deployPath, config.BackupDirName)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, err
-	}
 	var out []string
-	for _, e := range entries {
-		if !e.IsDir() || !isServiceBackupName(service, e.Name()) {
-			continue
+	for _, dir := range []string{root, applySnapshotRoot(deployPath)} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if dir != root && os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
-		p := filepath.Join(root, e.Name())
-		if paths.IsSymlink(p) {
-			continue
+		for _, e := range entries {
+			if !e.IsDir() || !isServiceBackupName(service, e.Name()) {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			if paths.IsSymlink(p) {
+				continue
+			}
+			out = append(out, p)
 		}
-		out = append(out, p)
 	}
 	return out, nil
 }

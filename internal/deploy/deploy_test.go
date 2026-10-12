@@ -107,6 +107,67 @@ func TestLock(t *testing.T) {
 	_ = l2.Release()
 }
 
+func TestAcquireLockKeepsExistingParentMode(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "srv")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(RepoLockPath(filepath.Join(parent, "scaletail")), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("existing parent mode changed to %o", got)
+	}
+}
+
+func TestAcquireLockCreatesPrivateDirectories(t *testing.T) {
+	base := t.TempDir()
+	for _, dir := range []string{filepath.Join(base, "new", "locks"), filepath.Join(base, config.LockDirName)} {
+		l, err := AcquireLock(filepath.Join(dir, "x.lock"), DefaultLockTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = l.Release()
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Errorf("%s mode = %o, want 700", dir, got)
+		}
+	}
+}
+
+func TestAcquireLockTightensExistingLockDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), config.LockDirName)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(filepath.Join(dir, "web.lock"), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Release()
+	info, _ := os.Stat(dir)
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("lock directory mode = %o, want 700", got)
+	}
+}
+
 func TestLockReleaseDoesNotSteal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "t.lock")
@@ -1190,6 +1251,45 @@ func TestMergeEnvQuotesPromptedValuesAndKeepsTemplateLines(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("missing %q in:\n%s", want, data)
 		}
+	}
+}
+
+// keyKindUI records which prompt kind asked for each key.
+type keyKindUI struct {
+	secrets, lines []string
+}
+
+func (u *keyKindUI) Confirm(string, bool) (bool, error) { return false, nil }
+func (u *keyKindUI) Line(key, _ string) (string, error) {
+	u.lines = append(u.lines, key)
+	return "visible", nil
+}
+func (u *keyKindUI) Secret(key string) (string, error) {
+	u.secrets = append(u.secrets, key)
+	return "hidden", nil
+}
+func (u *keyKindUI) Printf(string, ...any) {}
+
+func TestMergeEnvPromptsSecretCatalogKeysWithoutEcho(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	env := "ENCRYPTION_KEY=\nAPP_KEY=\nMEILI_MASTER_KEY=\nGOTIFY_DEFAULTUSER_PASS=\nGREETING=\n"
+	templateDir := setupTemplate(t, repo, "web", env)
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(templateDir, dest); err != nil {
+		t.Fatal(err)
+	}
+	ui := &keyKindUI{}
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}, UI: ui}
+	if err := m.mergeAndWriteEnv([]byte(env), dest, DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ENCRYPTION_KEY", "APP_KEY", "MEILI_MASTER_KEY", "GOTIFY_DEFAULTUSER_PASS"}
+	if strings.Join(ui.secrets, ",") != strings.Join(want, ",") {
+		t.Fatalf("Secret prompts = %v, want %v", ui.secrets, want)
+	}
+	if strings.Join(ui.lines, ",") != "GREETING" {
+		t.Fatalf("Line prompts = %v, want [GREETING]", ui.lines)
 	}
 }
 
