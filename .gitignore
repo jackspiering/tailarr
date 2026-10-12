@@ -51,3 +51,6 @@ checksums.txt
 # Tooling caches
 .golangci-lint-cache/
 .rumdl_cache/
+
+# Python bytecode from the workflow script tests
+__pycache__/

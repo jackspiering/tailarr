@@ -48,6 +48,30 @@ func TestCheckProvenance(t *testing.T) {
 	}
 }
 
+func TestCheckProvenancePinsSignerWorkflow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-backed fake gh")
+	}
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := "#!/bin/sh\necho \"$@\" > " + argsFile + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if ok, _, err := checkProvenance(context.Background(), "asset", "o/r"); !ok || err != nil {
+		t.Fatalf("verified attestation: %v %v", ok, err)
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "attestation verify asset --repo o/r --signer-workflow o/r/.github/workflows/release.yml"
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("gh args = %q, want %q", got, want)
+	}
+}
+
 func TestCheckProvenanceStopsWhenCanceled(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-backed fake gh")
