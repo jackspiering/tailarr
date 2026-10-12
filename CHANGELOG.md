@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deploy and Apply no longer follow a symlink or block on a FIFO when they copy template files. A container that can write in the deployment
+  directory could use a symlink to make a root-run Apply overwrite a host file, or use a FIFO to stall Apply while it held the lock.
+  Tailarr now opens both files without following symlinks and refuses anything that is not a regular file.
+- Apply now applies a template mode change, for example `0644` to `0755`, to files that already exist.
 - A multi-service deploy that stops at the shared auth key step now shows why, for example `auth key "hom" not found in store`.
   The output panel used to show only `Deploy failed for` with no reason and no service names.
 - The README install options set `TAILARR_VERSION` and `INSTALL_DIR` on `sh`, where the installer reads them.

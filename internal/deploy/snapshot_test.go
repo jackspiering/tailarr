@@ -305,3 +305,122 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestCopyFileAppliesTemplateMode(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.sh")
+	dst := filepath.Join(dir, "out", "dst.sh")
+	if err := os.WriteFile(src, []byte("new\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("old content that is longer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dst, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ino := inode(t, dst)
+	if err := copyFile(src, dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("mode = %o, want 755", got)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "new\n" {
+		t.Fatalf("content = %q", b)
+	}
+	if inode(t, dst) != ino {
+		t.Fatal("copyFile replaced the inode; a single-file bind mount would break")
+	}
+}
+
+func TestCopyFileRefusesSymlinkDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	victim := filepath.Join(dir, "victim")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("template\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(victim, []byte("host file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, dst); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := copyFile(src, dst, 0o644); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("expected ErrSymlink, got %v", err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "host file\n" {
+		t.Fatalf("symlink target was written: %q", b)
+	}
+}
+
+func TestCopyFileRefusesSymlinkSource(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(secret, []byte("host secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, src); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dst := filepath.Join(dir, "dst")
+	if err := copyFile(src, dst, 0o644); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("expected ErrSymlink, got %v", err)
+	}
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Fatalf("destination was created: %v", err)
+	}
+}
+
+func TestCopyFileFailsOnFIFODestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("template\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(dst, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- copyFile(src, dst, 0o644) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error for a FIFO destination")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("copyFile blocked on a FIFO destination")
+	}
+}
+
+func TestCopyFileFailsOnFIFOSource(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := syscall.Mkfifo(src, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- copyFile(src, filepath.Join(dir, "dst"), 0o644) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error for a FIFO source")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("copyFile blocked on a FIFO source")
+	}
+}

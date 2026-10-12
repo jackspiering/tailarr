@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
@@ -196,20 +197,41 @@ func applyMeta(path string, info os.FileInfo) error {
 	return os.Chtimes(path, info.ModTime(), info.ModTime())
 }
 
+// copyFile writes the regular file src to dst with the given mode. It opens
+// both paths without following a final symlink and with O_NONBLOCK, so a
+// symlink or FIFO planted at either path fails instead of redirecting the
+// write or blocking Apply. An existing dst is truncated in place, so its
+// inode (and a single-file bind mount of it) survives, and it is set to mode
+// so a template mode change takes effect.
 func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
+	in, err := paths.OpenFileNoFollow(src, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("open template file: %w", symlinkHint(err, src))
 	}
 	defer func() { _ = in.Close() }()
+	if err := requireRegular(in, src); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	out, err := paths.OpenFileNoFollow(dst, os.O_CREATE|os.O_WRONLY|syscall.O_NONBLOCK, mode.Perm())
 	if err != nil {
+		return fmt.Errorf("open deployment file: %w", symlinkHint(err, dst))
+	}
+	if err := requireRegular(out, dst); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Truncate(0); err != nil {
+		_ = out.Close()
 		return err
 	}
 	if _, err = io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Chmod(mode.Perm()); err != nil {
 		_ = out.Close()
 		return err
 	}
@@ -218,6 +240,26 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+// requireRegular fails unless the open file f is a regular file.
+func requireRegular(f *os.File, path string) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to copy non-regular file: %s", path)
+	}
+	return nil
+}
+
+// symlinkHint wraps ErrSymlink when err came from opening a symlink.
+func symlinkHint(err error, path string) error {
+	if paths.IsSymlink(path) {
+		return fmt.Errorf("%w: %s: %w", ErrSymlink, path, err)
+	}
+	return err
 }
 
 // isServiceBackupName reports whether name is a Backup() directory for service.
