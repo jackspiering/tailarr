@@ -12,6 +12,11 @@ import (
 // ghNotLoggedIn is the gh exit code for a missing login.
 const ghNotLoggedIn = 4
 
+// releaseWorkflowPath is the workflow that builds and attests release assets.
+// Moving or renaming it breaks the attestation check of older releases, so
+// keep the path stable.
+const releaseWorkflowPath = ".github/workflows/release.yml"
+
 // provenanceTimeout bounds the attestation lookup.
 var provenanceTimeout = 2 * time.Minute
 
@@ -27,7 +32,10 @@ func checkProvenance(assetPath, repo string) (verified bool, note string, err er
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), provenanceTimeout)
 	defer cancel()
-	out, rerr := exec.CommandContext(ctx, gh, "attestation", "verify", assetPath, "--repo", repo).CombinedOutput()
+	// Pin the signer to the release workflow: --repo alone accepts an
+	// attestation from any workflow in the repository.
+	out, rerr := exec.CommandContext(ctx, gh, "attestation", "verify", assetPath, "--repo", repo,
+		"--signer-workflow", repo+"/"+releaseWorkflowPath).CombinedOutput()
 	if rerr == nil {
 		return true, "", nil
 	}

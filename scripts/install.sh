@@ -147,7 +147,7 @@ verify_checksum() {
 
 # verify_attestation checks the GitHub build attestation when the GitHub CLI
 # is installed and logged in. The checksum only matches SHA256SUMS from the
-# same release; the attestation proves the release workflow built the file.
+# same release; the attestation proves the release workflow of the repository built the file.
 verify_attestation() {
 	bin=$1
 	if ! command -v gh >/dev/null 2>&1; then
@@ -155,7 +155,8 @@ verify_attestation() {
 		return
 	fi
 	set +e
-	out=$(gh attestation verify "$bin" --repo "$REPO" 2>&1)
+	out=$(gh attestation verify "$bin" --repo "$REPO" \
+		--signer-workflow "$REPO/.github/workflows/release.yml" 2>&1)
 	status=$?
 	set -e
 	case "$status" in

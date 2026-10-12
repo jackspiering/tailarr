@@ -40,8 +40,10 @@ Include:
   transport-integrity protection (corruption/truncation), not cryptographic
   authenticity: it does not prove the release was published by the maintainer.
 - When the GitHub CLI (`gh`) is installed and logged in, both also run
-  `gh attestation verify` against this repository. That proves the release
-  workflow built the asset, and a failed check stops the install or upgrade.
+  `gh attestation verify` against this repository and its
+  `.github/workflows/release.yml` workflow. That proves the release workflow
+  attested the asset after it built it in a job that installs no lint or
+  scanner tools, and a failed check stops the install or upgrade.
   Without `gh`, they print a note that the attestation was not checked.
 
 ## Project rules
