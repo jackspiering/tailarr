@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
+  `.tailarr.compose.yaml`. Before, a stale `compose.yaml` next to a template `compose.yml` made Restart start a different file and revert an
+  Apply. Deployments from older versions keep the old lookup until their next Apply.
+- Deploy refuses a name that would share a Compose project with another deployment, for example `my-app` next to `my.app`. Both names map to
+  one project, so `down` for one removed the containers of the other. Existing project names do not change.
 - The Services cursor now stays on the same service when the 4 second refresh adds or removes rows, and the action menu acts on the
   services it names. A menu titled `beta` could act on another service after a refresh.
 - A status error, for example an unreadable deploy path, now replaces the stale service table instead of hiding behind it.
