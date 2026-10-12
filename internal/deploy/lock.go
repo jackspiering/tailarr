@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
+	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
@@ -68,7 +69,9 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 				if time.Now().After(deadline) {
 					return nil, fmt.Errorf("another Tailarr process holds the lock: %s", path)
 				}
-				time.Sleep(100 * time.Millisecond)
+				if err := waitLockRetry(path); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			if err := writeLockIdentity(f, pid, token); err != nil {
@@ -97,7 +100,22 @@ func AcquireLock(path string, timeout time.Duration) (*Lock, error) {
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("another Tailarr process holds the lock: %s", path)
 		}
-		time.Sleep(100 * time.Millisecond)
+		if err := waitLockRetry(path); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// waitLockRetry pauses before the next lock attempt. It ends early with
+// ErrInterrupted when the operator cancels, so a held lock cannot pin the
+// TUI for the whole timeout.
+func waitLockRetry(path string) error {
+	ctx := interrupt.Context()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("%w: stopped waiting for lock %s: %v", ErrInterrupted, path, ctx.Err())
+	case <-time.After(100 * time.Millisecond):
+		return nil
 	}
 }
 
