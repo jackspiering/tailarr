@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remove no longer leaves a half-deleted directory when a non-root operator cannot delete files that a container wrote as root. Tailarr now
+  moves the deployment into `.tailarr_backups/trash` after `compose down`, which frees the service name for a new Deploy. If the delete
+  still fails, the error names the leftover path, the backup, and the command to finish as root.
 - The TUI no longer crashes on wide characters. Pasting about 37 CJK or emoji characters into a prompt, or showing a long wide word in a
   panel, used to cut a string at the wrong place and panic. A very small terminal with the action menu open could also crash it.
 - Ctrl+C now stops a self-upgrade. The download, the attestation check, and the lock wait all end on cancel, and a canceled upgrade no longer

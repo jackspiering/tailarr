@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
@@ -650,14 +651,21 @@ func (m *Manager) Remove(service string) error {
 		}
 	}
 
-	if _, err := Backup(m.Cfg.DeployPath, service, dest); err != nil {
+	backupPath, err := Backup(m.Cfg.DeployPath, service, dest)
+	if err != nil {
 		return err
 	}
 	if err := Compose(dest, m.projectArgs(service, "down", "--remove-orphans")...); err != nil {
 		return fmt.Errorf("compose down failed; deployment directory left intact: %w", err)
 	}
-	if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
-		return err
+	if leftover, err := removeDeployment(dest, m.Cfg.DeployPath, service); err != nil {
+		if leftover == "" {
+			return err
+		}
+		m.log("warning: removed %s but could not delete %s: %v", service, leftover, err)
+		return fmt.Errorf("containers for %s are down and its name is free, but %s could not be fully deleted: %w; "+
+			"run as root (or the owner of those files) to finish: rm -rf %s. The backup is %s",
+			service, leftover, err, leftover, backupPath)
 	}
 
 	// Offer to delete retained backups (they may contain .env secrets).
@@ -828,6 +836,52 @@ func safeRemoveTree(path, root string) error {
 		return fmt.Errorf("%w: refusing to remove tree with symlink: %s", ErrSymlink, found)
 	}
 	return os.RemoveAll(path)
+}
+
+// trashDirName is the directory under .tailarr_backups that holds deployments
+// that Remove moved aside and could not delete yet.
+const trashDirName = "trash"
+
+// removeDeployment deletes the deployment at dest after compose down. It first
+// renames dest into a trash directory, which frees the service name even when
+// the delete fails, for example when a container wrote root-owned files that
+// a non-root operator cannot remove. leftover is the trash path when the
+// rename worked and the delete did not.
+func removeDeployment(dest, root, service string) (leftover string, err error) {
+	if paths.IsSymlink(dest) {
+		return "", fmt.Errorf("%w: refusing to remove symlink: %s", ErrSymlink, dest)
+	}
+	if ok, err := paths.Within(dest, root); err != nil {
+		return "", fmt.Errorf("refusing to remove %s: %w", dest, err)
+	} else if !ok {
+		return "", fmt.Errorf("refusing to remove %s: not within %s", dest, root)
+	}
+	if found, err := paths.ContainsSymlinks(dest); err != nil {
+		return "", err
+	} else if found != "" {
+		return "", fmt.Errorf("%w: refusing to remove tree with symlink: %s", ErrSymlink, found)
+	}
+
+	trashRoot := filepath.Join(root, config.BackupDirName, trashDirName)
+	if err := paths.EnsureDirMode(filepath.Dir(trashRoot), "backup directory", 0o700); err != nil {
+		return "", err
+	}
+	if err := paths.EnsureDirMode(trashRoot, "trash directory", 0o700); err != nil {
+		return "", err
+	}
+	trash, err := backupPathFor(trashRoot, service, time.Now().UTC().Format("20060102T150405Z"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(dest, trash); err != nil {
+		// The trash is on another filesystem or the directory cannot move:
+		// delete in place, as before.
+		return "", safeRemoveTree(dest, root)
+	}
+	if err := os.RemoveAll(trash); err != nil {
+		return trash, err
+	}
+	return "", nil
 }
 
 func (m *Manager) log(format string, args ...any) {
