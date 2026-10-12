@@ -217,7 +217,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 			return
 		}
 		if rerr := snap.restore(); rerr != nil {
-			retErr = fmt.Errorf("apply failed (%v); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
+			retErr = fmt.Errorf("apply failed (%w); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
 			return
 		}
 		m.log("restored previous files for %s after failed apply", service)
@@ -229,7 +229,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		default:
 			if uerr := Compose(dest, m.upArgs(service, composeBaseName(dest))...); uerr != nil {
 				m.log("warning: compose up with restored files failed for %s: %v", service, uerr)
-				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%v): %w", uerr, retErr)
+				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%w): %w", uerr, retErr)
 				return
 			}
 			retErr = fmt.Errorf("apply failed; previous deployment restored and started: %w", retErr)
@@ -434,6 +434,60 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	return scaletail.WriteEnvFile(localEnv, merged, keys)
 }
 
+// offerStoreAuthkey offers to keep a pasted auth key in the store. Storing is
+// a convenience, so a bad name, an existing name that the operator will not
+// overwrite, or a store failure warns and lets the deploy continue: the key is
+// single use and must not be lost over it. Esc at these prompts only skips
+// storing. Any other prompt error, such as an interrupt, is returned.
+func (m *Manager) offerStoreAuthkey(val string) error {
+	skipped := func(err error) error {
+		if errors.Is(err, prompt.ErrCanceled) {
+			return nil
+		}
+		return err
+	}
+	ok, err := m.UI.Confirm("Store this key for future use?", true)
+	if err != nil {
+		return skipped(err)
+	}
+	if !ok {
+		return nil
+	}
+	name, err := m.UI.Line("Stored key name", "default")
+	if err != nil {
+		return skipped(err)
+	}
+	if name == "" {
+		return nil
+	}
+	warn := func(format string, args ...any) {
+		m.UI.Printf("Warning: key not stored: "+format+"\n", args...)
+		m.log("warning: auth key not stored: "+format, args...)
+	}
+	if err := names.ValidateAuthkeyName(name); err != nil {
+		warn("%v", err)
+		return nil
+	}
+	if store, lerr := authkeys.Load(m.Cfg.AuthkeysPath); lerr == nil {
+		if _, exists := store.Keys[name]; exists {
+			overwrite, err := m.UI.Confirm(fmt.Sprintf("A stored key named %q exists. Overwrite it?", name), false)
+			if err != nil {
+				return skipped(err)
+			}
+			if !overwrite {
+				warn("%q already exists", name)
+				return nil
+			}
+		}
+	}
+	if err := storeAuthkey(m.Cfg.AuthkeysPath, name, val); err != nil {
+		warn("%v", err)
+		return nil
+	}
+	m.UI.Printf("Stored auth key %s\n", name)
+	return nil
+}
+
 func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error {
 	for _, key := range scaletail.PlaceholderKeys(merged, keys) {
 		if key == "TS_AUTHKEY" {
@@ -464,17 +518,8 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 				return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
 			}
 			merged[key] = val
-			if ok, _ := m.UI.Confirm("Store this key for future use?", true); ok {
-				storeName, err := m.UI.Line("Stored key name", "default")
-				if err != nil {
-					return err
-				}
-				if storeName != "" {
-					if err := storeAuthkey(m.Cfg.AuthkeysPath, storeName, val); err != nil {
-						return err
-					}
-					m.UI.Printf("Stored auth key %s\n", storeName)
-				}
+			if err := m.offerStoreAuthkey(val); err != nil {
+				return err
 			}
 			continue
 		}

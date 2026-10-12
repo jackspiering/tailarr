@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Without a terminal, Tailarr prints `Tailarr is interactive; run inside a terminal.` even when it cannot read the config file. It used to
+  load the config first, so an install smoke check as another user could report a false failure after the binary was replaced.
+- A failed `docker ps` on the Services tab now shows Docker's reason, for example a permission error on its socket, instead of `exit status 1`.
+- A failed restore after a failed Apply keeps the original error, so an interrupt still stops the rest of a batch.
+- Declining a Remove or Apply confirm in a batch counts the service as skipped. It used to count as failed and log `failed`.
+- Deploy keeps a pasted auth key when storing it fails. A bad name or a store error shows a warning, Esc at the store prompts skips storing,
+  and Tailarr asks before it overwrites a stored key of the same name.
 - The TUI no longer crashes on wide characters. Pasting about 37 CJK or emoji characters into a prompt, or showing a long wide word in a
   panel, used to cut a string at the wrong place and panic. A very small terminal with the action menu open could also crash it.
 - Ctrl+C now stops a self-upgrade. The download, the attestation check, and the lock wait all end on cancel, and a canceled upgrade no longer

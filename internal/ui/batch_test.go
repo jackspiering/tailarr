@@ -222,3 +222,38 @@ func TestBatchSummaryNamesInterrupt(t *testing.T) {
 		t.Fatalf("summary = %q", got)
 	}
 }
+
+func TestRunBatchCountsDeclinedConfirmAsSkipped(t *testing.T) {
+	cfg := batchConfig(t)
+	dest := filepath.Join(cfg.DeployPath, "web")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "compose.yaml"), []byte("services:\n  app:\n    image: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	override := "services:\n  app:\n    labels:\n      tailarr.managed: \"true\"\n"
+	if err := os.WriteFile(filepath.Join(dest, ".tailarr.compose.yaml"), []byte(override), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := logging.New(cfg.LogPath, cfg.LogMaxBytes)
+	var printed []string
+	// Remove asks per service; the scripted answer is No.
+	r := runBatch(cfg, log, scriptUI{confirm: false, printed: &printed}, batchRemove, []string{"web"})
+	if r.failed != 0 || r.skipped != 1 || r.ok != 0 {
+		t.Fatalf("declining a confirm must count as skipped, got %+v", r)
+	}
+	if !strings.Contains(strings.Join(printed, "\n"), "skipped: canceled") {
+		t.Fatalf("skip not shown: %q", printed)
+	}
+	data, _ := os.ReadFile(cfg.LogPath)
+	if strings.Contains(string(data), "failed") || !strings.Contains(string(data), "remove web skipped") {
+		t.Fatalf("log must say skipped, not failed: %q", data)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("declined remove deleted the deployment: %v", err)
+	}
+	if got := r.summary(batchRemove, []string{"web"}); strings.Contains(got, "failed") {
+		t.Fatalf("summary reports a failure: %q", got)
+	}
+}
