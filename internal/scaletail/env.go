@@ -112,12 +112,13 @@ func validEnvKey(key string) bool {
 // QuoteEnvValue returns v in the form WriteEnvFile needs so Compose reads it
 // literally. Values with whitespace, '$', '#', '"', a backslash, or a leading
 // single quote are single-quoted. A value that Compose cannot read literally
-// in single quotes is an error.
+// in single quotes is an error. A leading "//" is quoted too, so a later Apply
+// reads the stored value as the operator's literal (see LiteralKeys).
 func QuoteEnvValue(v string) (string, error) {
 	if strings.ContainsAny(v, "\n\r") {
 		return "", fmt.Errorf("value must be a single line")
 	}
-	if !strings.ContainsAny(v, " \t$#\"\\") && !strings.HasPrefix(v, "'") {
+	if !strings.ContainsAny(v, " \t$#\"\\") && !strings.HasPrefix(v, "'") && !strings.HasPrefix(v, "//") {
 		return v, nil
 	}
 	if strings.Contains(v, "'") || strings.HasSuffix(v, "\\") {
@@ -209,10 +210,30 @@ func DefaultForKey(key string) (string, bool) {
 
 // PlaceholderKeys returns keys in order whose values are placeholders.
 func PlaceholderKeys(merged EnvMap, keys []string) []string {
+	return PlaceholderKeysSkipping(merged, keys, nil)
+}
+
+// LiteralKeys returns the keys whose value in merged is a quoted, non-empty
+// value that came from local. Tailarr quotes a typed secret such as '#hunter2'
+// itself, so such a value is the operator's literal, not a template
+// placeholder, even though its text starts with '#' or '//'.
+func LiteralKeys(local, merged EnvMap) map[string]bool {
+	out := map[string]bool{}
+	for k, lv := range local {
+		raw := strings.TrimSpace(lv)
+		if v := unquote(raw); v != raw && strings.TrimSpace(v) != "" && merged[k] == lv {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// PlaceholderKeysSkipping is PlaceholderKeys without the keys in skip.
+func PlaceholderKeysSkipping(merged EnvMap, keys []string, skip map[string]bool) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, k := range keys {
-		if IsPlaceholder(merged[k]) {
+		if !skip[k] && IsPlaceholder(merged[k]) {
 			out = append(out, k)
 			seen[k] = true
 		}
@@ -220,7 +241,7 @@ func PlaceholderKeys(merged EnvMap, keys []string) []string {
 	// Keys outside the template order are sorted so prompts keep a stable order.
 	var extra []string
 	for k, v := range merged {
-		if !seen[k] && IsPlaceholder(v) {
+		if !seen[k] && !skip[k] && IsPlaceholder(v) {
 			extra = append(extra, k)
 		}
 	}
@@ -240,7 +261,7 @@ func ValidateMergedTSAuthkey(merged EnvMap) error {
 		return nil
 	}
 	if !names.ValidTSAuthkey(v) {
-		return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+		return fmt.Errorf("TS_AUTHKEY must be a tskey-auth- key with only letters, digits, hyphen, and underscore")
 	}
 	return nil
 }

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auth keys must now match `tskey-auth-` followed only by letters, digits, hyphen, and underscore. A value such as `tskey-auth-abc $X #c` used
+  to pass the prefix check and reach Compose altered.
+- Apply no longer asks again for a secret that starts with `#` or `//`. Tailarr quotes such a value, and the next Apply read it as a
+  placeholder, so pressing Enter at the prompt wiped the secret. A typed value that starts with `//` is now quoted as well.
+- Git refresh ignores `GIT_ALLOW_PROTOCOL`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`,
+  `GIT_WORK_TREE`, and `GIT_EXEC_PATH` from the environment and sets `GIT_ALLOW_PROTOCOL=https:ssh`. A stray value from `sudo -E` or dotfiles
+  could void the protocol policy before.
+- The repository URL `git@host/path` is rejected. Git reads it as a local path, so only `git@host:path` is valid.
+- The self-upgrade refuses a redirect to a non-https URL, and `install.sh` passes `--proto '=https'` to curl.
 - Remove no longer leaves a half-deleted directory when a non-root operator cannot delete files that a container wrote as root. Tailarr now
   moves the deployment into `.tailarr_backups/trash` after `compose down`, which frees the service name for a new Deploy. If the delete
   still fails, the error names the leftover path, the backup, and the command to finish as root.

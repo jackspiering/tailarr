@@ -231,3 +231,27 @@ func TestParseEnvReturnsKeyOrder(t *testing.T) {
 		t.Fatalf("ParseEnv = %v %v", env, keys)
 	}
 }
+
+func TestQuoteEnvValueQuotesLeadingSlashes(t *testing.T) {
+	got, err := QuoteEnvValue("//hunter2")
+	if err != nil || got != "'//hunter2'" {
+		t.Fatalf("QuoteEnvValue(//hunter2) = %q, %v", got, err)
+	}
+	if got, _ := QuoteEnvValue("http://host"); got != "http://host" {
+		t.Fatalf("a URL must stay unquoted, got %q", got)
+	}
+}
+
+func TestLiteralKeysFindOnlyQuotedLocalValues(t *testing.T) {
+	local := EnvMap{"A": "'#hunter2'", "B": "# fill me", "C": "''", "D": "'//x'", "E": "'old'"}
+	merged := EnvMap{"A": "'#hunter2'", "B": "# fill me", "C": "''", "D": "'//x'", "E": "'new'"}
+	got := LiteralKeys(local, merged)
+	if !got["A"] || !got["D"] {
+		t.Errorf("quoted local literals missing: %v", got)
+	}
+	for _, k := range []string{"B", "C", "E"} {
+		if got[k] {
+			t.Errorf("%s must not be a literal: %v", k, got)
+		}
+	}
+}

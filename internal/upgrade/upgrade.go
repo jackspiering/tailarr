@@ -166,6 +166,9 @@ func safeGitHubRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("too many redirects")
 	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to non-https URL %s", req.URL.Redacted())
+	}
 	host := req.URL.Hostname()
 	switch {
 	case host == "github.com", host == "api.github.com",

@@ -141,3 +141,35 @@ func TestValidTSAuthkeyRejectsNewline(t *testing.T) {
 		t.Fatal("newline should fail")
 	}
 }
+
+func TestValidTSAuthkeyRejectsShellAndCommentChars(t *testing.T) {
+	t.Parallel()
+	for _, bad := range []string{
+		"tskey-auth-abc $X #c",
+		"tskey-auth-abc def",
+		"tskey-auth-abc$HOME",
+		"tskey-auth-abc#comment",
+		"tskey-auth-abc'quote",
+		`tskey-auth-abc"quote`,
+		"tskey-auth-abc\nTS_EXTRA=1",
+		"tskey-auth-",
+	} {
+		if ValidTSAuthkey(bad) {
+			t.Errorf("ValidTSAuthkey(%q) = true, want false", bad)
+		}
+	}
+	for _, good := range []string{"tskey-auth-kAbC123CNTRL-abc_DEF-123", "  tskey-auth-abc123  "} {
+		if !ValidTSAuthkey(good) {
+			t.Errorf("ValidTSAuthkey(%q) = false, want true", good)
+		}
+	}
+}
+
+func TestValidateRepoURLRejectsScpWithoutColon(t *testing.T) {
+	t.Parallel()
+	for _, bad := range []string{"git@github.com/org/repo.git", "git@github.com", "git@github.com:", "git@:org/repo.git", "git@/etc/repo"} {
+		if err := ValidateRepoURL(bad); err == nil {
+			t.Errorf("ValidateRepoURL(%q) accepted a form that git reads as a local path", bad)
+		}
+	}
+}

@@ -1319,6 +1319,37 @@ func TestMergeEnvPromptsSecretCatalogKeysWithoutEcho(t *testing.T) {
 	}
 }
 
+func TestApplyKeepsQuotedHashValue(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	env := "API_TOKEN=\nOTHER_TOKEN=\n"
+	templateDir := setupTemplate(t, repo, "web", env)
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(templateDir, dest); err != nil {
+		t.Fatal(err)
+	}
+	// Tailarr quotes a typed secret that starts with '#', so Apply sees it quoted.
+	local := "API_TOKEN='#hunter2'\nOTHER_TOKEN='//also secret'\n"
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte(local), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ui := &keyKindUI{}
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}, UI: ui}
+	if err := m.mergeAndWriteEnv([]byte(env), dest, DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.secrets)+len(ui.lines) != 0 {
+		t.Fatalf("Apply asked again for values the operator already set: %v %v", ui.secrets, ui.lines)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != local {
+		t.Fatalf(".env changed:\n%s", data)
+	}
+}
+
 func TestDeployTakesDownContainersAfterFailedUp(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()

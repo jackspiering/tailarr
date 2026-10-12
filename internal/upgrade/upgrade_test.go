@@ -180,3 +180,21 @@ func TestDownloadStopsWhenContextCanceled(t *testing.T) {
 		t.Fatalf("partial download left behind: %v", err)
 	}
 }
+
+func TestSafeGitHubRedirectRequiresHTTPS(t *testing.T) {
+	for url, want := range map[string]bool{
+		"https://github.com/o/r/releases/download/v1/a": true,
+		"https://objects.githubusercontent.com/x":       true,
+		"http://github.com/o/r/releases/download/v1/a":  false,
+		"http://objects.githubusercontent.com/x":        false,
+		"https://github.com.evil.example.com/x":         false,
+	} {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := safeGitHubRedirect(req, nil) == nil; got != want {
+			t.Errorf("safeGitHubRedirect(%s) allowed = %v, want %v", url, got, want)
+		}
+	}
+}

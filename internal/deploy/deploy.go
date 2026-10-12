@@ -418,7 +418,7 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 
 	// Interactive fill for remaining placeholders when a UI is available.
 	if m.UI != nil {
-		if err := m.promptMissingEnv(merged, keys); err != nil {
+		if err := m.promptMissingEnv(merged, keys, scaletail.LiteralKeys(localMap, merged)); err != nil {
 			return err
 		}
 	}
@@ -435,8 +435,10 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	return scaletail.WriteEnvFile(localEnv, merged, keys)
 }
 
-func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error {
-	for _, key := range scaletail.PlaceholderKeys(merged, keys) {
+// promptMissingEnv asks for every placeholder value. Keys in literal hold a
+// quoted value that the operator already set, so they are not asked again.
+func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string, literal map[string]bool) error {
+	for _, key := range scaletail.PlaceholderKeysSkipping(merged, keys, literal) {
 		if key == "TS_AUTHKEY" {
 			if !scaletail.IsPlaceholder(merged[key]) {
 				continue
@@ -462,9 +464,9 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 				return err
 			}
 			if !names.ValidTSAuthkey(val) {
-				return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+				return fmt.Errorf("TS_AUTHKEY must be a tskey-auth- key with only letters, digits, hyphen, and underscore")
 			}
-			merged[key] = val
+			merged[key] = strings.TrimSpace(val)
 			if ok, _ := m.UI.Confirm("Store this key for future use?", true); ok {
 				storeName, err := m.UI.Line("Stored key name", "default")
 				if err != nil {
