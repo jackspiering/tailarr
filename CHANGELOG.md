@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Services cursor now stays on the same service when the 4 second refresh adds or removes rows, and the action menu acts on the
+  services it names. A menu titled `beta` could act on another service after a refresh.
+- A status error, for example an unreadable deploy path, now replaces the stale service table instead of hiding behind it.
+- The output panel keeps its scroll position while Compose rewrites progress lines, End edits a prefilled Line prompt instead of scrolling,
+  result lines are cleaned and redacted, and a key pasted into a name prompt no longer echoes.
+- Doctor results are cleared when the config changes, and the System tab runs the checks again.
 - Without a terminal, Tailarr prints `Tailarr is interactive; run inside a terminal.` even when it cannot read the config file. It used to
   load the config first, so an install smoke check as another user could report a false failure after the binary was replaced.
 - A failed `docker ps` on the Services tab now shows Docker's reason, for example a permission error on its socket, instead of `exit status 1`.
