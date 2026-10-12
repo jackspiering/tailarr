@@ -49,9 +49,11 @@ type Options struct {
 	// (default: context.Background).
 	Context context.Context
 
-	// apiBase and releaseBase override the GitHub endpoints (tests only).
+	// apiBase and releaseBase override the GitHub endpoints, and exePath
+	// overrides the binary that Upgrade replaces (tests only).
 	apiBase     string
 	releaseBase string
+	exePath     string
 }
 
 const (
@@ -201,9 +203,12 @@ func Upgrade(opts Options) (string, error) {
 	}
 	asset := fmt.Sprintf("tailarr-%s-%s", osName, arch)
 
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("locate binary: %w", err)
+	exe := opts.exePath
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return "", fmt.Errorf("locate binary: %w", err)
+		}
 	}
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return "", fmt.Errorf("resolve binary path: %w", err)
