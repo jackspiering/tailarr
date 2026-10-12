@@ -46,7 +46,7 @@ func Backup(deployPath, service, servicePath string) (string, error) {
 	// secrets (e.g. TS_AUTHKEY in .env). Best-effort: a prune failure must not
 	// abort an operation that already copied the deployment, and must
 	// never lose the backup just created (which is always the newest).
-	_ = pruneBackups(root, service, 2)
+	_ = pruneBackupsKeeping(root, service, 2, backupPath)
 	return backupPath, nil
 }
 
@@ -69,6 +69,13 @@ func backupPathFor(root, service, stamp string) (string, error) {
 // Entries are matched by the "<service>-<stamp>" name prefix used by Backup
 // (collision-suffixed names such as "<stamp>-1" count as backups too).
 func pruneBackups(root, service string, keep int) error {
+	return pruneBackupsKeeping(root, service, keep, "")
+}
+
+// pruneBackupsKeeping is pruneBackups with one path that is never removed.
+// The protected path counts toward keep, so a backup that was just created
+// survives even when the clock puts its name before older ones.
+func pruneBackupsKeeping(root, service string, keep int, protect string) error {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -85,8 +92,13 @@ func pruneBackups(root, service string, keep int) error {
 		if paths.IsSymlink(p) {
 			continue
 		}
+		if protect != "" && p == protect {
+			keep--
+			continue
+		}
 		matches = append(matches, p)
 	}
+	keep = max(keep, 0)
 	if len(matches) <= keep {
 		return nil
 	}

@@ -246,9 +246,10 @@ Safety:
 - Tailarr writes config, auth keys, and `.env` files atomically.
 - Secret files use mode `600`.
 - Before apply, Tailarr saves the files that apply changes: template files, `.env`, and the managed override.
+  The copy goes to `.tailarr_backups/apply-snapshots`, and Tailarr keeps the two newest per service.
   A failed apply puts them back in place and starts the service again. Container data is not copied or moved.
 - Before remove, Tailarr copies the whole deployment to `.tailarr_backups`. The copy keeps modes and times, and owners when
-  Tailarr runs as root. It skips sockets and FIFOs.
+  Tailarr runs as root. It skips sockets and FIFOs. Apply never deletes these copies. Tailarr keeps the two newest per service.
 - Each service has an ownership-bound lock.
 - Git refresh uses a repo lock.
 - Treat the ScaleTail clone as trusted input. Compose runs on your host.

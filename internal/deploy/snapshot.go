@@ -12,6 +12,10 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
+// applySnapshotDirName is the directory under .tailarr_backups for Apply
+// snapshots. Its name cannot match a "<service>-<stamp>" Remove backup.
+const applySnapshotDirName = "apply-snapshots"
+
 // applySnapshot records the files Apply may change: template paths, .env,
 // and the managed override. Container data is never copied or moved, so a
 // failed Apply cannot pull a bind-mounted directory out from under a
@@ -29,12 +33,17 @@ type applySnapshot struct {
 }
 
 // snapshotManaged copies the files Apply may write under dest into a new
-// backup directory under deployPath/.tailarr_backups.
+// directory under deployPath/.tailarr_backups/apply-snapshots. Snapshots live
+// apart from the full-tree backups that Remove makes, so Apply never prunes
+// the copy of container data that a removed service left behind.
 func snapshotManaged(deployPath, service, templateDir, dest string) (*applySnapshot, error) {
 	if err := names.ValidateServiceName(service); err != nil {
 		return nil, err
 	}
-	root := filepath.Join(deployPath, config.BackupDirName)
+	root := applySnapshotRoot(deployPath)
+	if err := paths.EnsureDirMode(filepath.Dir(root), "backup directory", 0o700); err != nil {
+		return nil, err
+	}
 	if err := paths.EnsureDirMode(root, "backup directory", 0o700); err != nil {
 		return nil, err
 	}
@@ -81,8 +90,13 @@ func snapshotManaged(deployPath, service, templateDir, dest string) (*applySnaps
 			return nil, err
 		}
 	}
-	_ = pruneBackups(root, service, 2)
+	_ = pruneBackupsKeeping(root, service, 2, dir)
 	return s, nil
+}
+
+// applySnapshotRoot returns the directory that holds Apply snapshots.
+func applySnapshotRoot(deployPath string) string {
+	return filepath.Join(deployPath, config.BackupDirName, applySnapshotDirName)
 }
 
 func (s *applySnapshot) save(rel string) error {
