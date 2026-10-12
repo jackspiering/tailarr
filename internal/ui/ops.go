@@ -151,6 +151,15 @@ func runBatch(cfg config.Config, log *logging.Logger, ui prompt.UI, mode batchMo
 			r.ok++
 			continue
 		}
+		if errors.Is(err, prompt.ErrCanceled) {
+			// The operator declined a prompt for this service: not a failure.
+			ui.Printf("  skipped: canceled\n")
+			r.skipped++
+			if log != nil {
+				log.Event(fmt.Sprintf("%s %s skipped: canceled", strings.ToLower(mode.title()), svc))
+			}
+			continue
+		}
 		ui.Printf("  error: %s\n", redact.Text(err.Error()))
 		r.failed++
 		r.failedNames = append(r.failedNames, svc)

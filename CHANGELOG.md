@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Without a terminal, Tailarr prints `Tailarr is interactive; run inside a terminal.` even when it cannot read the config file. It used to
+  load the config first, so an install smoke check as another user could report a false failure after the binary was replaced.
+- A failed `docker ps` on the Services tab now shows Docker's reason, for example a permission error on its socket, instead of `exit status 1`.
+- A failed restore after a failed Apply keeps the original error, so an interrupt still stops the rest of a batch.
+- Declining a Remove or Apply confirm in a batch counts the service as skipped. It used to count as failed and log `failed`.
+- Deploy keeps a pasted auth key when storing it fails. A bad name or a store error shows a warning, Esc at the store prompts skips storing,
+  and Tailarr asks before it overwrites a stored key of the same name.
 - Auth keys must now match `tskey-auth-` followed only by letters, digits, hyphen, and underscore. A value such as `tskey-auth-abc $X #c` used
   to pass the prefix check and reach Compose altered.
 - Apply no longer asks again for a secret that starts with `#` or `//`. Tailarr quotes such a value, and the next Apply read it as a

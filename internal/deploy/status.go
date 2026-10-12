@@ -1,12 +1,14 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
 
 	"github.com/jackspiering/tailarr/internal/scaletail"
+	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
 // Health is a coarse container/service health state.
@@ -90,9 +92,22 @@ func dockerPS() ([]psRow, error) {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("docker ps timed out after %s", probeTimeout)
 		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if reason := lastNonEmptyLine(string(exitErr.Stderr)); reason != "" {
+				return nil, fmt.Errorf("docker ps: %w: %s", err, redact.Text(reason))
+			}
+		}
 		return nil, fmt.Errorf("docker ps: %w", err)
 	}
 	return parsePS(string(raw)), nil
+}
+
+// lastNonEmptyLine returns the last non-blank line of s, trimmed. Docker puts
+// the reason for a failure there, for example a permission error on its socket.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 func parsePS(raw string) []psRow {

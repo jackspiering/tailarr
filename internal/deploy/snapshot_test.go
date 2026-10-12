@@ -591,3 +591,27 @@ func TestApplyReportsFailedStartAfterRestore(t *testing.T) {
 		t.Fatalf("expected the original up and one restart, got %d", ups)
 	}
 }
+
+func TestApplyFailedRestoreKeepsInterruptSentinel(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	managedDeploy(t, repo, deployRoot)
+	withFakeCompose(t, func(dir string, args ...string) error {
+		if !strings.Contains(strings.Join(args, " "), "pull") {
+			return nil
+		}
+		snaps, _ := os.ReadDir(applySnapshotRoot(deployRoot))
+		if len(snaps) == 1 {
+			_ = os.Remove(filepath.Join(applySnapshotRoot(deployRoot), snaps[0].Name(), "compose.yaml"))
+		}
+		return fmt.Errorf("%w: canceled", ErrInterrupted)
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("a failed restore must keep ErrInterrupted so a batch stops, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to restore previous files") {
+		t.Fatalf("restore failure not reported: %v", err)
+	}
+}
