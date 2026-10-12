@@ -33,8 +33,9 @@ Include:
 - Review backups under `.tailarr_backups` (they may contain secrets).
 - Only Tailarr-managed deployments (identified by the `.tailarr.compose.yaml`
   marker) are applied, stopped, or removed.
-- Prefer a pinned install script URL or `TAILARR_VERSION=...` when using
-  `curl | sh`. The install script verifies release asset checksums.
+- Pin the version when you use `curl | sh`: set `TAILARR_VERSION=...` on `sh`,
+  after the pipe, where the install script reads it. Setting it on `curl` has
+  no effect. The install script verifies release asset checksums.
 - The install script and the built-in upgrade verify each release asset's
   SHA-256 checksum against `SHA256SUMS` from the same GitHub release. That is
   transport-integrity protection (corruption/truncation), not cryptographic

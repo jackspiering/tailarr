@@ -283,22 +283,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case statusMsg:
+		keep := m.cursorNames()
 		m.statusBusy = false
 		m.statusErr = msg.err
 		if msg.err == "" {
 			st := msg.st
 			m.status = &st
+		} else {
+			// Drop the old table so the error shows instead of stale services.
+			m.status = nil
 		}
-		m.clampCursor()
+		m.restoreCursors(keep)
 		return m, nil
 	case catalogMsg:
+		keep := m.cursorNames()
 		m.catalogLoaded = true
 		m.catalog, m.catalogErr = msg.items, msg.err
-		m.clampCursor()
+		m.restoreCursors(keep)
 		return m, nil
 	case keysMsg:
+		keep := m.cursorNames()
 		m.keyNames, m.keysErr = msg.names, msg.err
-		m.clampCursor()
+		m.restoreCursors(keep)
 		return m, nil
 	case doctorMsg:
 		m.doctorBusy = false
@@ -318,9 +324,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin++
 		return m, spinTick()
 	case outMsg:
-		m.out.add(msg.line)
-		if m.scrollBack > 0 {
-			m.scrollBack++
+		// A progress line that replaces an earlier one adds no row, so a
+		// scrolled panel keeps its place.
+		if m.out.add(msg.line) && m.scrollBack > 0 {
+			m.scrollBack = min(m.scrollBack+1, len(m.out.lines))
 		}
 		return m, nil
 	case askMsg:
@@ -480,11 +487,14 @@ func (m model) handleAskKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.ask = nil
 		return m, nil
 	case "pgup", "pgdown", "home", "end":
-		m.ask = nil
-		next, cmd := m.handleKey(msg)
-		nm := next.(model)
-		nm.ask = a
-		return nm, cmd
+		// Home and End edit a Line prompt, so only the other prompts scroll.
+		if k := msg.String(); a.kind != askLine || (k != "home" && k != "end") {
+			m.ask = nil
+			next, cmd := m.handleKey(msg)
+			nm := next.(model)
+			nm.ask = a
+			return nm, cmd
+		}
 	}
 	if a.kind == askConfirm {
 		switch strings.ToLower(msg.Text) {
@@ -645,6 +655,39 @@ func (m *model) moveCursor(delta int) {
 	m.clampCursor()
 }
 
+// cursorNames returns the name under each tab's cursor ("" when the tab has
+// no rows), so a refresh can put the cursor back on the same row.
+func (m *model) cursorNames() [tabCount]string {
+	var out [tabCount]string
+	saved := m.tab
+	for t := range m.lists {
+		m.tab = tab(t)
+		out[t] = m.current()
+	}
+	m.tab = saved
+	return out
+}
+
+// restoreCursors moves each cursor to the row named in keep when it still
+// exists, then clamps the rest.
+func (m *model) restoreCursors(keep [tabCount]string) {
+	saved := m.tab
+	for t := range m.lists {
+		if keep[t] == "" {
+			continue
+		}
+		m.tab = tab(t)
+		for i, n := range m.rows() {
+			if n == keep[t] {
+				m.lists[t].cursor = i
+				break
+			}
+		}
+	}
+	m.tab = saved
+	m.clampCursor()
+}
+
 func (m *model) clampCursor() {
 	for t := range m.lists {
 		saved := m.tab
@@ -746,10 +789,12 @@ func (m model) servicesKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) servicesMenu() *actionMenu {
-	run := func(mode batchMode) func(model) (model, tea.Cmd) {
-		return func(m model) (model, tea.Cmd) { return m.lifecycle(mode) }
-	}
 	t := m.targets()
+	// The menu acts on the services it names, even if a refresh moves the
+	// cursor or changes the list before the operator picks an item.
+	run := func(mode batchMode) func(model) (model, tea.Cmd) {
+		return func(m model) (model, tea.Cmd) { return m.lifecycleFor(mode, t) }
+	}
 	title := t[0]
 	if len(t) > 1 {
 		title = fmt.Sprintf("%d services", len(t))
@@ -764,6 +809,11 @@ func (m model) servicesMenu() *actionMenu {
 
 // lifecycle runs mode on the managed targets of the Services tab.
 func (m model) lifecycle(mode batchMode) (model, tea.Cmd) {
+	return m.lifecycleFor(mode, m.targets())
+}
+
+// lifecycleFor runs mode on the managed services among targets.
+func (m model) lifecycleFor(mode batchMode, targets []string) (model, tea.Cmd) {
 	if m.busy {
 		m.note = busyNote
 		return m, nil
@@ -775,7 +825,7 @@ func (m model) lifecycle(mode batchMode) (model, tea.Cmd) {
 		}
 	}
 	var names, skipped []string
-	for _, n := range m.targets() {
+	for _, n := range targets {
 		if managed[n] {
 			names = append(names, n)
 		} else {
@@ -995,15 +1045,22 @@ func (m model) finishOp(res opResult) (tea.Model, tea.Cmd) {
 	m.opCancel = nil
 	m.note = ""
 	for _, l := range res.lines {
-		if strings.TrimSpace(l) != "" {
+		if l = redact.Text(cleanLine(l)); strings.TrimSpace(l) != "" {
 			m.out.add(l)
 		}
 	}
 	if elapsed >= time.Second {
 		m.out.title = fmt.Sprintf("%s · %s", m.opTitle, elapsed.Round(time.Second))
 	}
+	var extra []tea.Cmd
 	if res.cfg != nil {
 		m.cfg = *res.cfg
+		// The doctor results belong to the old config.
+		m.checks = nil
+		if m.tab == tabSystem && !m.doctorBusy {
+			m.doctorBusy = true
+			extra = append(extra, loadDoctor(m.cfg))
+		}
 	}
 	if res.log != nil {
 		m.log = res.log
@@ -1014,7 +1071,7 @@ func (m model) finishOp(res opResult) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.statusBusy = true
-	return m, tea.Batch(loadStatus(m.cfg.DeployPath), loadCatalog(m.cfg.RepoPath), loadKeys(m.cfg.AuthkeysPath))
+	return m, tea.Batch(append(extra, loadStatus(m.cfg.DeployPath), loadCatalog(m.cfg.RepoPath), loadKeys(m.cfg.AuthkeysPath))...)
 }
 
 func (m model) View() tea.View {

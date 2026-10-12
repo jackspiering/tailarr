@@ -112,3 +112,71 @@ func TestRemoveExplainsUnreadableContainerData(t *testing.T) {
 		t.Fatalf("deployment must stay intact: %v", serr)
 	}
 }
+
+func TestRemoveFreesNameWhenFilesCannotBeDeleted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can delete a read-only directory; test needs a non-root user")
+	}
+	repo, deployRoot, dest := managedDeployment(t)
+	stuck := filepath.Join(dest, "data", "sub")
+	if err := os.MkdirAll(stuck, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "db"), []byte("container data\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A 0555 directory with a file stands in for files that a root container
+	// wrote: this user can read them but not delete them.
+	if err := os.Chmod(stuck, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = filepath.Walk(deployRoot, func(p string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+	})
+	var composeCalls []string
+	withFakeCompose(t, func(dir string, args ...string) error {
+		composeCalls = append(composeCalls, strings.Join(args, " "))
+		return nil
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Remove("web")
+	if err == nil {
+		t.Fatal("expected an error about the files that could not be deleted")
+	}
+	for _, want := range []string{"containers for web are down", "name is free", "run as root", "rm -rf", "The backup is"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+		t.Fatalf("the service directory must be gone so the name is free: %v", err)
+	}
+	trash, _ := filepath.Glob(filepath.Join(deployRoot, config.BackupDirName, trashDirName, "web-*"))
+	if len(trash) != 1 || !strings.Contains(err.Error(), trash[0]) {
+		t.Fatalf("expected one trash entry named in the error, got %v", trash)
+	}
+	// The name is free: Deploy works again.
+	if err := m.Deploy("web", DeployOpts{}); err != nil {
+		t.Fatalf("redeploy after a partial remove: %v", err)
+	}
+}
+
+func TestRemoveLeavesNoTrashOnSuccess(t *testing.T) {
+	repo, deployRoot, dest := managedDeployment(t)
+	withFakeCompose(t, func(string, ...string) error { return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Remove("web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+		t.Fatalf("deployment still exists: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(deployRoot, config.BackupDirName, trashDirName, "*")); len(left) != 0 {
+		t.Fatalf("trash not emptied: %v", left)
+	}
+}

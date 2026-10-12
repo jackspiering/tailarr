@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
@@ -45,6 +47,11 @@ const overrideFilename = ".tailarr.compose.yaml"
 // managedMarker is the comment line writeMarkerOnly writes when the compose
 // services cannot be listed for a labeled override.
 const managedMarker = "# Managed: com.tailarr.managed=true"
+
+// composeFileMarkerRE matches the comment that records which compose file a
+// deployment runs, so Restart and the restore after a failed Apply use the
+// file that Apply used even when an older compose.yaml sits next to it.
+var composeFileMarkerRE = regexp.MustCompile(`(?m)^# tailarr\.compose-file: (\S+)\s*$`)
 
 // managedYAMLLabelRE matches the compose label Tailarr writes in writeOverrideUsing.
 var managedYAMLLabelRE = regexp.MustCompile(`(?m)^\s+tailarr\.managed:\s*"true"\s*$`)
@@ -99,6 +106,9 @@ func (m *Manager) Deploy(service string, opts DeployOpts) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if err := checkProjectCollision(m.Cfg.DeployPath, service); err != nil {
+		return err
+	}
 
 	tplEnv, err := readTemplateEnv(templateDir)
 	if err != nil {
@@ -141,7 +151,7 @@ func (m *Manager) finishDeploy(service, templateDir, dest string, tplEnv []byte,
 		return false, err
 	}
 
-	return true, Compose(dest, m.upArgs(service, composeBaseName(dest))...)
+	return true, Compose(dest, m.upArgs(service, activeComposeFile(dest))...)
 }
 
 // Apply syncs catalog template files onto an existing managed deployment, then
@@ -217,7 +227,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 			return
 		}
 		if rerr := snap.restore(); rerr != nil {
-			retErr = fmt.Errorf("apply failed (%v); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
+			retErr = fmt.Errorf("apply failed (%w); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
 			return
 		}
 		m.log("restored previous files for %s after failed apply", service)
@@ -227,9 +237,9 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		case errors.Is(retErr, ErrInterrupted):
 			retErr = fmt.Errorf("apply interrupted; previous files restored, but containers may not match them (run Restart): %w", retErr)
 		default:
-			if uerr := Compose(dest, m.upArgs(service, composeBaseName(dest))...); uerr != nil {
+			if uerr := Compose(dest, m.upArgs(service, activeComposeFile(dest))...); uerr != nil {
 				m.log("warning: compose up with restored files failed for %s: %v", service, uerr)
-				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%v): %w", uerr, retErr)
+				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%w): %w", uerr, retErr)
 				return
 			}
 			retErr = fmt.Errorf("apply failed; previous deployment restored and started: %w", retErr)
@@ -387,6 +397,48 @@ func syncTemplateFiles(templateDir, dest string) error {
 	})
 }
 
+// activeComposeFile returns the compose file that the deployment in dir runs.
+// It reads the name that Deploy and Apply record in the managed override and
+// falls back to the first compose file found, for deployments made before the
+// name was recorded. A recorded name must be a known compose file that exists.
+func activeComposeFile(dir string) string {
+	if data, err := os.ReadFile(filepath.Join(dir, overrideFilename)); err == nil {
+		if m := composeFileMarkerRE.FindSubmatch(data); m != nil {
+			name := string(m[1])
+			p := filepath.Join(dir, name)
+			if slices.Contains(scaletail.ComposeCandidates, name) && !paths.IsSymlink(p) {
+				if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+					return name
+				}
+			}
+		}
+	}
+	return composeBaseName(dir)
+}
+
+// checkProjectCollision refuses to create a deployment whose Compose project
+// name equals that of another deployment in the root. Names are sanitized
+// (lower case, '.' to '-', cut at 40 characters), so Web and web, or my.app
+// and my-app, would share one project and take down each other's containers.
+// Existing project names never change, so this only guards new deployments.
+func checkProjectCollision(deployPath, service string) error {
+	entries, err := os.ReadDir(deployPath)
+	if err != nil {
+		return nil
+	}
+	want := ProjectName(deployPath, service)
+	for _, e := range entries {
+		n := e.Name()
+		if n == service || n == config.BackupDirName || n == config.LockDirName || !e.IsDir() || !names.ValidServiceName(n) {
+			continue
+		}
+		if ProjectName(deployPath, n) == want {
+			return fmt.Errorf("%w: %s and %s would share the Compose project %s; rename or remove one", ErrProjectCollision, service, n, want)
+		}
+	}
+	return nil
+}
+
 func composeBaseName(dir string) string {
 	if p, ok := scaletail.ComposeFileIn(dir); ok {
 		return filepath.Base(p)
@@ -417,7 +469,7 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 
 	// Interactive fill for remaining placeholders when a UI is available.
 	if m.UI != nil {
-		if err := m.promptMissingEnv(merged, keys); err != nil {
+		if err := m.promptMissingEnv(merged, keys, scaletail.LiteralKeys(localMap, merged)); err != nil {
 			return err
 		}
 	}
@@ -434,8 +486,64 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	return scaletail.WriteEnvFile(localEnv, merged, keys)
 }
 
-func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error {
-	for _, key := range scaletail.PlaceholderKeys(merged, keys) {
+// offerStoreAuthkey offers to keep a pasted auth key in the store. Storing is
+// a convenience, so a bad name, an existing name that the operator will not
+// overwrite, or a store failure warns and lets the deploy continue: the key is
+// single use and must not be lost over it. Esc at these prompts only skips
+// storing. Any other prompt error, such as an interrupt, is returned.
+func (m *Manager) offerStoreAuthkey(val string) error {
+	skipped := func(err error) error {
+		if errors.Is(err, prompt.ErrCanceled) {
+			return nil
+		}
+		return err
+	}
+	ok, err := m.UI.Confirm("Store this key for future use?", true)
+	if err != nil {
+		return skipped(err)
+	}
+	if !ok {
+		return nil
+	}
+	name, err := m.UI.Line("Stored key name", "default")
+	if err != nil {
+		return skipped(err)
+	}
+	if name == "" {
+		return nil
+	}
+	warn := func(format string, args ...any) {
+		m.UI.Printf("Warning: key not stored: "+format+"\n", args...)
+		m.log("warning: auth key not stored: "+format, args...)
+	}
+	if err := names.ValidateAuthkeyName(name); err != nil {
+		warn("%v", err)
+		return nil
+	}
+	if store, lerr := authkeys.Load(m.Cfg.AuthkeysPath); lerr == nil {
+		if _, exists := store.Keys[name]; exists {
+			overwrite, err := m.UI.Confirm(fmt.Sprintf("A stored key named %q exists. Overwrite it?", name), false)
+			if err != nil {
+				return skipped(err)
+			}
+			if !overwrite {
+				warn("%q already exists", name)
+				return nil
+			}
+		}
+	}
+	if err := storeAuthkey(m.Cfg.AuthkeysPath, name, val); err != nil {
+		warn("%v", err)
+		return nil
+	}
+	m.UI.Printf("Stored auth key %s\n", name)
+	return nil
+}
+
+// promptMissingEnv asks for every placeholder value. Keys in literal hold a
+// quoted value that the operator already set, so they are not asked again.
+func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string, literal map[string]bool) error {
+	for _, key := range scaletail.PlaceholderKeysSkipping(merged, keys, literal) {
 		if key == "TS_AUTHKEY" {
 			if !scaletail.IsPlaceholder(merged[key]) {
 				continue
@@ -461,20 +569,11 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 				return err
 			}
 			if !names.ValidTSAuthkey(val) {
-				return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+				return fmt.Errorf("TS_AUTHKEY must be a tskey-auth- key with only letters, digits, hyphen, and underscore")
 			}
-			merged[key] = val
-			if ok, _ := m.UI.Confirm("Store this key for future use?", true); ok {
-				storeName, err := m.UI.Line("Stored key name", "default")
-				if err != nil {
-					return err
-				}
-				if storeName != "" {
-					if err := storeAuthkey(m.Cfg.AuthkeysPath, storeName, val); err != nil {
-						return err
-					}
-					m.UI.Printf("Stored auth key %s\n", storeName)
-				}
+			merged[key] = strings.TrimSpace(val)
+			if err := m.offerStoreAuthkey(val); err != nil {
+				return err
 			}
 			continue
 		}
@@ -518,7 +617,7 @@ func writeOverrideUsing(service, dest, composeFile string) error {
 	services, err := composeServiceNames(dest, composeFile)
 	if err != nil {
 		// Fall back to a marker-only file so IsManaged still works.
-		return writeMarkerOnly(dest)
+		return writeMarkerOnly(dest, composeFile)
 	}
 	valid := services[:0]
 	for _, svc := range services {
@@ -528,10 +627,11 @@ func writeOverrideUsing(service, dest, composeFile string) error {
 		valid = append(valid, svc)
 	}
 	if len(valid) == 0 {
-		return writeMarkerOnly(dest)
+		return writeMarkerOnly(dest, composeFile)
 	}
 	var b strings.Builder
 	b.WriteString("# Generated by Tailarr. Do not edit by hand.\n")
+	fmt.Fprintf(&b, "# tailarr.compose-file: %s\n", composeFile)
 	b.WriteString("services:\n")
 	for _, svc := range valid {
 		fmt.Fprintf(&b, "  %s:\n", svc)
@@ -543,8 +643,9 @@ func writeOverrideUsing(service, dest, composeFile string) error {
 	return atomic.WriteFileString(filepath.Join(dest, overrideFilename), b.String(), 0o644)
 }
 
-func writeMarkerOnly(dest string) error {
-	body := "# Generated by Tailarr. Do not edit by hand.\n" + managedMarker + "\n"
+func writeMarkerOnly(dest, composeFile string) error {
+	body := "# Generated by Tailarr. Do not edit by hand.\n" +
+		"# tailarr.compose-file: " + composeFile + "\n" + managedMarker + "\n"
 	return atomic.WriteFileString(filepath.Join(dest, overrideFilename), body, 0o644)
 }
 
@@ -611,7 +712,7 @@ func (m *Manager) Restart(service string) error {
 		if err := Compose(dir, m.projectArgs(service, "stop")...); err != nil {
 			return err
 		}
-		if err := Compose(dir, m.upArgs(service, composeBaseName(dir))...); err != nil {
+		if err := Compose(dir, m.upArgs(service, activeComposeFile(dir))...); err != nil {
 			return fmt.Errorf("restart stopped %s but could not start it again; it is stopped now (fix the cause, then Restart or Apply): %w", service, err)
 		}
 		m.log("restarted service %s", service)
@@ -650,14 +751,21 @@ func (m *Manager) Remove(service string) error {
 		}
 	}
 
-	if _, err := Backup(m.Cfg.DeployPath, service, dest); err != nil {
+	backupPath, err := Backup(m.Cfg.DeployPath, service, dest)
+	if err != nil {
 		return err
 	}
 	if err := Compose(dest, m.projectArgs(service, "down", "--remove-orphans")...); err != nil {
 		return fmt.Errorf("compose down failed; deployment directory left intact: %w", err)
 	}
-	if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
-		return err
+	if leftover, err := removeDeployment(dest, m.Cfg.DeployPath, service); err != nil {
+		if leftover == "" {
+			return err
+		}
+		m.log("warning: removed %s but could not delete %s: %v", service, leftover, err)
+		return fmt.Errorf("containers for %s are down and its name is free, but %s could not be fully deleted: %w; "+
+			"run as root (or the owner of those files) to finish: rm -rf %s. The backup is %s",
+			service, leftover, err, leftover, backupPath)
 	}
 
 	// Offer to delete retained backups (they may contain .env secrets).
@@ -828,6 +936,52 @@ func safeRemoveTree(path, root string) error {
 		return fmt.Errorf("%w: refusing to remove tree with symlink: %s", ErrSymlink, found)
 	}
 	return os.RemoveAll(path)
+}
+
+// trashDirName is the directory under .tailarr_backups that holds deployments
+// that Remove moved aside and could not delete yet.
+const trashDirName = "trash"
+
+// removeDeployment deletes the deployment at dest after compose down. It first
+// renames dest into a trash directory, which frees the service name even when
+// the delete fails, for example when a container wrote root-owned files that
+// a non-root operator cannot remove. leftover is the trash path when the
+// rename worked and the delete did not.
+func removeDeployment(dest, root, service string) (leftover string, err error) {
+	if paths.IsSymlink(dest) {
+		return "", fmt.Errorf("%w: refusing to remove symlink: %s", ErrSymlink, dest)
+	}
+	if ok, err := paths.Within(dest, root); err != nil {
+		return "", fmt.Errorf("refusing to remove %s: %w", dest, err)
+	} else if !ok {
+		return "", fmt.Errorf("refusing to remove %s: not within %s", dest, root)
+	}
+	if found, err := paths.ContainsSymlinks(dest); err != nil {
+		return "", err
+	} else if found != "" {
+		return "", fmt.Errorf("%w: refusing to remove tree with symlink: %s", ErrSymlink, found)
+	}
+
+	trashRoot := filepath.Join(root, config.BackupDirName, trashDirName)
+	if err := paths.EnsureDirMode(filepath.Dir(trashRoot), "backup directory", 0o700); err != nil {
+		return "", err
+	}
+	if err := paths.EnsureDirMode(trashRoot, "trash directory", 0o700); err != nil {
+		return "", err
+	}
+	trash, err := backupPathFor(trashRoot, service, time.Now().UTC().Format("20060102T150405Z"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(dest, trash); err != nil {
+		// The trash is on another filesystem or the directory cannot move:
+		// delete in place, as before.
+		return "", safeRemoveTree(dest, root)
+	}
+	if err := os.RemoveAll(trash); err != nil {
+		return trash, err
+	}
+	return "", nil
 }
 
 func (m *Manager) log(format string, args ...any) {

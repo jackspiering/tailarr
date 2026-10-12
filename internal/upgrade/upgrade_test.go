@@ -1,8 +1,10 @@
 package upgrade
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompare(t *testing.T) {
@@ -126,5 +129,72 @@ func TestVerifySum(t *testing.T) {
 	}
 	if err := verifySum(data, sumsPath, "../evil"); err == nil {
 		t.Fatal("verifySum accepted a path-like asset name")
+	}
+}
+
+// blockingServer never answers until the client goes away.
+func blockingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestLatestStopsWhenContextCanceled(t *testing.T) {
+	srv := blockingServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := Latest(Options{Client: srv.Client(), apiBase: srv.URL, Context: ctx})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Latest ignored the canceled context")
+	}
+}
+
+func TestDownloadStopsWhenContextCanceled(t *testing.T) {
+	srv := blockingServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	path := filepath.Join(t.TempDir(), "asset")
+	done := make(chan error, 1)
+	go func() { done <- download(ctx, srv.Client(), srv.URL+"/asset", path, 1<<20) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("download ignored the canceled context")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("partial download left behind: %v", err)
+	}
+}
+
+func TestSafeGitHubRedirectRequiresHTTPS(t *testing.T) {
+	for url, want := range map[string]bool{
+		"https://github.com/o/r/releases/download/v1/a": true,
+		"https://objects.githubusercontent.com/x":       true,
+		"http://github.com/o/r/releases/download/v1/a":  false,
+		"http://objects.githubusercontent.com/x":        false,
+		"https://github.com.evil.example.com/x":         false,
+	} {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := safeGitHubRedirect(req, nil) == nil; got != want {
+			t.Errorf("safeGitHubRedirect(%s) allowed = %v, want %v", url, got, want)
+		}
 	}
 }

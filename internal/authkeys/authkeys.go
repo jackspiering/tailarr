@@ -146,7 +146,7 @@ func (s *Store) Put(name, value string) error {
 		return fmt.Errorf("TS_AUTHKEY must be a single line")
 	}
 	if !names.ValidTSAuthkey(value) {
-		return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+		return fmt.Errorf("TS_AUTHKEY must be a tskey-auth- key with only letters, digits, hyphen, and underscore")
 	}
 	if _, exists := s.Keys[name]; !exists {
 		s.Order = append(s.Order, name)

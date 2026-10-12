@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
+  `.tailarr.compose.yaml`. Before, a stale `compose.yaml` next to a template `compose.yml` made Restart start a different file and revert an
+  Apply. Deployments from older versions keep the old lookup until their next Apply.
+- Deploy refuses a name that would share a Compose project with another deployment, for example `my-app` next to `my.app`. Both names map to
+  one project, so `down` for one removed the containers of the other. Existing project names do not change.
+- The Services cursor now stays on the same service when the 4 second refresh adds or removes rows, and the action menu acts on the
+  services it names. A menu titled `beta` could act on another service after a refresh.
+- A status error, for example an unreadable deploy path, now replaces the stale service table instead of hiding behind it.
+- The output panel keeps its scroll position while Compose rewrites progress lines, End edits a prefilled Line prompt instead of scrolling,
+  result lines are cleaned and redacted, and a key pasted into a name prompt no longer echoes.
+- Doctor results are cleared when the config changes, and the System tab runs the checks again.
+- Without a terminal, Tailarr prints `Tailarr is interactive; run inside a terminal.` even when it cannot read the config file. It used to
+  load the config first, so an install smoke check as another user could report a false failure after the binary was replaced.
+- A failed `docker ps` on the Services tab now shows Docker's reason, for example a permission error on its socket, instead of `exit status 1`.
+- A failed restore after a failed Apply keeps the original error, so an interrupt still stops the rest of a batch.
+- Declining a Remove or Apply confirm in a batch counts the service as skipped. It used to count as failed and log `failed`.
+- Deploy keeps a pasted auth key when storing it fails. A bad name or a store error shows a warning, Esc at the store prompts skips storing,
+  and Tailarr asks before it overwrites a stored key of the same name.
+- Auth keys must now match `tskey-auth-` followed only by letters, digits, hyphen, and underscore. A value such as `tskey-auth-abc $X #c` used
+  to pass the prefix check and reach Compose altered.
+- Apply no longer asks again for a secret that starts with `#` or `//`. Tailarr quotes such a value, and the next Apply read it as a
+  placeholder, so pressing Enter at the prompt wiped the secret. A typed value that starts with `//` is now quoted as well.
+- Git refresh ignores `GIT_ALLOW_PROTOCOL`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`,
+  `GIT_WORK_TREE`, and `GIT_EXEC_PATH` from the environment and sets `GIT_ALLOW_PROTOCOL=https:ssh`. A stray value from `sudo -E` or dotfiles
+  could void the protocol policy before.
+- The repository URL `git@host/path` is rejected. Git reads it as a local path, so only `git@host:path` is valid.
+- The self-upgrade refuses a redirect to a non-https URL, and `install.sh` passes `--proto '=https'` to curl.
+- Remove no longer leaves a half-deleted directory when a non-root operator cannot delete files that a container wrote as root. Tailarr now
+  moves the deployment into `.tailarr_backups/trash` after `compose down`, which frees the service name for a new Deploy. If the delete
+  still fails, the error names the leftover path, the backup, and the command to finish as root.
+- The TUI no longer crashes on wide characters. Pasting about 37 CJK or emoji characters into a prompt, or showing a long wide word in a
+  panel, used to cut a string at the wrong place and panic. A very small terminal with the action menu open could also crash it.
+- Ctrl+C now stops a self-upgrade. The download, the attestation check, and the lock wait all end on cancel, and a canceled upgrade no longer
+  replaces the binary. A held lock no longer keeps the TUI busy for the full 30 second wait after Ctrl+C.
 - Deploy and Apply no longer follow a symlink or block on a FIFO when they copy template files. A container that can write in the deployment
   directory could use a symlink to make a root-run Apply overwrite a host file, or use a FIFO to stall Apply while it held the lock.
   Tailarr now opens both files without following symlinks and refuses anything that is not a regular file.
@@ -29,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The README install options set `TAILARR_VERSION` and `INSTALL_DIR` on `sh`, where the installer reads them.
   The old examples set them on `curl`, so the installer ignored the pin and the install directory.
 - Doctor tells you to press `r` on the Catalog tab when the ScaleTail clone is missing. It used to name a menu that no longer exists.
+
+### Security
+
+- Remove no longer deletes a directory outside the deploy root through a symlinked parent. A lexical fallback in the path check let
+  `RemoveAll` follow the symlink. Tailarr now refuses to remove a path that resolves outside the root.
 
 ## [0.8.0] - 2026-09-28
 
@@ -364,5 +403,6 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jackspiering/tailarr/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0

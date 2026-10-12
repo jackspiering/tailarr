@@ -7,6 +7,7 @@
 package upgrade
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -35,7 +36,8 @@ const DefaultRepo = "jackspiering/tailarr"
 type Options struct {
 	// Repo is the GitHub owner/repository (default DefaultRepo).
 	Repo string
-	// Current is the installed version string (default: version.Version).
+	// Current is the installed version string. When it is empty or not
+	// SemVer, Upgrade cannot compare it and installs the latest release.
 	Current string
 	// Force reinstalls even when Current already matches the latest release.
 	Force bool
@@ -43,10 +45,15 @@ type Options struct {
 	Client *http.Client
 	// Out receives progress lines (default: no output).
 	Out io.Writer
+	// Context cancels requests, the attestation check, and the binary swap
+	// (default: context.Background).
+	Context context.Context
 
-	// apiBase and releaseBase override the GitHub endpoints (tests only).
+	// apiBase and releaseBase override the GitHub endpoints, and exePath
+	// overrides the binary that Upgrade replaces (tests only).
 	apiBase     string
 	releaseBase string
+	exePath     string
 }
 
 const (
@@ -78,6 +85,13 @@ func (o Options) repo() string {
 		return DefaultRepo
 	}
 	return o.Repo
+}
+
+func (o Options) ctx() context.Context {
+	if o.Context != nil {
+		return o.Context
+	}
+	return context.Background()
 }
 
 func (o Options) client() *http.Client {
@@ -118,7 +132,7 @@ func Latest(opts Options) (string, error) {
 		return "", fmt.Errorf("invalid repository %q (want owner/repo)", repo)
 	}
 	url := opts.apiURL(repo)
-	resp, err := opts.client().Get(url)
+	resp, err := get(opts.ctx(), opts.client(), url)
 	if err != nil {
 		return "", fmt.Errorf("fetch latest release: %w", err)
 	}
@@ -139,9 +153,21 @@ func Latest(opts Options) (string, error) {
 	return info.TagName, nil
 }
 
+// get issues a GET request that ends when ctx is canceled.
+func get(ctx context.Context, client *http.Client, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(req)
+}
+
 func safeGitHubRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("too many redirects")
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to non-https URL %s", req.URL.Redacted())
 	}
 	host := req.URL.Hostname()
 	switch {
@@ -180,9 +206,12 @@ func Upgrade(opts Options) (string, error) {
 	}
 	asset := fmt.Sprintf("tailarr-%s-%s", osName, arch)
 
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("locate binary: %w", err)
+	exe := opts.exePath
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return "", fmt.Errorf("locate binary: %w", err)
+		}
 	}
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return "", fmt.Errorf("resolve binary path: %w", err)
@@ -197,11 +226,11 @@ func Upgrade(opts Options) (string, error) {
 
 	base := opts.releaseURL(opts.repo(), tag)
 	assetPath := filepath.Join(tmpdir, asset)
-	if err := download(opts.client(), base+"/"+asset, assetPath, maxAssetBytes); err != nil {
+	if err := download(opts.ctx(), opts.client(), base+"/"+asset, assetPath, maxAssetBytes); err != nil {
 		return "", fmt.Errorf("download %s: %w", asset, err)
 	}
 	sumsPath := filepath.Join(tmpdir, "SHA256SUMS")
-	if err := download(opts.client(), base+"/SHA256SUMS", sumsPath, maxSumsBytes); err != nil {
+	if err := download(opts.ctx(), opts.client(), base+"/SHA256SUMS", sumsPath, maxSumsBytes); err != nil {
 		return "", fmt.Errorf("download SHA256SUMS: %w", err)
 	}
 	data, err := os.ReadFile(assetPath)
@@ -212,7 +241,7 @@ func Upgrade(opts Options) (string, error) {
 		return "", err
 	}
 	opts.progress("Checksum OK\n")
-	verified, note, err := checkProvenance(assetPath, opts.repo())
+	verified, note, err := checkProvenance(opts.ctx(), assetPath, opts.repo())
 	if err != nil {
 		return "", err
 	}
@@ -222,6 +251,11 @@ func Upgrade(opts Options) (string, error) {
 		opts.progress("Note: %s\n", note)
 	}
 
+	// A cancel that arrived during the download or the attestation check
+	// must stop here, before the binary changes.
+	if err := opts.ctx().Err(); err != nil {
+		return "", fmt.Errorf("upgrade canceled before install: %w", err)
+	}
 	// Replace the binary atomically in place (temp file + rename).
 	if err := atomic.WriteFile(exe, data, 0o755); err != nil {
 		return "", fmt.Errorf("install binary: %w", err)
@@ -231,8 +265,8 @@ func Upgrade(opts Options) (string, error) {
 }
 
 // download fetches url into path (mode 0600, unlinked on error).
-func download(client *http.Client, url, path string, limit int64) error {
-	resp, err := client.Get(url)
+func download(ctx context.Context, client *http.Client, url, path string, limit int64) error {
+	resp, err := get(ctx, client, url)
 	if err != nil {
 		return err
 	}

@@ -34,7 +34,7 @@ download() {
 	url=$1
 	dest=$2
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$url" -o "$dest"
+		curl -fsSL --proto '=https' --proto-redir '=https' "$url" -o "$dest"
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO "$dest" "$url"
 	else
@@ -45,7 +45,7 @@ download() {
 download_to_stdout() {
 	url=$1
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$url"
+		curl -fsSL --proto '=https' --proto-redir '=https' "$url"
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO- "$url"
 	else

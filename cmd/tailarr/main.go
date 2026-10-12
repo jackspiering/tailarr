@@ -11,14 +11,16 @@ import (
 )
 
 func main() {
-	cfg := config.Default()
-	if err := config.Load(&cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "Error: load config:", err)
+	// Check the terminal first: an install smoke check without a TTY must see
+	// this message even when the config file is unreadable for that user.
+	if !ui.IsInteractive() {
+		fmt.Fprintln(os.Stderr, "Tailarr is interactive; run inside a terminal.")
 		os.Exit(1)
 	}
 
-	if !ui.IsInteractive() {
-		fmt.Fprintln(os.Stderr, "Tailarr is interactive; run inside a terminal.")
+	cfg := config.Default()
+	if err := config.Load(&cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: load config:", err)
 		os.Exit(1)
 	}
 

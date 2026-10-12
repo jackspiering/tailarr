@@ -255,7 +255,7 @@ func (m model) body(w, h int) []string {
 	}
 	if m.menu != nil && !side {
 		menu := m.menuPanel(w, min(len(m.menu.items)+4, h))
-		return append(left[:h-len(menu)], menu...)
+		return append(left[:max(min(len(left), h-len(menu)), 0)], menu...)
 	}
 	if !side {
 		return left
@@ -871,10 +871,10 @@ func (m model) promptPanel(w int) []string {
 		lines = append(lines, " "+styleOrPlain(cursorStyle, "› ")+dots+styleOrPlain(cursorStyle, "▏")+
 			styleOrPlain(dimStyle, "  hidden"))
 	default:
-		val := string(a.buf)
+		// A key pasted into a name prompt must not echo.
+		val := redact.Text(string(a.buf))
 		if lipgloss.Width(val) > iw-4 {
-			r := []rune(val)
-			val = "…" + string(r[len(r)-(iw-5):])
+			val = "…" + tailFit(val, iw-5)
 		}
 		if a.fresh {
 			val = cell(plainStyle, val, true)
@@ -1040,9 +1040,9 @@ func wrap(s string, w int) []string {
 				lines = append(lines, cur)
 				cur = ""
 			}
-			r := []rune(word)
-			lines = append(lines, string(r[:w]))
-			word = string(r[w:])
+			head, rest := cutFit(word, w)
+			lines = append(lines, head)
+			word = rest
 		}
 		switch {
 		case cur == "":
@@ -1058,6 +1058,35 @@ func wrap(s string, w int) []string {
 		lines = append(lines, cur)
 	}
 	return lines
+}
+
+// cutFit splits s after the longest prefix that fits in w display cells. It
+// always takes at least one rune, so a rune wider than w cannot stall a loop.
+func cutFit(s string, w int) (head, rest string) {
+	used := 0
+	for i, r := range s {
+		rw := lipgloss.Width(string(r))
+		if i > 0 && used+rw > w {
+			return s[:i], s[i:]
+		}
+		used += rw
+	}
+	return s, ""
+}
+
+// tailFit returns the longest suffix of s that fits in w display cells.
+func tailFit(s string, w int) string {
+	r := []rune(s)
+	used, i := 0, len(r)
+	for i > 0 {
+		rw := lipgloss.Width(string(r[i-1]))
+		if used+rw > w {
+			break
+		}
+		used += rw
+		i--
+	}
+	return string(r[i:])
 }
 
 // wrapStyled wraps a styled line to w cells.
