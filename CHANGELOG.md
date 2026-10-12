@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
+  `.tailarr.compose.yaml`. Before, a stale `compose.yaml` next to a template `compose.yml` made Restart start a different file and revert an
+  Apply. Deployments from older versions keep the old lookup until their next Apply.
+- Deploy refuses a name that would share a Compose project with another deployment, for example `my-app` next to `my.app`. Both names map to
+  one project, so `down` for one removed the containers of the other. Existing project names do not change.
 - The TUI no longer crashes on wide characters. Pasting about 37 CJK or emoji characters into a prompt, or showing a long wide word in a
   panel, used to cut a string at the wrong place and panic. A very small terminal with the action menu open could also crash it.
 - Ctrl+C now stops a self-upgrade. The download, the attestation check, and the lock wait all end on cancel, and a canceled upgrade no longer

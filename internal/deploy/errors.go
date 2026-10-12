@@ -20,6 +20,9 @@ var (
 	// ErrInterrupted is returned when compose is canceled by SIGTERM/SIGINT.
 	// Callers must finish cleanup (for example restore after a failed apply) before exiting.
 	ErrInterrupted = errors.New("operation interrupted")
+	// ErrProjectCollision is returned when Deploy would share a Compose
+	// project with another deployment, for example Web and web.
+	ErrProjectCollision = errors.New("compose project name collision")
 	// ErrSymlink is returned when a path is or contains a symlink that is refused.
 	ErrSymlink = errors.New("symlink refused")
 )
