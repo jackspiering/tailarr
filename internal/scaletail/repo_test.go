@@ -145,3 +145,33 @@ func TestCheckOriginRefusesOtherRepository(t *testing.T) {
 		t.Fatalf("expected origin mismatch, got %v", err)
 	}
 }
+
+func TestGitEnvForcesAllowProtocol(t *testing.T) {
+	env := gitEnv([]string{
+		"PATH=/bin",
+		"GIT_ALLOW_PROTOCOL=file:ext",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=protocol.ext.allow",
+		"GIT_CONFIG_VALUE_0=always",
+		"GIT_CONFIG_PARAMETERS='core.sshCommand=evil'",
+		"GIT_DIR=/tmp/other",
+		"GIT_WORK_TREE=/tmp/other",
+		"GIT_EXEC_PATH=/tmp/evil",
+		"GIT_CONFIG_GLOBAL=/home/me/.gitconfig-work",
+	})
+	joined := "\n" + strings.Join(env, "\n") + "\n"
+	for _, gone := range []string{"file:ext", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+		"GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_WORK_TREE", "GIT_EXEC_PATH"} {
+		if strings.Contains(joined, gone) {
+			t.Errorf("gitEnv kept %s:\n%s", gone, joined)
+		}
+	}
+	for _, want := range []string{"\nPATH=/bin\n", "\nGIT_ALLOW_PROTOCOL=https:ssh\n", "\nGIT_CONFIG_GLOBAL=/home/me/.gitconfig-work\n"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("gitEnv lost %q:\n%s", strings.TrimSpace(want), joined)
+		}
+	}
+	if n := strings.Count(joined, "GIT_ALLOW_PROTOCOL="); n != 1 {
+		t.Errorf("GIT_ALLOW_PROTOCOL appears %d times", n)
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/jackspiering/tailarr/internal/config"
 	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/logging"
+	"github.com/jackspiering/tailarr/internal/prompt"
 )
 
 func TestBackupPathForCollision(t *testing.T) {
@@ -1319,6 +1320,37 @@ func TestMergeEnvPromptsSecretCatalogKeysWithoutEcho(t *testing.T) {
 	}
 }
 
+func TestApplyKeepsQuotedHashValue(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	env := "API_TOKEN=\nOTHER_TOKEN=\n"
+	templateDir := setupTemplate(t, repo, "web", env)
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(templateDir, dest); err != nil {
+		t.Fatal(err)
+	}
+	// Tailarr quotes a typed secret that starts with '#', so Apply sees it quoted.
+	local := "API_TOKEN='#hunter2'\nOTHER_TOKEN='//also secret'\n"
+	if err := os.WriteFile(filepath.Join(dest, ".env"), []byte(local), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ui := &keyKindUI{}
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}, UI: ui}
+	if err := m.mergeAndWriteEnv([]byte(env), dest, DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.secrets)+len(ui.lines) != 0 {
+		t.Fatalf("Apply asked again for values the operator already set: %v %v", ui.secrets, ui.lines)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != local {
+		t.Fatalf(".env changed:\n%s", data)
+	}
+}
+
 func TestDeployTakesDownContainersAfterFailedUp(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
@@ -1788,6 +1820,32 @@ func TestCollectOverviewReportsDockerFailure(t *testing.T) {
 	}
 }
 
+func TestCollectOverviewKeepsDockerReason(t *testing.T) {
+	deployRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(deployRoot, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deployRoot, "web", "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho 'permission denied while trying to connect to /var/run/docker.sock TOKEN=abc123' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	st, err := CollectOverview(deployRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.DockerErr, "permission denied while trying to connect") {
+		t.Fatalf("docker's reason missing from %q", st.DockerErr)
+	}
+	if strings.Contains(st.DockerErr, "abc123") {
+		t.Fatalf("secret leaked into %q", st.DockerErr)
+	}
+}
+
 func TestDeployReusableKeyOnlyFillsDeclaredAuthkey(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()
@@ -1840,5 +1898,123 @@ func TestHealthFromOutputStoppedStackIsNotDown(t *testing.T) {
 	}
 	if got["db"] != HealthExited {
 		t.Errorf("sidecar died while app runs: got %s, want exited", got["db"])
+	}
+}
+
+// storeScriptUI answers prompts in order from queues.
+type storeScriptUI struct {
+	secret   string
+	confirms []any // bool, or an error to return
+	lines    []string
+	printed  []string
+}
+
+func (u *storeScriptUI) Confirm(string, bool) (bool, error) {
+	if len(u.confirms) == 0 {
+		return false, fmt.Errorf("unexpected confirm")
+	}
+	next := u.confirms[0]
+	u.confirms = u.confirms[1:]
+	if err, ok := next.(error); ok {
+		return false, err
+	}
+	return next.(bool), nil
+}
+
+func (u *storeScriptUI) Line(string, string) (string, error) {
+	if len(u.lines) == 0 {
+		return "", fmt.Errorf("unexpected line prompt")
+	}
+	next := u.lines[0]
+	u.lines = u.lines[1:]
+	return next, nil
+}
+
+func (u *storeScriptUI) Secret(string) (string, error) { return u.secret, nil }
+func (u *storeScriptUI) Printf(format string, args ...any) {
+	u.printed = append(u.printed, fmt.Sprintf(format, args...))
+}
+
+// mergeWithPastedKey runs mergeAndWriteEnv for a template that needs only
+// TS_AUTHKEY and returns the written .env and the UI.
+func mergeWithPastedKey(t *testing.T, ui *storeScriptUI, authkeysFile string) (string, error) {
+	t.Helper()
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	env := "TS_AUTHKEY=\n"
+	templateDir := setupTemplate(t, repo, "web", env)
+	dest := filepath.Join(deployRoot, "web")
+	if err := copyTemplate(templateDir, dest); err != nil {
+		t.Fatal(err)
+	}
+	if authkeysFile == "" {
+		authkeysFile = filepath.Join(deployRoot, "authkeys.conf")
+	}
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot, AuthkeysPath: authkeysFile}, UI: ui}
+	err := m.mergeAndWriteEnv([]byte(env), dest, DeployOpts{})
+	data, _ := os.ReadFile(filepath.Join(dest, ".env"))
+	return string(data), err
+}
+
+func TestDeployContinuesWhenStoringKeyFails(t *testing.T) {
+	ui := &storeScriptUI{secret: "tskey-auth-single-use", confirms: []any{true}, lines: []string{"my key"}}
+	authkeysFile := filepath.Join(t.TempDir(), "authkeys.conf")
+	env, err := mergeWithPastedKey(t, ui, authkeysFile)
+	if err != nil {
+		t.Fatalf("a bad store name must not fail the deploy: %v", err)
+	}
+	if !strings.Contains(env, "TS_AUTHKEY=tskey-auth-single-use") {
+		t.Fatalf("the pasted key was lost: %q", env)
+	}
+	if !strings.Contains(strings.Join(ui.printed, ""), "key not stored") {
+		t.Fatalf("operator not warned: %v", ui.printed)
+	}
+	if _, err := os.Stat(authkeysFile); !os.IsNotExist(err) {
+		t.Fatalf("nothing should be stored: %v", err)
+	}
+}
+
+func TestEscAtStorePromptOnlySkipsStoring(t *testing.T) {
+	ui := &storeScriptUI{secret: "tskey-auth-single-use", confirms: []any{fmt.Errorf("%w: esc", prompt.ErrCanceled)}}
+	env, err := mergeWithPastedKey(t, ui, "")
+	if err != nil {
+		t.Fatalf("Esc at the store prompt must not abort: %v", err)
+	}
+	if !strings.Contains(env, "TS_AUTHKEY=tskey-auth-single-use") {
+		t.Fatalf("key missing: %q", env)
+	}
+}
+
+func TestInterruptAtStorePromptAbortsDeploy(t *testing.T) {
+	ui := &storeScriptUI{secret: "tskey-auth-single-use", confirms: []any{context.Canceled}}
+	if _, err := mergeWithPastedKey(t, ui, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an interrupt must abort, got %v", err)
+	}
+}
+
+func TestStoringKeyAsksBeforeOverwriting(t *testing.T) {
+	authkeysFile := filepath.Join(t.TempDir(), "authkeys.conf")
+	if err := os.WriteFile(authkeysFile, []byte("default=tskey-auth-old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Name prompt (paste), store? yes, key name default, overwrite? no.
+	ui := &storeScriptUI{secret: "tskey-auth-new", confirms: []any{true, false}, lines: []string{"", "default"}}
+	env, err := mergeWithPastedKey(t, ui, authkeysFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(env, "TS_AUTHKEY=tskey-auth-new") {
+		t.Fatalf("deploy must use the pasted key: %q", env)
+	}
+	if b, _ := os.ReadFile(authkeysFile); !strings.Contains(string(b), "tskey-auth-old") || strings.Contains(string(b), "tskey-auth-new") {
+		t.Fatalf("stored key was overwritten without consent: %q", b)
+	}
+	// Accepting the overwrite replaces it.
+	ui = &storeScriptUI{secret: "tskey-auth-new", confirms: []any{true, true}, lines: []string{"", "default"}}
+	if _, err := mergeWithPastedKey(t, ui, authkeysFile); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(authkeysFile); !strings.Contains(string(b), "tskey-auth-new") {
+		t.Fatalf("accepted overwrite not stored: %q", b)
 	}
 }

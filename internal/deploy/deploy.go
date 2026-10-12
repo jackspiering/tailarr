@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/authkeys"
 	"github.com/jackspiering/tailarr/internal/config"
@@ -217,7 +218,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 			return
 		}
 		if rerr := snap.restore(); rerr != nil {
-			retErr = fmt.Errorf("apply failed (%v); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
+			retErr = fmt.Errorf("apply failed (%w); also failed to restore previous files from %s: %w", retErr, snap.dir, rerr)
 			return
 		}
 		m.log("restored previous files for %s after failed apply", service)
@@ -229,7 +230,7 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		default:
 			if uerr := Compose(dest, m.upArgs(service, composeBaseName(dest))...); uerr != nil {
 				m.log("warning: compose up with restored files failed for %s: %v", service, uerr)
-				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%v): %w", uerr, retErr)
+				retErr = fmt.Errorf("apply failed; previous files restored, but starting them also failed (%w): %w", uerr, retErr)
 				return
 			}
 			retErr = fmt.Errorf("apply failed; previous deployment restored and started: %w", retErr)
@@ -417,7 +418,7 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 
 	// Interactive fill for remaining placeholders when a UI is available.
 	if m.UI != nil {
-		if err := m.promptMissingEnv(merged, keys); err != nil {
+		if err := m.promptMissingEnv(merged, keys, scaletail.LiteralKeys(localMap, merged)); err != nil {
 			return err
 		}
 	}
@@ -434,8 +435,64 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	return scaletail.WriteEnvFile(localEnv, merged, keys)
 }
 
-func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error {
-	for _, key := range scaletail.PlaceholderKeys(merged, keys) {
+// offerStoreAuthkey offers to keep a pasted auth key in the store. Storing is
+// a convenience, so a bad name, an existing name that the operator will not
+// overwrite, or a store failure warns and lets the deploy continue: the key is
+// single use and must not be lost over it. Esc at these prompts only skips
+// storing. Any other prompt error, such as an interrupt, is returned.
+func (m *Manager) offerStoreAuthkey(val string) error {
+	skipped := func(err error) error {
+		if errors.Is(err, prompt.ErrCanceled) {
+			return nil
+		}
+		return err
+	}
+	ok, err := m.UI.Confirm("Store this key for future use?", true)
+	if err != nil {
+		return skipped(err)
+	}
+	if !ok {
+		return nil
+	}
+	name, err := m.UI.Line("Stored key name", "default")
+	if err != nil {
+		return skipped(err)
+	}
+	if name == "" {
+		return nil
+	}
+	warn := func(format string, args ...any) {
+		m.UI.Printf("Warning: key not stored: "+format+"\n", args...)
+		m.log("warning: auth key not stored: "+format, args...)
+	}
+	if err := names.ValidateAuthkeyName(name); err != nil {
+		warn("%v", err)
+		return nil
+	}
+	if store, lerr := authkeys.Load(m.Cfg.AuthkeysPath); lerr == nil {
+		if _, exists := store.Keys[name]; exists {
+			overwrite, err := m.UI.Confirm(fmt.Sprintf("A stored key named %q exists. Overwrite it?", name), false)
+			if err != nil {
+				return skipped(err)
+			}
+			if !overwrite {
+				warn("%q already exists", name)
+				return nil
+			}
+		}
+	}
+	if err := storeAuthkey(m.Cfg.AuthkeysPath, name, val); err != nil {
+		warn("%v", err)
+		return nil
+	}
+	m.UI.Printf("Stored auth key %s\n", name)
+	return nil
+}
+
+// promptMissingEnv asks for every placeholder value. Keys in literal hold a
+// quoted value that the operator already set, so they are not asked again.
+func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string, literal map[string]bool) error {
+	for _, key := range scaletail.PlaceholderKeysSkipping(merged, keys, literal) {
 		if key == "TS_AUTHKEY" {
 			if !scaletail.IsPlaceholder(merged[key]) {
 				continue
@@ -461,20 +518,11 @@ func (m *Manager) promptMissingEnv(merged scaletail.EnvMap, keys []string) error
 				return err
 			}
 			if !names.ValidTSAuthkey(val) {
-				return fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+				return fmt.Errorf("TS_AUTHKEY must be a tskey-auth- key with only letters, digits, hyphen, and underscore")
 			}
-			merged[key] = val
-			if ok, _ := m.UI.Confirm("Store this key for future use?", true); ok {
-				storeName, err := m.UI.Line("Stored key name", "default")
-				if err != nil {
-					return err
-				}
-				if storeName != "" {
-					if err := storeAuthkey(m.Cfg.AuthkeysPath, storeName, val); err != nil {
-						return err
-					}
-					m.UI.Printf("Stored auth key %s\n", storeName)
-				}
+			merged[key] = strings.TrimSpace(val)
+			if err := m.offerStoreAuthkey(val); err != nil {
+				return err
 			}
 			continue
 		}
@@ -650,14 +698,21 @@ func (m *Manager) Remove(service string) error {
 		}
 	}
 
-	if _, err := Backup(m.Cfg.DeployPath, service, dest); err != nil {
+	backupPath, err := Backup(m.Cfg.DeployPath, service, dest)
+	if err != nil {
 		return err
 	}
 	if err := Compose(dest, m.projectArgs(service, "down", "--remove-orphans")...); err != nil {
 		return fmt.Errorf("compose down failed; deployment directory left intact: %w", err)
 	}
-	if err := safeRemoveTree(dest, m.Cfg.DeployPath); err != nil {
-		return err
+	if leftover, err := removeDeployment(dest, m.Cfg.DeployPath, service); err != nil {
+		if leftover == "" {
+			return err
+		}
+		m.log("warning: removed %s but could not delete %s: %v", service, leftover, err)
+		return fmt.Errorf("containers for %s are down and its name is free, but %s could not be fully deleted: %w; "+
+			"run as root (or the owner of those files) to finish: rm -rf %s. The backup is %s",
+			service, leftover, err, leftover, backupPath)
 	}
 
 	// Offer to delete retained backups (they may contain .env secrets).
@@ -828,6 +883,52 @@ func safeRemoveTree(path, root string) error {
 		return fmt.Errorf("%w: refusing to remove tree with symlink: %s", ErrSymlink, found)
 	}
 	return os.RemoveAll(path)
+}
+
+// trashDirName is the directory under .tailarr_backups that holds deployments
+// that Remove moved aside and could not delete yet.
+const trashDirName = "trash"
+
+// removeDeployment deletes the deployment at dest after compose down. It first
+// renames dest into a trash directory, which frees the service name even when
+// the delete fails, for example when a container wrote root-owned files that
+// a non-root operator cannot remove. leftover is the trash path when the
+// rename worked and the delete did not.
+func removeDeployment(dest, root, service string) (leftover string, err error) {
+	if paths.IsSymlink(dest) {
+		return "", fmt.Errorf("%w: refusing to remove symlink: %s", ErrSymlink, dest)
+	}
+	if ok, err := paths.Within(dest, root); err != nil {
+		return "", fmt.Errorf("refusing to remove %s: %w", dest, err)
+	} else if !ok {
+		return "", fmt.Errorf("refusing to remove %s: not within %s", dest, root)
+	}
+	if found, err := paths.ContainsSymlinks(dest); err != nil {
+		return "", err
+	} else if found != "" {
+		return "", fmt.Errorf("%w: refusing to remove tree with symlink: %s", ErrSymlink, found)
+	}
+
+	trashRoot := filepath.Join(root, config.BackupDirName, trashDirName)
+	if err := paths.EnsureDirMode(filepath.Dir(trashRoot), "backup directory", 0o700); err != nil {
+		return "", err
+	}
+	if err := paths.EnsureDirMode(trashRoot, "trash directory", 0o700); err != nil {
+		return "", err
+	}
+	trash, err := backupPathFor(trashRoot, service, time.Now().UTC().Format("20060102T150405Z"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(dest, trash); err != nil {
+		// The trash is on another filesystem or the directory cannot move:
+		// delete in place, as before.
+		return "", safeRemoveTree(dest, root)
+	}
+	if err := os.RemoveAll(trash); err != nil {
+		return trash, err
+	}
+	return "", nil
 }
 
 func (m *Manager) log(format string, args ...any) {

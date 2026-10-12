@@ -70,20 +70,15 @@ func ValidateAuthkeyName(name string) error {
 	return nil
 }
 
-// ValidTSAuthkey reports whether value looks like a Tailscale auth key.
+// tsAuthkeyRE is the shape of a Tailscale auth key: the prefix and then only
+// letters, digits, hyphen, and underscore. Anything else (spaces, '$', '#',
+// quotes) would reach Compose altered, so it is rejected instead of written.
+var tsAuthkeyRE = regexp.MustCompile(`^tskey-auth-[A-Za-z0-9_-]+$`)
+
+// ValidTSAuthkey reports whether value is shaped like a Tailscale auth key.
 // Secrets must never appear on CLI flags; this only checks shape.
 func ValidTSAuthkey(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	if strings.ContainsAny(value, "\r\n") {
-		return false
-	}
-	if strings.HasPrefix(value, "//") || strings.HasPrefix(value, "#") {
-		return false
-	}
-	return strings.HasPrefix(value, "tskey-auth-")
+	return tsAuthkeyRE.MatchString(strings.TrimSpace(value))
 }
 
 // ValidateRepoURL accepts https://, ssh://, or git@ host URLs without
@@ -124,24 +119,14 @@ func ValidateRepoURL(raw string) error {
 			return fmt.Errorf("unsupported ScaleTail repository URL")
 		}
 		rest := strings.TrimPrefix(raw, "git@")
-		if rest == "" || strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "/") {
+		// Git reads "git@host/path" as a local path, so the scp form needs the
+		// colon between host and path.
+		host, repoPath, hasColon := strings.Cut(rest, ":")
+		if host == "" || strings.Contains(host, "/") {
 			return fmt.Errorf("invalid ScaleTail repository URL: missing host")
 		}
-		if idx := strings.Index(rest, ":"); idx >= 0 {
-			if idx == 0 {
-				return fmt.Errorf("invalid ScaleTail repository URL: missing host")
-			}
-		} else if idx := strings.Index(rest, "/"); idx >= 0 {
-			if idx == 0 {
-				return fmt.Errorf("invalid ScaleTail repository URL: missing host")
-			}
-		}
-		host := rest
-		if idx := strings.IndexAny(rest, ":/"); idx >= 0 {
-			host = rest[:idx]
-		}
-		if host == "" {
-			return fmt.Errorf("invalid ScaleTail repository URL: missing host")
+		if !hasColon || repoPath == "" {
+			return fmt.Errorf("invalid ScaleTail repository URL: expected git@host:path")
 		}
 		return nil
 	default:
