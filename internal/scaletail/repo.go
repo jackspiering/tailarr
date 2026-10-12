@@ -57,12 +57,30 @@ func runGit(repoPath string, args ...string) ([]byte, error) {
 // Git runs in its own process group, so it cannot read the terminal: a
 // prompt would wait until gitOpTimeout.
 func gitEnv(environ []string) []string {
-	env := append([]string{}, environ...)
-	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	env := make([]string, 0, len(environ)+3)
+	for _, e := range environ {
+		if key, _, _ := strings.Cut(e, "="); !dropGitEnv(key) {
+			env = append(env, e)
+		}
+	}
+	// GIT_ALLOW_PROTOCOL overrides the -c protocol.*.allow settings, so set it
+	// to the two protocols the repository URL check allows.
+	env = append(env, "GIT_ALLOW_PROTOCOL=https:ssh", "GIT_TERMINAL_PROMPT=0")
 	if !hasEnv(environ, "GIT_SSH_COMMAND") && !hasEnv(environ, "GIT_SSH") {
 		env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	}
 	return env
+}
+
+// dropGitEnv reports whether an inherited variable could redirect git or void
+// the protocol policy: a stray value from sudo -E or dotfiles must not apply.
+func dropGitEnv(key string) bool {
+	switch key {
+	case "GIT_ALLOW_PROTOCOL", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_EXEC_PATH":
+		return true
+	}
+	return strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_")
 }
 
 func hasEnv(environ []string, key string) bool {

@@ -667,3 +667,142 @@ func TestSignalShutdownWaitsForApplyRestore(t *testing.T) {
 		t.Fatal("apply had not returned")
 	}
 }
+
+func managedSvc(name string) deploy.ServiceStatus {
+	return deploy.ServiceStatus{Name: name, Managed: true, Health: deploy.HealthHealthy}
+}
+
+func updateMsg(t *testing.T, m model, msg tea.Msg) model {
+	t.Helper()
+	next, _ := m.Update(msg)
+	return next.(model)
+}
+
+func TestCursorFollowsServiceAcrossRefresh(t *testing.T) {
+	m := withServices(testModel(t), managedSvc("alpha"), managedSvc("beta"), managedSvc("gamma"))
+	m.lists[tabServices].cursor = 2
+	if got := m.current(); got != "gamma" {
+		t.Fatalf("current = %q", got)
+	}
+	// A service appears before gamma; the cursor must stay on gamma.
+	st := deploy.Overview{Services: []deploy.ServiceStatus{managedSvc("aaa"), managedSvc("alpha"), managedSvc("beta"), managedSvc("gamma")}}
+	m = updateMsg(t, m, statusMsg{st: st})
+	if got := m.current(); got != "gamma" {
+		t.Fatalf("cursor moved to %q after a refresh", got)
+	}
+}
+
+func TestServicesMenuActsOnShownService(t *testing.T) {
+	m := withServices(testModel(t), managedSvc("alpha"), managedSvc("beta"))
+	m.lists[tabServices].cursor = 1
+	menu := m.servicesMenu()
+	if menu.title != "beta" {
+		t.Fatalf("menu title = %q", menu.title)
+	}
+	m.menu = menu
+	// A refresh drops beta before the operator picks an item.
+	m = updateMsg(t, m, statusMsg{st: deploy.Overview{Services: []deploy.ServiceStatus{managedSvc("alpha")}}})
+	var restart menuItem
+	for _, it := range menu.items {
+		if it.key == "r" {
+			restart = it
+		}
+	}
+	next, _ := restart.run(m)
+	if next.busy {
+		t.Fatal("the menu acted on another service after the list changed")
+	}
+	if !strings.Contains(next.note, "beta") {
+		t.Fatalf("note = %q, want it to name beta", next.note)
+	}
+}
+
+func TestStatusErrorShownAfterSuccess(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := withServices(testModel(t), managedSvc("alpha"))
+	m = updateMsg(t, m, statusMsg{err: "deploy path is not readable"})
+	if m.status != nil {
+		t.Fatal("stale services stay on screen after a status error")
+	}
+	if !strings.Contains(m.render(), "deploy path is not readable") {
+		t.Fatalf("status error not rendered:\n%s", m.render())
+	}
+}
+
+func TestProgressRewriteKeepsScrollPosition(t *testing.T) {
+	m := testModel(t)
+	for i := 0; i < 10; i++ {
+		m.out.add(fmt.Sprintf("line %d", i))
+	}
+	m.out.add("Container app-web  Starting")
+	m.scrollBack = 3
+	m = updateMsg(t, m, outMsg{line: "Container app-web  Started"})
+	if m.scrollBack != 3 {
+		t.Fatalf("a replaced progress line moved the scroll position to %d", m.scrollBack)
+	}
+	m = updateMsg(t, m, outMsg{line: "a new line"})
+	if m.scrollBack != 4 {
+		t.Fatalf("a new line must keep the view in place, scrollBack = %d", m.scrollBack)
+	}
+	m.scrollBack = 1 << 20
+	m = updateMsg(t, m, outMsg{line: "another"})
+	if m.scrollBack > len(m.out.lines) {
+		t.Fatalf("scrollBack %d exceeds %d lines", m.scrollBack, len(m.out.lines))
+	}
+}
+
+func TestEndKeyEditsLinePrompt(t *testing.T) {
+	m := testModel(t)
+	m.busy = true
+	m.ask = &askState{kind: askLine, label: "Name", buf: []rune("abc"), fresh: true}
+	m.scrollBack = 2
+	m = updateMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if m.ask == nil || m.ask.fresh {
+		t.Fatalf("End must edit the prefilled value: %+v", m.ask)
+	}
+	if m.scrollBack != 2 {
+		t.Fatalf("End scrolled the output to %d", m.scrollBack)
+	}
+	// A confirm prompt still scrolls.
+	m.ask = &askState{kind: askConfirm, label: "Sure?"}
+	m = updateMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if m.scrollBack != 0 {
+		t.Fatalf("End must scroll the output for a confirm prompt, scrollBack = %d", m.scrollBack)
+	}
+}
+
+func TestResultLinesAreCleanedAndRedacted(t *testing.T) {
+	m := testModel(t)
+	m.busy = true
+	next, _ := m.finishOp(opResult{lines: []string{"saved TS_AUTHKEY=tskey-auth-secret\x1b[31m", "ok\x07"}})
+	got := strings.Join(next.(model).out.lines, "\n")
+	if strings.Contains(got, "tskey-auth-secret") || strings.ContainsAny(got, "\x1b\x07") {
+		t.Fatalf("result lines not cleaned: %q", got)
+	}
+}
+
+func TestLinePromptDoesNotEchoPastedKey(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := testModel(t)
+	m.busy = true
+	m.ask = &askState{kind: askLine, label: "Auth key name", buf: []rune("tskey-auth-kAbC123secret")}
+	if out := m.render(); strings.Contains(out, "kAbC123secret") {
+		t.Fatalf("pasted key echoed:\n%s", out)
+	}
+}
+
+func TestConfigChangeClearsDoctorChecks(t *testing.T) {
+	m := testModel(t)
+	m.busy = true
+	m.checks = []doctor.Check{{Level: doctor.OK, Name: "git", Message: "git found"}}
+	cfg := m.cfg
+	next, _ := m.finishOp(opResult{cfg: &cfg})
+	if next.(model).checks != nil {
+		t.Fatal("doctor results from the old config stay on screen")
+	}
+	m.tab = tabSystem
+	next, _ = m.finishOp(opResult{cfg: &cfg})
+	if !next.(model).doctorBusy {
+		t.Fatal("the System tab must rerun the doctor after a config change")
+	}
+}

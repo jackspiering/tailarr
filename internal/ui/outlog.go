@@ -22,12 +22,14 @@ func (o *outLog) reset(title string) {
 
 func (o *outLog) empty() bool { return len(o.lines) == 0 }
 
-func (o *outLog) add(line string) {
+// add appends line and reports whether it added a row. A progress line that
+// replaces an earlier one changes a row in place and returns false.
+func (o *outLog) add(line string) bool {
 	line = strings.TrimRight(line, " ")
 	if key := progressKey(line); key != "" {
 		if i, ok := o.index[key]; ok && i < len(o.lines) {
 			o.lines[i] = line
-			return
+			return false
 		}
 		if o.index == nil {
 			o.index = map[string]int{}
@@ -45,6 +47,7 @@ func (o *outLog) add(line string) {
 			}
 		}
 	}
+	return true
 }
 
 // progressKey names the object a compose progress line reports on, such as
