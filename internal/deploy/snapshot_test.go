@@ -531,6 +531,67 @@ func TestCopyFileFailsOnFIFOSource(t *testing.T) {
 	}
 }
 
+func TestApplyReportsFailedRestore(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	managedDeploy(t, repo, deployRoot)
+	withFakeCompose(t, func(dir string, args ...string) error {
+		if !strings.Contains(strings.Join(args, " "), "pull") {
+			return nil
+		}
+		// The snapshot is lost while Apply runs, so restore has nothing to copy back.
+		snaps, err := os.ReadDir(applySnapshotRoot(deployRoot))
+		if err != nil || len(snaps) != 1 {
+			t.Errorf("expected one snapshot, got %v %v", snaps, err)
+			return nil
+		}
+		if err := os.Remove(filepath.Join(applySnapshotRoot(deployRoot), snaps[0].Name(), "compose.yaml")); err != nil {
+			t.Error(err)
+		}
+		return fmt.Errorf("%w: pull failed", ErrComposeFailed)
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if err == nil {
+		t.Fatal("expected apply failure")
+	}
+	for _, want := range []string{"pull failed", "failed to restore previous files from", applySnapshotRoot(deployRoot)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "previous deployment restored") {
+		t.Fatalf("a failed restore must not claim success: %v", err)
+	}
+}
+
+func TestApplyReportsFailedStartAfterRestore(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	managedDeploy(t, repo, deployRoot)
+	var ups int
+	withFakeCompose(t, func(dir string, args ...string) error {
+		if strings.Contains(strings.Join(args, " "), " up ") {
+			ups++
+			return fmt.Errorf("%w: up %d failed", ErrComposeFailed, ups)
+		}
+		return nil
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if !errors.Is(err, ErrComposeFailed) {
+		t.Fatalf("expected ErrComposeFailed, got %v", err)
+	}
+	for _, want := range []string{"previous files restored, but starting them also failed", "up 2 failed", "up 1 failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+	if ups != 2 {
+		t.Fatalf("expected the original up and one restart, got %d", ups)
+	}
+}
+
 func TestApplyFailedRestoreKeepsInterruptSentinel(t *testing.T) {
 	repo := t.TempDir()
 	deployRoot := t.TempDir()

@@ -211,7 +211,7 @@ func sharedAuthkey(cfg config.Config, ui prompt.UI) (string, error) {
 		return "", nil
 	}
 	if !names.ValidTSAuthkey(val) {
-		return "", fmt.Errorf("TS_AUTHKEY must start with tskey-auth-")
+		return "", fmt.Errorf("TS_AUTHKEY must be a tskey-auth- key with only letters, digits, hyphen, and underscore")
 	}
 	return val, nil
 }
