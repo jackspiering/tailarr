@@ -168,6 +168,32 @@ func TestAcquireLockTightensExistingLockDirectory(t *testing.T) {
 	}
 }
 
+func TestAcquireLockWaitEndsWhenInterrupted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.lock")
+	held, err := AcquireLock(path, DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	interrupt.Set(ctx)
+	t.Cleanup(interrupt.Clear)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := AcquireLock(path, time.Minute)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrInterrupted) {
+			t.Fatalf("expected ErrInterrupted, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("lock wait ignored the interrupt")
+	}
+}
+
 func TestLockReleaseDoesNotSteal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "t.lock")

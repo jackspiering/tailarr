@@ -20,18 +20,24 @@ var provenanceTimeout = 2 * time.Minute
 // SHA256SUMS from the same release; the attestation proves the release
 // workflow of repo built it. Without gh, or when gh is not logged in, the
 // check is skipped and note says why. A failed verification is an error.
-func checkProvenance(assetPath, repo string) (verified bool, note string, err error) {
+func checkProvenance(parent context.Context, assetPath, repo string) (verified bool, note string, err error) {
 	gh, lerr := exec.LookPath("gh")
 	if lerr != nil {
 		return false, "build attestation not checked: install the GitHub CLI (gh) to verify it", nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), provenanceTimeout)
+	ctx, cancel := context.WithTimeout(parent, provenanceTimeout)
 	defer cancel()
-	out, rerr := exec.CommandContext(ctx, gh, "attestation", "verify", assetPath, "--repo", repo).CombinedOutput()
+	cmd := exec.CommandContext(ctx, gh, "attestation", "verify", assetPath, "--repo", repo)
+	// After a cancel, do not wait on a child that still holds the output pipe.
+	cmd.WaitDelay = 2 * time.Second
+	out, rerr := cmd.CombinedOutput()
 	if rerr == nil {
 		return true, "", nil
 	}
 	var exitErr *exec.ExitError
+	if cerr := parent.Err(); cerr != nil {
+		return false, "", fmt.Errorf("build attestation check canceled: %w", cerr)
+	}
 	if errors.As(rerr, &exitErr) && exitErr.ExitCode() == ghNotLoggedIn {
 		return false, "build attestation not checked: run gh auth login to verify it", nil
 	}

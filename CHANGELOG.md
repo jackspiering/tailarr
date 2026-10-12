@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The TUI no longer crashes on wide characters. Pasting about 37 CJK or emoji characters into a prompt, or showing a long wide word in a
+  panel, used to cut a string at the wrong place and panic. A very small terminal with the action menu open could also crash it.
+- Ctrl+C now stops a self-upgrade. The download, the attestation check, and the lock wait all end on cancel, and a canceled upgrade no longer
+  replaces the binary. A held lock no longer keeps the TUI busy for the full 30 second wait after Ctrl+C.
 - Deploy and Apply no longer follow a symlink or block on a FIFO when they copy template files. A container that can write in the deployment
   directory could use a symlink to make a root-run Apply overwrite a host file, or use a FIFO to stall Apply while it held the lock.
   Tailarr now opens both files without following symlinks and refuses anything that is not a regular file.
@@ -29,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The README install options set `TAILARR_VERSION` and `INSTALL_DIR` on `sh`, where the installer reads them.
   The old examples set them on `curl`, so the installer ignored the pin and the install directory.
 - Doctor tells you to press `r` on the Catalog tab when the ScaleTail clone is missing. It used to name a menu that no longer exists.
+
+### Security
+
+- Remove no longer deletes a directory outside the deploy root through a symlinked parent. A lexical fallback in the path check let
+  `RemoveAll` follow the symlink. Tailarr now refuses to remove a path that resolves outside the root.
 
 ## [0.8.0] - 2026-09-28
 
@@ -364,5 +373,6 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jackspiering/tailarr/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jackspiering/tailarr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackspiering/tailarr/releases/tag/v0.1.0
