@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deploy and Apply no longer follow a symlink or block on a FIFO when they copy template files. A container that can write in the deployment
+  directory could use a symlink to make a root-run Apply overwrite a host file, or use a FIFO to stall Apply while it held the lock.
+  Tailarr now opens both files without following symlinks and refuses anything that is not a regular file.
+- Apply now applies a template mode change, for example `0644` to `0755`, to files that already exist.
 - Taking a lock no longer changes the mode of an existing directory. The catalog and auth key locks sit next to the configured path,
   so a repo path such as `/opt/scaletail` made `/opt` mode `700` on the first Refresh, Deploy, or Apply.
   Tailarr now sets mode `700` only on lock directories that it creates.
