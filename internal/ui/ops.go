@@ -364,7 +364,7 @@ func editConfigInteractive(cfg *config.Config, ui prompt.UI) (string, bool) {
 // runUpgradeAction checks for a newer release and installs it after a
 // confirm. replaced reports that the running binary changed.
 func runUpgradeAction(log *logging.Logger, ui prompt.UI, out io.Writer) (text string, replaced bool) {
-	opts := upgrade.Options{Current: version.Version, Out: out}
+	opts := upgrade.Options{Current: version.Version, Out: out, Context: interrupt.Context()}
 	latest, err := upgrade.Latest(opts)
 	if err != nil {
 		return "Error: " + redact.Text(err.Error()), false

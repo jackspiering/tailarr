@@ -289,3 +289,65 @@ func TestProgressStyleSeparatesStates(t *testing.T) {
 		t.Error("an error state should read as failed")
 	}
 }
+
+func TestWrapAndPromptHandleWideRunes(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	wide := strings.Repeat("漢", 60)
+	for _, w := range []int{1, 2, 3, 7, 20} {
+		for _, l := range wrap(wide+" tail 😀😀😀", w) {
+			if got := lipgloss.Width(l); got > w && w >= 2 {
+				t.Errorf("wrap width %d produced a %d wide line %q", w, got, l)
+			}
+		}
+	}
+	if got := tailFit(wide, 7); lipgloss.Width(got) > 7 || got == "" {
+		t.Fatalf("tailFit = %q", got)
+	}
+	m := testModel(t)
+	m.width, m.height = 80, 24
+	m.ask = &askState{kind: askLine, label: wide, buf: []rune(wide)}
+	if out := m.render(); !strings.Contains(out, "…") {
+		t.Fatalf("long wide input should be cut with an ellipsis:\n%s", out)
+	}
+}
+
+func TestRenderSurvivesWideRunesAndTinyTerminals(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	wide := strings.Repeat("漢字😀", 40)
+	base := withCatalog(withServices(testModel(t), sampleServices()...), manyNames(30)...)
+	base.keyNames = []string{"home", wide}
+	base.checks = []doctor.Check{{Level: doctor.Warn, Name: "tun", Message: wide}}
+	var states []model
+	for tb := tab(0); tb < tabCount; tb++ {
+		m := base
+		m.tab = tb
+		states = append(states, m)
+		withMenu := m
+		if tb == tabServices {
+			withMenu.menu = withMenu.servicesMenu()
+			states = append(states, withMenu)
+		}
+		asking := m
+		asking.busy = true
+		asking.out.add(wide)
+		asking.ask = &askState{kind: askLine, label: wide, buf: []rune(wide)}
+		states = append(states, asking)
+		both := withMenu
+		both.ask = asking.ask
+		states = append(states, both)
+	}
+	sizes := [][2]int{{3, 3}, {20, 5}, {40, 14}, {80, 24}, {200, 60}}
+	for i, m := range states {
+		for _, sz := range sizes {
+			m.width, m.height = sz[0], sz[1]
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("state %d at %dx%d panicked: %v", i, sz[0], sz[1], r)
+					}
+				}()
+				_ = m.render()
+			}()
+		}
+	}
+}
