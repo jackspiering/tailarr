@@ -25,7 +25,7 @@ env:
   # GO_VERSION is the toolchain that tests, scans, and ships the binaries so
   # govulncheck reports the stdlib that users actually run. go.mod keeps the
   # language floor, which the test-min job still exercises.
-  GO_VERSION: "1.27.2"
+  GO_VERSION: "1.27.3"
   GOLANGCI_LINT_VERSION: v2.14.0
   GOVULNCHECK_VERSION: v1.9.0
   ACTIONLINT_VERSION: v1.7.12
