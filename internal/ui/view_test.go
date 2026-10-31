@@ -351,3 +351,31 @@ func TestRenderSurvivesWideRunesAndTinyTerminals(t *testing.T) {
 		}
 	}
 }
+
+func TestOutputScrollsWhileConfirmIsOpen(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := testModel(t)
+	m.width, m.height = 80, 30
+	m.busy = true
+	for i := 0; i < 80; i++ {
+		m.out.add(fmt.Sprintf("preview-%02d", i))
+	}
+	m.ask = &askState{kind: askConfirm, label: "Apply catalog to web?", reply: make(chan askReply, 1)}
+	view := m.render()
+	if !strings.Contains(view, "preview-79") || !strings.Contains(view, "Apply catalog to web?") {
+		t.Fatalf("output and confirm must show together:\n%s", view)
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyHome})
+	if m.ask == nil {
+		t.Fatal("scrolling must keep the confirm open")
+	}
+	view = m.render()
+	if !strings.Contains(view, "preview-00") || strings.Contains(view, "preview-79") {
+		t.Fatalf("home should show the first page above the confirm:\n%s", view)
+	}
+	top := m.scrollBack
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.ask == nil || m.scrollBack >= top {
+		t.Fatalf("pgdown should scroll the output and keep the confirm open: %d -> %d", top, m.scrollBack)
+	}
+}

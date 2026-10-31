@@ -183,6 +183,14 @@ Tailarr shows a secret, such as `TS_AUTHKEY`, as dots only.
 
 **Apply** copies catalog template files onto a managed service directory.
 It then pulls images and starts the containers.
+Before it asks you to confirm, Apply shows a preview in the output panel.
+The preview lists the files that Apply creates or changes.
+It shows a diff of the compose file, with the lines that Apply removes marked `-`.
+It names the `.env` keys that the template adds.
+It never shows `.env` values.
+It shows the `Upgrading` section of the template `README.md` when a file changes.
+Scroll the preview with PgUp and PgDn.
+Apply replaces the compose file, so copy your own edits to a safe place first.
 It keeps your `.env` values and adds the keys that the template adds.
 It keeps files that exist only in that directory.
 Only **Deploy** creates a new service directory.

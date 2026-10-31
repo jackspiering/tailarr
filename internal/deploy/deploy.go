@@ -174,6 +174,8 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		if err := requireApplyTarget(dest, service); err != nil {
 			return err
 		}
+		// The preview is advisory and holds no lock. It never fails Apply.
+		previewFn(m, service, dest)
 		ok, cerr := m.UI.Confirm(fmt.Sprintf("Apply catalog to %s? This overwrites template files and pulls images.", service), false)
 		if cerr != nil {
 			return cerr

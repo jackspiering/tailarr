@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Apply now shows a read-only preview before it asks for confirmation. The preview lists the template files that Apply would create or
+  change, shows a line diff of the compose file with the deployed lines marked `-`, names the `.env` variables that the template adds, and
+  prints the `## Upgrading` section of the template `README.md` when a file changes. It never shows `.env` values, and it reads
+  deployment files without following symlinks or waiting on FIFOs. A read problem becomes a warning and never stops Apply.
+
 ### Fixed
 
 - Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
