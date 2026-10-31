@@ -208,7 +208,7 @@ func previewTemplateFiles(templateDir, dest string) (files []previewFileChange, 
 			change.note = fmt.Sprintf("%04o to %04o", destInfo.Mode().Perm(), info.Mode().Perm())
 		}
 		files = append(files, change)
-		if rel == tplCompose && !renamed {
+		if contentDiffers && rel == tplCompose && !renamed {
 			composeDiff = previewComposeDiff(rel, have, want, haveTrunc || wantTrunc)
 		}
 		return nil
@@ -499,8 +499,10 @@ func previewUpgrading(templateDir string) []string {
 	}
 	out := []string{"Upgrading notes from the catalog README.md:"}
 	body := make([]string, len(sec))
+	// The bar keeps a note such as "Volume data moved" from reading as a
+	// compose progress line, which the output panel would replace in place.
 	for i, l := range sec {
-		body[i] = "  " + l
+		body[i] = "  | " + l
 	}
 	return append(out, capLines(body, previewUpgradeMaxLines, "lines")...)
 }

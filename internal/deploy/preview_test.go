@@ -532,3 +532,25 @@ func TestApplyAfterPreviewStillOverwritesTemplateFiles(t *testing.T) {
 		t.Errorf("compose.yaml = %q, want the catalog file", data)
 	}
 }
+
+func TestPreviewComposeModeChangeIsNotReportedAsLineEndings(t *testing.T) {
+	p := newPreviewEnv(t)
+	compose := composeBaseName(p.tpl)
+	if err := os.Chmod(filepath.Join(p.tpl, compose), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(p.dest, compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := p.decline(t)
+	mustContain(t, out, "mode     "+compose+" (0644 to 0640)")
+	mustNotContain(t, out, "Only line endings differ", "deployed (-) compared with catalog (+)")
+}
+
+func TestPreviewUpgradingLinesDoNotLookLikeComposeProgress(t *testing.T) {
+	p := newPreviewEnv(t)
+	writePreviewFile(t, filepath.Join(p.tpl, "extra.txt"), "new file\n")
+	writePreviewFile(t, filepath.Join(p.tpl, "README.md"), "## Upgrading\n\nVolume data moved.\nVolume data needs a copy.\n")
+	out := p.decline(t)
+	mustContain(t, out, "  | Volume data moved.", "  | Volume data needs a copy.")
+}
