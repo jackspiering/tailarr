@@ -229,6 +229,7 @@ Git workflow:
 |`internal/deploy/lock.go`|pid+flock acquisition and reclaim|
 |`internal/deploy/backup.go`|Full-tree Remove backups, prune|
 |`internal/deploy/snapshot.go`|Apply snapshot of managed files, in-place restore|
+|`internal/deploy/preview.go`|Read-only pre-Apply preview: file list, compose diff, new `.env` keys, Upgrading notes|
 |`internal/deploy/errors.go`|Lifecycle sentinel errors|
 |`internal/config/config.go`|Config defaults, load/save, env precedence|
 |`internal/scaletail/catalog.go`|Service discovery and filtering|
