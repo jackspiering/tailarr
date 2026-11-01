@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -352,5 +353,84 @@ func TestAdminDirsTakeDeployRootOwner(t *testing.T) {
 		if !found {
 			t.Errorf("no chownLike call for %s with ref %s; calls: %v", want, deployRoot, calls)
 		}
+	}
+}
+
+func TestRemoveStopsBeforeBackup(t *testing.T) {
+	_, deployRoot, _ := managedDeployment(t)
+	backups := filepath.Join(deployRoot, config.BackupDirName)
+
+	var verbs []string
+	var backupAtCall []bool
+	withFakeCompose(t, func(dir string, args ...string) error {
+		verbs = append(verbs, composeVerb(args))
+		_, err := os.Stat(backups)
+		backupAtCall = append(backupAtCall, err == nil)
+		return nil
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: t.TempDir(), DeployPath: deployRoot}}
+	if err := m.Remove("web"); err != nil {
+		t.Fatalf("remove failed: %v", err)
+	}
+	if len(verbs) != 2 || !strings.HasPrefix(verbs[0], "stop") || !strings.HasPrefix(verbs[1], "down --remove-orphans") {
+		t.Fatalf("calls = %q, want stop then down --remove-orphans", verbs)
+	}
+	if backupAtCall[0] {
+		t.Fatal("backup existed before compose stop")
+	}
+	if !backupAtCall[1] {
+		t.Fatal("backup did not exist at compose down")
+	}
+}
+
+func TestRemoveRestartsServiceWhenBackupFails(t *testing.T) {
+	_, deployRoot, dest := managedDeployment(t)
+	// A regular file where the backup directory belongs makes Backup fail.
+	if err := os.WriteFile(filepath.Join(deployRoot, config.BackupDirName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var verbs []string
+	withFakeCompose(t, func(dir string, args ...string) error {
+		verbs = append(verbs, composeVerb(args))
+		return nil
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: t.TempDir(), DeployPath: deployRoot}}
+	err := m.Remove("web")
+	if err == nil || !strings.Contains(err.Error(), "is running again") {
+		t.Fatalf("error = %v, want one containing %q", err, "is running again")
+	}
+	if len(verbs) != 2 || !strings.HasPrefix(verbs[0], "stop") || !strings.HasPrefix(verbs[1], "up") {
+		t.Fatalf("calls = %q, want stop then up", verbs)
+	}
+	for _, v := range verbs {
+		if strings.HasPrefix(v, "down") {
+			t.Fatal("down must not run when the backup fails")
+		}
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatal("deployment directory must remain after failed remove")
+	}
+}
+
+func TestRemoveReportsStoppedServiceWhenRestartFails(t *testing.T) {
+	_, deployRoot, _ := managedDeployment(t)
+	if err := os.WriteFile(filepath.Join(deployRoot, config.BackupDirName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withFakeCompose(t, func(dir string, args ...string) error {
+		if strings.HasPrefix(composeVerb(args), "up") {
+			return fmt.Errorf("%w: simulated up failure", ErrComposeFailed)
+		}
+		return nil
+	})
+
+	m := &Manager{Cfg: &config.Config{RepoPath: t.TempDir(), DeployPath: deployRoot}}
+	err := m.Remove("web")
+	if err == nil || !strings.Contains(err.Error(), "stays stopped") {
+		t.Fatalf("error = %v, want one containing %q", err, "stays stopped")
 	}
 }
