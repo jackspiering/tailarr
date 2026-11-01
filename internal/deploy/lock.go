@@ -15,10 +15,9 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
-// Lock is a simple exclusive file lock using O_CREATE|O_EXCL.
-// Not as strong as flock across all platforms, but works for single-host ops
-// without CGO. Ownership is bound to a PID+token so Release only removes our
-// own lock, and stale cleanup only removes locks whose owner process is gone.
+// Lock is an exclusive lock file: O_CREATE|O_EXCL plus a flock on Unix.
+// Ownership is bound to a PID+token so Release only removes our own lock, and
+// stale cleanup only removes locks whose owner process is gone.
 type Lock struct {
 	path  string
 	file  *os.File

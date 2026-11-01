@@ -41,7 +41,7 @@ type Options struct {
 	Current string
 	// Force reinstalls even when Current already matches the latest release.
 	Force bool
-	// Client is the HTTP client used for all requests (default: 30s timeout).
+	// Client is the HTTP client used for all requests (default: 120s timeout).
 	Client *http.Client
 	// Out receives progress lines (default: no output).
 	Out io.Writer
@@ -98,9 +98,7 @@ func (o Options) client() *http.Client {
 	if o.Client != nil {
 		return o.Client
 	}
-	// 2-minute timeout allows slow links to fetch 64 MiB assets; the server
-	// must send the first byte within 30s or the context will still expire
-	// via transport dial timeout. Prior 30s bounded the entire body read.
+	// The timeout bounds the whole request, including the body of a 64 MiB asset.
 	return &http.Client{Timeout: 120 * time.Second, CheckRedirect: safeGitHubRedirect}
 }
 func (o Options) apiURL(repo string) string {

@@ -74,9 +74,10 @@ starts the release workflow. Dependency, CI, and docs changes never touch
 run the Tag release workflow by hand.
 
 Tags are strict SemVer with a `v` prefix: `vMAJOR.MINOR.PATCH`, optionally
-followed by `-PRERELEASE` and `+BUILD`. Suffix identifiers are dot-separated
-ASCII alphanumerics or hyphens, and numeric prerelease identifiers have no
-leading zeroes. A tag must name a commit reachable from `main`.
+followed by `-PRERELEASE`. Build metadata (`+BUILD`) is rejected. Suffix
+identifiers are dot-separated ASCII alphanumerics or hyphens, and numeric
+prerelease identifiers have no leading zeroes. A tag must name a commit
+reachable from `main`.
 
 The release workflow (`.github/workflows/release.yml`) runs the CI gates
 again, builds and checks the linux and darwin binaries for amd64 and arm64,
@@ -87,6 +88,11 @@ draft assets, notes, checksums, and attestations, then publishes the draft.
 Never publish a draft whose workflow run failed. AI coding agents may tag,
 dispatch, and publish once the release pull request is merged; see
 [AGENTS.md](AGENTS.md).
+
+The Install smoke workflow (`.github/workflows/install-smoke.yml`) runs the
+installer every day against the latest release and against `DEFAULT_VERSION`.
+It fails while a merged release is still an unpublished draft, so publish
+the draft soon after the merge.
 
 The `release` environment and its required reviewers are repository settings:
 an owner creates `release` in Settings > Environments and adds reviewers

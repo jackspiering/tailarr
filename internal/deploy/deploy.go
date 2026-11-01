@@ -874,8 +874,8 @@ func (m *Manager) withManagedServiceDir(service string, fn func(dir string) erro
 }
 
 // requireManagedDeploy ensures dest is a managed deployment with no symlink
-// anywhere in the tree. Apply and Remove copy and delete the whole tree, so
-// they need it. Containers often write root-owned data, so a non-root
+// anywhere in the tree. Remove copies and deletes the whole tree, so it needs that.
+// Containers often write root-owned data, so a non-root
 // operator gets a permission error that says to run as root.
 func requireManagedDeploy(dest, service string) error {
 	if err := requireManagedFiles(dest, service); err != nil {

@@ -40,7 +40,7 @@ type Config struct {
 	AssumeYes    bool
 }
 
-// Default returns a Config with built-in defaults (before file/env/flags).
+// Default returns a Config with built-in defaults (before the config file and environment).
 func Default() Config {
 	return Config{
 		ConfigPath:   envOr("TAILARR_CONFIG_PATH", DefaultConfigPath),
@@ -240,7 +240,7 @@ func Save(cfg Config) error {
 func format(cfg Config) string {
 	var b strings.Builder
 	b.WriteString("# Tailarr configuration\n")
-	// Always redact userinfo when displaying/saving so tokens cannot leak via `config show`.
+	// Always strip userinfo, so a saved or displayed file cannot hold a token.
 	fmt.Fprintf(&b, "TAILARR_REPO_URL=%s\n", names.RedactRepoURL(cfg.RepoURL))
 	fmt.Fprintf(&b, "TAILARR_REPO_PATH=%s\n", cfg.RepoPath)
 	fmt.Fprintf(&b, "TAILARR_DEPLOY_PATH=%s\n", cfg.DeployPath)

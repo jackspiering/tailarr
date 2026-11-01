@@ -194,7 +194,7 @@ Versioning and release safety:
 
 - Version source of truth: `var Version` in `internal/version/version.go`.
 - A release requires four locations to agree: `version.go`, README version badge, `CHANGELOG.md` entry (Keep-a-Changelog), `scripts/install.sh` `DEFAULT_VERSION`.
-- Tags are strict SemVer `vMAJOR.MINOR.PATCH` with optional `-PRERELEASE`/`+BUILD`, and must be reachable from `main`.
+- Tags are strict SemVer `vMAJOR.MINOR.PATCH` with an optional `-PRERELEASE`, and must be reachable from `main`. Build metadata (`+BUILD`) is rejected.
 - Tagging is automatic: `.github/workflows/tag.yml` runs when a push to `main`
   changes `internal/version/version.go`. It checks the four locations, tags the
   head of `main` (annotated, `Tailarr X.Y.Z`), and dispatches `release.yml`,
@@ -260,7 +260,7 @@ Git workflow:
 
 ## Testing & QA
 
-- Stdlib `testing` only. About 240 test functions across 14 packages; largest suite is `internal/deploy` (about 80 tests).
+- Stdlib `testing` only. The largest suite is `internal/deploy`.
 - Guard-clause assertions with `t.Fatal`/`t.Fatalf`; table-driven loops report every row with `t.Errorf`. No testify, no golden files, no `t.Run` subtests.
 - Test names read as behavior specs: `TestLoadRefusesSymlinkFile`, `TestApplyRestoresOnInterrupt`, `TestRemoveFailsClosedOnComposeError`, `TestLockReleaseDoesNotSteal`.
 - Isolation idioms: `t.TempDir()` for filesystem, `t.Setenv()` for env and
@@ -270,7 +270,7 @@ Git workflow:
   a fake `#!/bin/sh docker` script prepended to PATH. Daemon-dependent tests
   use `//go:build integration` and skip cleanly without Docker; see
   `internal/deploy/deploy_integration_test.go`.
-- Platform-specific tests skip at runtime (`runtime.GOOS` checks) instead of build tags.
+- Platform-specific tests skip at runtime (`runtime.GOOS` checks), or use a `//go:build unix` file when they need a unix-only call such as `syscall.Mkfifo`.
 - Fixtures: only `testdata/scaletail/services/`, consumed solely by
   `internal/scaletail/catalog_test.go`. It covers good services, invalid names,
   missing compose/env, and a symlinked dir that must be skipped. Prefer
