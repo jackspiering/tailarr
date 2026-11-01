@@ -257,7 +257,7 @@ Safety:
 - Before apply, Tailarr saves the files that apply changes: template files, `.env`, and the managed override.
   The copy goes to `.tailarr_backups/apply-snapshots`, and Tailarr keeps the two newest per service.
   A failed apply puts them back in place and starts the service again. Container data is not copied or moved.
-- Before remove, Tailarr copies the whole deployment to `.tailarr_backups`. The copy keeps modes and times, and owners when
+- Before remove, Tailarr stops the containers and copies the whole deployment to `.tailarr_backups`. The copy keeps modes and times, and owners when
   Tailarr runs as root. It skips sockets and FIFOs. Apply never deletes these copies. Tailarr keeps the two newest per service.
 - After `compose down`, remove moves the deployment into `.tailarr_backups/trash` and deletes it there. A non-root operator may not be
   able to delete files that a container wrote as root. The name is still free, and the error shows how to finish the delete as root.

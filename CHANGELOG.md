@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remove now stops the containers before it copies the deployment to `.tailarr_backups`. A running database could write during the copy
+  and leave an inconsistent backup. If the copy fails, Tailarr starts the service again.
 - Tailarr now warns at startup when it cannot append to the log file. It used to drop every log line without a message.
 - Remove no longer fails when a running container deletes a file during the backup. A file that is gone is not copied.
 - Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
