@@ -406,9 +406,9 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 [Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/jackspiering/tailarr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jackspiering/tailarr/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.3...v0.6.0
-[0.5.3]: https://github.com/jackspiering/tailarr/compare/v0.5.2...v0.5.3
-[0.5.2]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.5.2
+[0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.6.0
+[0.5.3]: https://github.com/jackspiering/tailarr/commit/37e708d
+[0.5.2]: https://github.com/jackspiering/tailarr/commit/e22f058
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0

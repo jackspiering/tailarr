@@ -20,7 +20,7 @@ Options:
 
 ```bash
 # Pin the binary version (default: latest GitHub release)
-curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | TAILARR_VERSION=v0.8.0 sh
+curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | TAILARR_VERSION=vX.Y.Z sh
 
 # Install without root (default falls back here if /usr/local/bin is not writable)
 curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
@@ -75,8 +75,8 @@ It verifies the release asset SHA256 against the published `SHA256SUMS`.
 When `gh` is installed and logged in, it also verifies the GitHub build attestation and stops if that check fails.
 It then replaces the running binary with an atomic write.
 
-`go install` builds do not upgrade in place.
-Rebuild them. See [Other install methods](#other-install-methods).
+A `go install` or source build reports the version in `internal/version/version.go`.
+If that version is older than the latest release, `U` replaces the binary with the release binary.
 
 ## Other install methods
 
@@ -163,8 +163,8 @@ The footer lists the keys for the current tab.
 
 Keys on every tab:
 
-- Tab and Shift+Tab switch tabs. Number keys `1` to `4` open a tab.
-- Arrow keys or `j` and `k` move. `g` and `G` jump to the first or last row.
+- Tab and Shift+Tab switch tabs. The left and right arrow keys, `h`, and `l` also switch tabs. Number keys `1` to `4` open a tab.
+- The up and down arrow keys or `j` and `k` move. `g` and `G` jump to the first or last row.
 - PgUp and PgDn scroll the output panel. Home and End jump to the top or bottom.
 - Esc clears the filter, then the output.
 - Ctrl+C cancels a running action. When no action runs, Ctrl+C or `q` quits.
@@ -248,6 +248,7 @@ Safety:
 
 - A service name must match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`.
 - A service name must not contain `..`.
+- A service name must not be longer than 64 characters.
 - Tailarr refuses a write that crosses a symlink at a config, auth, deploy, or
   template boundary.
 - Config, deploy, log, and auth key paths must be absolute.

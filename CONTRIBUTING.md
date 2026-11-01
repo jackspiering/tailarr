@@ -74,9 +74,10 @@ starts the release workflow. Dependency, CI, and docs changes never touch
 run the Tag release workflow by hand.
 
 Tags are strict SemVer with a `v` prefix: `vMAJOR.MINOR.PATCH`, optionally
-followed by `-PRERELEASE` and `+BUILD`. Suffix identifiers are dot-separated
-ASCII alphanumerics or hyphens, and numeric prerelease identifiers have no
-leading zeroes. A tag must name a commit reachable from `main`.
+followed by `-PRERELEASE`. Build metadata (`+BUILD`) is rejected. Suffix
+identifiers are dot-separated ASCII alphanumerics or hyphens, and numeric
+prerelease identifiers have no leading zeroes. A tag must name a commit
+reachable from `main`.
 
 The release workflow (`.github/workflows/release.yml`) runs the CI gates
 again, builds and checks the linux and darwin binaries for amd64 and arm64,
