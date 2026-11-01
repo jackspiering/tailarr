@@ -26,3 +26,13 @@ func ChmodNoFollow(path string, mode os.FileMode) error {
 	}
 	return os.Chmod(path, mode)
 }
+
+// Owner reports that owner information is not available on this platform.
+func Owner(path string) (uid, gid int, err error) {
+	return 0, 0, fmt.Errorf("no owner information for %s", path)
+}
+
+// ChownLike does nothing on this platform.
+func ChownLike(path, ref string) error {
+	return nil
+}

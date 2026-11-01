@@ -41,10 +41,10 @@ func snapshotManaged(deployPath, service, templateDir, dest string) (*applySnaps
 		return nil, err
 	}
 	root := applySnapshotRoot(deployPath)
-	if err := paths.EnsureDirMode(filepath.Dir(root), "backup directory", 0o700); err != nil {
+	if err := ensureAdminDir(deployPath, filepath.Dir(root), "backup directory"); err != nil {
 		return nil, err
 	}
-	if err := paths.EnsureDirMode(root, "backup directory", 0o700); err != nil {
+	if err := ensureAdminDir(deployPath, root, "backup directory"); err != nil {
 		return nil, err
 	}
 	dir, err := backupPathFor(root, service, time.Now().UTC().Format("20060102T150405Z"))

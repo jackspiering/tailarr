@@ -22,6 +22,22 @@ import (
 // delete a file at a known point.
 var beforeBackupCopy = func(string) {}
 
+// chownLike is replaced by tests.
+var chownLike = paths.ChownLike
+
+// ensureAdminDir creates a Tailarr directory under deployPath with mode 0700.
+// A root run gives it the owner of the deployment root, so a later run as the
+// operator can still use it.
+func ensureAdminDir(deployPath, path, label string) error {
+	if err := paths.EnsureDirMode(path, label, 0o700); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("%s %s belongs to another user; give it to this user with chown, or run Tailarr as its owner: %w", label, path, err)
+		}
+		return err
+	}
+	return chownLike(path, deployPath)
+}
+
 // Backup copies servicePath to a timestamped directory under
 // deployPath/.tailarr_backups and keeps the two newest backups of service.
 func Backup(deployPath, service, servicePath string) (string, error) {
@@ -35,7 +51,7 @@ func Backup(deployPath, service, servicePath string) (string, error) {
 		return "", err
 	}
 	root := filepath.Join(deployPath, config.BackupDirName)
-	if err := paths.EnsureDirMode(root, "backup directory", 0o700); err != nil {
+	if err := ensureAdminDir(deployPath, root, "backup directory"); err != nil {
 		return "", err
 	}
 

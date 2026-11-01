@@ -9,6 +9,12 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
+// geteuid and fchown are replaced by tests.
+var (
+	geteuid = os.Geteuid
+	fchown  = func(f *os.File, uid, gid int) error { return f.Chown(uid, gid) }
+)
+
 // WriteFile writes data to dest atomically (temp file + rename) with the
 // given mode. Parent must not be a symlink (including ancestors).
 func WriteFile(dest string, data []byte, mode os.FileMode) error {
@@ -38,6 +44,16 @@ func WriteFile(dest string, data []byte, mode os.FileMode) error {
 		}
 	}()
 
+	// A root run keeps the owner of a file it replaces, so the operator can
+	// still read a deployment .env that root rewrote.
+	if geteuid() == 0 {
+		if uid, gid, err := paths.Owner(dest); err == nil {
+			if err := fchown(tmp, uid, gid); err != nil {
+				_ = tmp.Close()
+				return fmt.Errorf("chown temp: %w", err)
+			}
+		}
+	}
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod temp: %w", err)

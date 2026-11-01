@@ -113,3 +113,44 @@ func TestEnsureDir(t *testing.T) {
 		t.Fatal("dir not created")
 	}
 }
+
+func TestChownLikeOnlyAsRoot(t *testing.T) {
+	// This test replaces package vars, so it must not run in parallel.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	ref := filepath.Join(dir, "ref")
+	for _, p := range []string{path, ref} {
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantUID, wantGID, err := Owner(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevChown, prevEUID := lchown, geteuid
+	t.Cleanup(func() { lchown, geteuid = prevChown, prevEUID })
+	var gotPath string
+	gotUID, gotGID, calls := -1, -1, 0
+	lchown = func(p string, uid, gid int) error {
+		gotPath, gotUID, gotGID = p, uid, gid
+		calls++
+		return nil
+	}
+
+	geteuid = func() int { return 1000 }
+	if err := ChownLike(path, ref); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("lchown called %d times for a non-root user", calls)
+	}
+
+	geteuid = func() int { return 0 }
+	if err := ChownLike(path, ref); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || gotPath != path || gotUID != wantUID || gotGID != wantGID {
+		t.Fatalf("lchown(%q, %d, %d) x%d, want (%q, %d, %d) x1", gotPath, gotUID, gotGID, calls, path, wantUID, wantGID)
+	}
+}
