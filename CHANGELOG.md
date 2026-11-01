@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prints the `## Upgrading` section of the template `README.md` when a file changes. It never shows `.env` values, and it reads
   deployment files without following symlinks or waiting on FIFOs. A read problem becomes a warning and never stops Apply.
 
+### Changed
+
+- Deploy and Apply keep the comments in the .env file. They used to delete every comment.
+
 ### Fixed
 
 - A FIFO at a deployment `.env`, compose file, or managed override no longer hangs Tailarr. Tailarr refuses a deployment file that is not a

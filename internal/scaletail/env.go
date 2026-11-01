@@ -273,13 +273,37 @@ func ValidateMergedTSAuthkey(merged EnvMap) error {
 	return nil
 }
 
-// WriteEnvFile writes KEY=VALUE lines with mode 600. Values are written as
-// stored; quote user input with QuoteEnvValue first.
+// WriteEnvFile writes merged values to path with mode 600. Comments and blank
+// lines in the current file stay in place, and new keys follow them. Values
+// are written as stored; quote user input with QuoteEnvValue first.
 func WriteEnvFile(path string, merged EnvMap, keyOrder []string) error {
+	current, truncated, err := paths.ReadRegularFile(path, maxEnvFileBytes)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if truncated {
+		return fmt.Errorf("%s: file is larger than %d bytes", path, maxEnvFileBytes)
+	}
 	var b strings.Builder
 	written := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSuffix(string(current), "\n"), "\n") {
+		key, _, skip, err := parseEnvLine(line)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if skip {
+			if len(current) > 0 {
+				b.WriteString(line + "\n")
+			}
+			continue
+		}
+		if v, ok := merged[key]; ok && !written[key] {
+			fmt.Fprintf(&b, "%s=%s\n", key, v)
+			written[key] = true
+		}
+	}
 	for _, k := range keyOrder {
-		if v, ok := merged[k]; ok {
+		if v, ok := merged[k]; ok && !written[k] {
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 			written[k] = true
 		}
