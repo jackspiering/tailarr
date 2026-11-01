@@ -1,8 +1,10 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +17,10 @@ import (
 	"github.com/jackspiering/tailarr/internal/security/names"
 	"github.com/jackspiering/tailarr/internal/security/paths"
 )
+
+// beforeBackupCopy runs before each file copy in copyTree. Tests use it to
+// delete a file at a known point.
+var beforeBackupCopy = func(string) {}
 
 // Backup copies servicePath to a timestamped directory under
 // deployPath/.tailarr_backups and keeps the two newest backups of service.
@@ -128,6 +134,11 @@ func copyTree(src, dst string) error {
 	var dirs []dirEntry
 	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// A running container can delete a file during the walk. A file that
+			// is gone needs no copy. The source root must still exist.
+			if path != src && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		if cerr := ctx.Err(); cerr != nil {
@@ -150,7 +161,11 @@ func copyTree(src, dst string) error {
 			dirs = append(dirs, dirEntry{target, info})
 			return nil
 		case info.Mode().IsRegular():
-			return copyRegular(path, target, info)
+			beforeBackupCopy(path)
+			if err := copyRegular(path, target, info); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			return nil
 		default:
 			return nil
 		}
