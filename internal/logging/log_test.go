@@ -63,3 +63,30 @@ func TestRotateOnEveryEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateReportsUnwritableLogFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes read-only files; cannot test an unwritable log")
+	}
+	path := filepath.Join(t.TempDir(), "tailarr.log")
+	if err := os.WriteFile(path, []byte("old\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	err := New(path, 100).Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a log file it cannot append to")
+	}
+	if !strings.Contains(err.Error(), "not writable") {
+		t.Errorf("error does not say not writable: %v", err)
+	}
+}
+
+func TestValidateAcceptsMissingLogFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tailarr.log")
+	if err := New(path, 100).Validate(); err != nil {
+		t.Fatalf("Validate rejected a missing log file: %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Errorf("Validate created the log file: %v", err)
+	}
+}

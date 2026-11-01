@@ -35,7 +35,8 @@ func (l *Logger) Path() string {
 	return l.path
 }
 
-// Validate checks if the log path can be used (parent is not symlink, not a directory).
+// Validate checks if the log path can be used (parent is not symlink, not a directory,
+// and an existing log file can be appended to).
 // Failures are returned so main can warn; Event remains silent by design.
 func (l *Logger) Validate() error {
 	if l == nil || l.path == "" {
@@ -47,6 +48,15 @@ func (l *Logger) Validate() error {
 	}
 	if paths.IsSymlink(l.path) {
 		return fmt.Errorf("log file must not be a symlink: %s", l.path)
+	}
+	// Event drops write failures, so report here a log file it cannot append to.
+	// A missing file is fine: Event creates it.
+	if info, err := os.Lstat(l.path); err == nil && info.Mode().IsRegular() {
+		f, err := paths.OpenFileNoFollow(l.path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return fmt.Errorf("log file is not writable: %w", err)
+		}
+		_ = f.Close()
 	}
 	return nil
 }
