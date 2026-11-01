@@ -28,7 +28,10 @@ the same message as your next action. Do not stop to ask whether to continue.
 
 Stop and ask only when you cannot continue without the owner, or before:
 
-- pushing to `main` or merging a pull request into `main`;
+- pushing to `main`, or merging a pull request into `main`. Exception: a pull request that closes an issue
+  labelled `improvement-cycle`, carries a `Verified by` comment, and has all required checks green may be
+  merged without asking (squash merge, no admin override, never a force-push). The same applies to the
+  `chore(release): prepare vX.Y.Z` pull request that the improvement cycle opens for those merges;
 - adding a new direct Go dependency;
 - deleting data, or changing anything outside this repository other than the
   live test deploys described below.
