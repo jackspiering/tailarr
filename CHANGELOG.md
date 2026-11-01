@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A FIFO at a deployment `.env`, compose file, or managed override no longer hangs Tailarr. Tailarr refuses a deployment file that is not a
+  regular file. A blocked read could not be canceled with Ctrl+C.
 - A root run no longer locks the operator out of a deployment. Tailarr now gives `.tailarr_backups`, `.tailarr_locks`, and the Apply snapshots to the
   owner of the deployment root, and a rewritten `.env` keeps its owner. When a directory belongs to another user, the error now says to use chown.
 - Remove now stops the containers before it copies the deployment to `.tailarr_backups`. A running database could write during the copy

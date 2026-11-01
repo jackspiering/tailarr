@@ -37,7 +37,7 @@ func ComposeFileIn(dir string) (string, bool) {
 			continue
 		}
 		info, err := os.Stat(p)
-		if err != nil || info.IsDir() {
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
 		return p, true

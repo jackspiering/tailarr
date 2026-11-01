@@ -615,3 +615,86 @@ func TestApplyFailedRestoreKeepsInterruptSentinel(t *testing.T) {
 		t.Fatalf("restore failure not reported: %v", err)
 	}
 }
+
+func mustReturn(t *testing.T, what string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { fn(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s is still blocked after 5s", what)
+	}
+}
+
+// replaceWithFifo swaps the file at path for a FIFO.
+func replaceWithFifo(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyRefusesFifoEnv(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	dest := managedDeploy(t, repo, deployRoot)
+	replaceWithFifo(t, filepath.Join(dest, ".env"))
+	withFakeCompose(t, func(dir string, args ...string) error { return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	var err error
+	mustReturn(t, "Apply with a FIFO .env", func() { err = m.Apply("web", DeployOpts{}) })
+	if err == nil {
+		t.Fatal("Apply must refuse a FIFO .env")
+	}
+}
+
+func TestStopRefusesFifoEnv(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	dest := managedDeploy(t, repo, deployRoot)
+	replaceWithFifo(t, filepath.Join(dest, ".env"))
+	calls := 0
+	withFakeCompose(t, func(dir string, args ...string) error { calls++; return nil })
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	var err error
+	mustReturn(t, "Stop with a FIFO .env", func() { err = m.Stop("web") })
+	if err == nil {
+		t.Fatal("Stop must refuse a FIFO .env")
+	}
+	if calls != 0 {
+		t.Fatalf("Stop ran compose %d times despite a FIFO .env", calls)
+	}
+}
+
+func TestEnvFileKeysDoesNotBlockOnFifo(t *testing.T) {
+	dest := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dest, ".env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]bool
+	mustReturn(t, "envFileKeys with a FIFO .env", func() { got = envFileKeys(dest) })
+	if len(got) != 0 {
+		t.Fatalf("expected no keys from a FIFO .env, got %v", got)
+	}
+}
+
+func TestCollectOverviewDoesNotBlockOnFifoOverride(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	dest := managedDeploy(t, repo, deployRoot)
+	replaceWithFifo(t, filepath.Join(dest, overrideFilename))
+	t.Setenv("PATH", t.TempDir())
+	var st Overview
+	var err error
+	mustReturn(t, "CollectOverview with a FIFO override", func() { st, err = CollectOverview(deployRoot) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Services) != 1 || st.Services[0].Managed {
+		t.Fatalf("a FIFO override must not count as managed, got %+v", st.Services)
+	}
+}
