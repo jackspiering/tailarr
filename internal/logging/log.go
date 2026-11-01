@@ -89,8 +89,7 @@ func (l *Logger) rotateIfNeeded() {
 	}
 	rotated := l.path + ".1"
 	if paths.IsSymlink(rotated) {
-		// Do not silently disable rotation; remove the symlink target check
-		// failed, so just truncate in place rather than losing logs forever.
+		// Remove a planted symlink so rotation keeps working. If it is still there, keep appending to the current log.
 		_ = os.Remove(rotated)
 		if paths.IsSymlink(rotated) {
 			return

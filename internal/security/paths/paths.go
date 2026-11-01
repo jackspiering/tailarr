@@ -55,10 +55,7 @@ func Within(path, root string) (bool, error) {
 	}
 	parentAbs, err := filepath.EvalSymlinks(parent)
 	if err != nil {
-		parentAbs, err = filepath.Abs(parent)
-		if err != nil {
-			return false, err
-		}
+		return false, fmt.Errorf("resolve parent directory: %w", err)
 	}
 	base := filepath.Base(path)
 	joined := filepath.Join(parentAbs, base)

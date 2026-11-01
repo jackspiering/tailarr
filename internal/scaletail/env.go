@@ -19,7 +19,7 @@ import (
 type EnvMap map[string]string
 
 // ParseEnvFile reads a KEY=VALUE file without shell evaluation.
-// Empty values and comments are preserved semantics: keys with empty values are kept.
+// Keys with empty values are kept. Comments are not returned.
 func ParseEnvFile(path string) (EnvMap, error) {
 	env, _, err := parseEnvPath(path)
 	return env, err
