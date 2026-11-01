@@ -965,10 +965,10 @@ func removeDeployment(dest, root, service string) (leftover string, err error) {
 	}
 
 	trashRoot := filepath.Join(root, config.BackupDirName, trashDirName)
-	if err := paths.EnsureDirMode(filepath.Dir(trashRoot), "backup directory", 0o700); err != nil {
+	if err := ensureAdminDir(root, filepath.Dir(trashRoot), "backup directory"); err != nil {
 		return "", err
 	}
-	if err := paths.EnsureDirMode(trashRoot, "trash directory", 0o700); err != nil {
+	if err := ensureAdminDir(root, trashRoot, "trash directory"); err != nil {
 		return "", err
 	}
 	trash, err := backupPathFor(trashRoot, service, time.Now().UTC().Format("20060102T150405Z"))

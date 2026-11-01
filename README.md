@@ -119,6 +119,7 @@ go build -o bin/tailarr ./cmd/tailarr
   Remove copies and deletes container data.
   Containers such as the Tailscale sidecar write that data as root.
   Run Tailarr as root for Remove.
+  When Tailarr runs as root, it gives the files and directories it manages to the owner of the deployment root.
 
 ## Features
 

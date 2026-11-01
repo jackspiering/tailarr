@@ -124,7 +124,7 @@ func waitLockRetry(path string) error {
 // configured repo or auth key path, keeps its mode.
 func ensureLockDir(dir string) error {
 	if filepath.Base(dir) == config.LockDirName {
-		return paths.EnsureDirMode(dir, "lock directory", 0o700)
+		return ensureAdminDir(filepath.Dir(dir), dir, "lock directory")
 	}
 	_, err := os.Lstat(dir)
 	switch {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackspiering/tailarr/internal/config"
 )
@@ -281,5 +282,75 @@ func TestBackupStillFailsOnUnreadableFile(t *testing.T) {
 	}
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("error does not wrap fs.ErrPermission: %v", err)
+	}
+}
+
+func TestApplyNamesFixForForeignBackupDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open mode 0 directories; test needs a non-root user")
+	}
+	repo, deployRoot, _ := managedDeployment(t)
+	backups := filepath.Join(deployRoot, config.BackupDirName)
+	if err := os.Mkdir(backups, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(backups, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(backups, 0o700) })
+	withFakeCompose(t, func(string, ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	err := m.Apply("web", DeployOpts{})
+	if err == nil {
+		t.Fatal("expected Apply to fail on a backup directory that it cannot use")
+	}
+	if !strings.Contains(err.Error(), "with chown") {
+		t.Fatalf("error should name the chown fix, got: %v", err)
+	}
+}
+
+func TestAdminDirsTakeDeployRootOwner(t *testing.T) {
+	_, deployRoot, dest := managedDeployment(t)
+	type call struct{ path, ref string }
+	var calls []call
+	prev := chownLike
+	chownLike = func(path, ref string) error {
+		calls = append(calls, call{path, ref})
+		return nil
+	}
+	t.Cleanup(func() { chownLike = prev })
+
+	if _, err := Backup(deployRoot, "web", dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshotManaged(deployRoot, "web", dest, dest); err != nil {
+		t.Fatal(err)
+	}
+	lockPath, err := ServiceLockPath(deployRoot, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(lockPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Release() }()
+
+	for _, name := range []string{
+		config.BackupDirName,
+		filepath.Join(config.BackupDirName, "apply-snapshots"),
+		config.LockDirName,
+	} {
+		want := filepath.Join(deployRoot, name)
+		found := false
+		for _, c := range calls {
+			if c.path == want && c.ref == deployRoot {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no chownLike call for %s with ref %s; calls: %v", want, deployRoot, calls)
+		}
 	}
 }

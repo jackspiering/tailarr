@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A root run no longer locks the operator out of a deployment. Tailarr now gives `.tailarr_backups`, `.tailarr_locks`, and the Apply snapshots to the
+  owner of the deployment root, and a rewritten `.env` keeps its owner. When a directory belongs to another user, the error now says to use chown.
 - Tailarr now warns at startup when it cannot append to the log file. It used to drop every log line without a message.
 - Remove no longer fails when a running container deletes a file during the backup. A file that is gone is not copied.
 - Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
