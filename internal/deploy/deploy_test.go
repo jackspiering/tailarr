@@ -2097,3 +2097,55 @@ func TestStoringKeyAsksBeforeOverwriting(t *testing.T) {
 		t.Fatalf("accepted overwrite not stored: %q", b)
 	}
 }
+
+func TestDeployKeepsTemplateEnvComments(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "# Time zone docs\nTZ=UTC\n")
+	withFakeCompose(t, func(string, ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Deploy("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(deployRoot, "web", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "# Time zone docs") {
+		t.Fatalf("template comment lost on deploy: %s", env)
+	}
+}
+
+func TestApplyKeepsOperatorEnvComments(t *testing.T) {
+	repo := t.TempDir()
+	deployRoot := t.TempDir()
+	setupTemplate(t, repo, "web", "# Time zone docs\nTZ=UTC\n")
+	withFakeCompose(t, func(string, ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Deploy("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(deployRoot, "web", ".env")
+	before, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, append(before, []byte("# mine\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "# mine") {
+		t.Fatalf("operator comment lost on apply: %s", after)
+	}
+	if !strings.Contains(string(after), "TZ=UTC") {
+		t.Fatalf("value changed on apply: %s", after)
+	}
+}

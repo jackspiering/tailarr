@@ -255,3 +255,45 @@ func TestLiteralKeysFindOnlyQuotedLocalValues(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteEnvFileKeepsComments(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".env")
+	if err := os.WriteFile(p, []byte("# head\nA=1\n\n# tail\nB=2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	merged := EnvMap{"A": "9", "B": "2", "C": "3"}
+	if err := WriteEnvFile(p, merged, []string{"A", "B", "C"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# head\nA=9\n\n# tail\nB=2\nC=3\n"
+	if string(got) != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteEnvFileWithoutExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".env")
+	if err := WriteEnvFile(p, EnvMap{"A": "1", "B": "2"}, []string{"B", "A"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "B=2\nA=1\n"; string(got) != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+}

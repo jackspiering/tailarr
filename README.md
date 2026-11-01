@@ -192,7 +192,7 @@ It never shows `.env` values.
 It shows the `Upgrading` section of the template `README.md` when a file changes.
 Scroll the preview with PgUp and PgDn.
 Apply replaces the compose file, so copy your own edits to a safe place first.
-It keeps your `.env` values and adds the keys that the template adds.
+It keeps your `.env` values and adds the keys that the template adds. It also keeps the comments in that file.
 It keeps files that exist only in that directory.
 Only **Deploy** creates a new service directory.
 
