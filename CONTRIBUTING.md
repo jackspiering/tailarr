@@ -88,6 +88,11 @@ Never publish a draft whose workflow run failed. AI coding agents may tag,
 dispatch, and publish once the release pull request is merged; see
 [AGENTS.md](AGENTS.md).
 
+The Install smoke workflow (`.github/workflows/install-smoke.yml`) runs the
+installer every day against the latest release and against `DEFAULT_VERSION`.
+It fails while a merged release is still an unpublished draft, so publish
+the draft soon after the merge.
+
 The `release` environment and its required reviewers are repository settings:
 an owner creates `release` in Settings > Environments and adds reviewers
 there. Naming an environment in workflow YAML does not create reviewers or
