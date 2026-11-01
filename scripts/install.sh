@@ -3,10 +3,10 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jackspiering/tailarr/main/scripts/install.sh | sh
-#   curl -fsSL https://github.com/jackspiering/tailarr/releases/download/v0.2.0/install.sh | sh
+#   curl -fsSL https://github.com/jackspiering/tailarr/releases/download/vX.Y.Z/install.sh | sh
 #
 # Environment:
-#   TAILARR_VERSION  Release tag (e.g. v0.2.0). Default: latest via GitHub API, else DEFAULT_VERSION
+#   TAILARR_VERSION  Release tag (e.g. vX.Y.Z). Default: latest via GitHub API, else DEFAULT_VERSION
 #   INSTALL_DIR      Install directory. Default: directory of the first `tailarr` on
 #                    PATH if writable (replaces legacy installs), else /usr/local/bin
 #                    if writable, else ~/.local/bin
