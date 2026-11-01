@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tailarr now warns at startup when it cannot append to the log file. It used to drop every log line without a message.
+- Remove no longer fails when a running container deletes a file during the backup. A file that is gone is not copied.
 - Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
   `.tailarr.compose.yaml`. Before, a stale `compose.yaml` next to a template `compose.yml` made Restart start a different file and revert an
   Apply. Deployments from older versions keep the old lookup until their next Apply.
@@ -404,9 +406,9 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 [Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/jackspiering/tailarr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jackspiering/tailarr/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.3...v0.6.0
-[0.5.3]: https://github.com/jackspiering/tailarr/compare/v0.5.2...v0.5.3
-[0.5.2]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.5.2
+[0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.6.0
+[0.5.3]: https://github.com/jackspiering/tailarr/commit/37e708d
+[0.5.2]: https://github.com/jackspiering/tailarr/commit/e22f058
 [0.5.1]: https://github.com/jackspiering/tailarr/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jackspiering/tailarr/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jackspiering/tailarr/compare/v0.3.0...v0.4.0

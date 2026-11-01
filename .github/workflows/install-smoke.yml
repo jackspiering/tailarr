@@ -1,0 +1,49 @@
+name: Install smoke
+
+# Runs the installer the way an operator does. It fails when the latest
+# release or DEFAULT_VERSION in scripts/install.sh cannot be installed, for
+# example when a release draft was never published.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  install:
+    name: Install (${{ matrix.source }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [latest, default-version]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the installer
+        env:
+          # gh verifies the build attestation with this token.
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ matrix.source }}
+        run: |
+          export INSTALL_DIR="$RUNNER_TEMP/bin"
+          if [[ "$SOURCE" == "default-version" ]]; then
+            TAILARR_VERSION=$(sed -n 's/^DEFAULT_VERSION="\(.*\)"$/\1/p' scripts/install.sh)
+            test -n "$TAILARR_VERSION"
+            export TAILARR_VERSION
+          fi
+          sh scripts/install.sh
