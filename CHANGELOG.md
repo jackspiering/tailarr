@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tailarr now warns at startup when it cannot append to the log file. It used to drop every log line without a message.
 - Remove no longer fails when a running container deletes a file during the backup. A file that is gone is not copied.
 - Restart and the restore after a failed Apply now run the compose file that Apply used. Deploy and Apply record its name in
   `.tailarr.compose.yaml`. Before, a stale `compose.yaml` next to a template `compose.yml` made Restart start a different file and revert an
