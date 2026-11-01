@@ -180,3 +180,106 @@ func TestRemoveLeavesNoTrashOnSuccess(t *testing.T) {
 		t.Fatalf("trash not emptied: %v", left)
 	}
 }
+
+// setBeforeBackupCopy installs a copy hook for one test and restores it after.
+func setBeforeBackupCopy(t *testing.T, hook func(string)) {
+	t.Helper()
+	prev := beforeBackupCopy
+	beforeBackupCopy = hook
+	t.Cleanup(func() { beforeBackupCopy = prev })
+}
+
+// backedUpBaseNames returns the base names of the regular files under dir.
+func backedUpBaseNames(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	names := map[string]bool{}
+	err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			names[filepath.Base(p)] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+func TestBackupSkipsFileDeletedDuringWalk(t *testing.T) {
+	root := t.TempDir()
+	svc := filepath.Join(root, "web")
+	if err := os.MkdirAll(svc, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if err := os.WriteFile(filepath.Join(svc, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setBeforeBackupCopy(t, func(p string) {
+		if filepath.Base(p) == "a" {
+			_ = os.Remove(filepath.Join(svc, "b"))
+		}
+	})
+	dest, err := Backup(root, "web", svc)
+	if err != nil {
+		t.Fatalf("Backup failed when a file vanished during the walk: %v", err)
+	}
+	got := backedUpBaseNames(t, dest)
+	if !got["a"] || !got["c"] {
+		t.Errorf("backup is missing a or c: %v", got)
+	}
+	if got["b"] {
+		t.Errorf("backup copied b, which was deleted before its copy: %v", got)
+	}
+}
+
+func TestBackupSkipsFileDeletedBeforeOpen(t *testing.T) {
+	root := t.TempDir()
+	svc := filepath.Join(root, "web")
+	if err := os.MkdirAll(svc, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(svc, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setBeforeBackupCopy(t, func(p string) {
+		if filepath.Base(p) == "b" {
+			_ = os.Remove(p)
+		}
+	})
+	dest, err := Backup(root, "web", svc)
+	if err != nil {
+		t.Fatalf("Backup failed when a file was deleted before open: %v", err)
+	}
+	if !backedUpBaseNames(t, dest)["a"] {
+		t.Errorf("backup is missing a")
+	}
+}
+
+func TestBackupStillFailsOnUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode 0 files; cannot test permission failure")
+	}
+	root := t.TempDir()
+	svc := filepath.Join(root, "web")
+	if err := os.MkdirAll(svc, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(svc, "locked")
+	if err := os.WriteFile(locked, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Backup(root, "web", svc)
+	if err == nil {
+		t.Fatal("Backup succeeded on an unreadable file")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("error does not wrap fs.ErrPermission: %v", err)
+	}
+}
