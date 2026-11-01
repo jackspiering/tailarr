@@ -154,3 +154,30 @@ func TestChownLikeOnlyAsRoot(t *testing.T) {
 		t.Fatalf("lchown(%q, %d, %d) x%d, want (%q, %d, %d) x1", gotPath, gotUID, gotGID, calls, path, wantUID, wantGID)
 	}
 }
+
+func TestReadRegularFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "a")
+	if err := os.WriteFile(reg, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, truncated, err := ReadRegularFile(reg, 100)
+	if err != nil || truncated || string(data) != "hello" {
+		t.Fatalf("got %q truncated=%v err=%v", data, truncated, err)
+	}
+	data, truncated, err = ReadRegularFile(reg, 3)
+	if err != nil || !truncated || string(data) != "hel" {
+		t.Fatalf("over limit: got %q truncated=%v err=%v", data, truncated, err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(reg, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadRegularFile(link, 100); err == nil {
+		t.Fatal("a symlink must fail")
+	}
+	if _, _, err := ReadRegularFile(filepath.Join(dir, "missing"), 100); !os.IsNotExist(err) {
+		t.Fatalf("missing file must satisfy os.IsNotExist, got %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package scaletail
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackspiering/tailarr/internal/security/atomic"
 	"github.com/jackspiering/tailarr/internal/security/names"
+	"github.com/jackspiering/tailarr/internal/security/paths"
 )
 
 // EnvMap is KEY -> value for dotenv-style files. Values are the raw text after
@@ -51,16 +53,21 @@ func ParseEnv(r io.Reader) (EnvMap, []string, error) {
 	return out, keys, nil
 }
 
+// maxEnvFileBytes bounds an env file that Tailarr reads.
+const maxEnvFileBytes = 1 << 20
+
 func parseEnvPath(path string) (EnvMap, []string, error) {
-	f, err := os.Open(path)
+	data, truncated, err := paths.ReadRegularFile(path, maxEnvFileBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return make(EnvMap), nil, nil
 		}
 		return nil, nil, err
 	}
-	defer func() { _ = f.Close() }()
-	env, keys, err := ParseEnv(f)
+	if truncated {
+		return nil, nil, fmt.Errorf("%s: file is larger than %d bytes", path, maxEnvFileBytes)
+	}
+	env, keys, err := ParseEnv(bytes.NewReader(data))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}

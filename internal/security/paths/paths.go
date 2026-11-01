@@ -3,10 +3,12 @@ package paths
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // IsSymlink reports whether path exists and is a symbolic link.
@@ -193,4 +195,32 @@ func EnsureDirMode(path, label string, mode os.FileMode) error {
 		return err
 	}
 	return ChmodNoFollow(path, mode)
+}
+
+// ReadRegularFile reads up to limit bytes of the regular file at path. It
+// opens the file without following a final symlink and without blocking, so
+// a symlink or FIFO planted in a deployment fails instead of redirecting the
+// read or hanging. truncated reports a larger file. A missing file returns
+// an error that os.IsNotExist accepts.
+func ReadRegularFile(path string, limit int64) (data []byte, truncated bool, err error) {
+	f, err := OpenFileNoFollow(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("refusing to read non-regular file: %s", path)
+	}
+	data, err = io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], true, nil
+	}
+	return data, false, nil
 }

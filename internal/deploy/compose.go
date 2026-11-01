@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackspiering/tailarr/internal/interrupt"
 	"github.com/jackspiering/tailarr/internal/scaletail"
+	"github.com/jackspiering/tailarr/internal/security/paths"
 	"github.com/jackspiering/tailarr/internal/security/redact"
 )
 
@@ -101,9 +102,12 @@ func composeServiceNames(dir, base string) ([]string, error) {
 }
 
 func scanComposeServiceNames(composePath string) ([]string, error) {
-	data, err := os.ReadFile(composePath)
+	data, truncated, err := paths.ReadRegularFile(composePath, maxManagedFileBytes)
 	if err != nil {
 		return nil, err
+	}
+	if truncated {
+		return nil, fmt.Errorf("%s: file is larger than %d bytes", composePath, maxManagedFileBytes)
 	}
 	var names []string
 	inServices := false

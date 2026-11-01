@@ -399,12 +399,15 @@ func syncTemplateFiles(templateDir, dest string) error {
 	})
 }
 
+// maxManagedFileBytes bounds a managed override or compose file that Tailarr reads.
+const maxManagedFileBytes = 1 << 20
+
 // activeComposeFile returns the compose file that the deployment in dir runs.
 // It reads the name that Deploy and Apply record in the managed override and
 // falls back to the first compose file found, for deployments made before the
 // name was recorded. A recorded name must be a known compose file that exists.
 func activeComposeFile(dir string) string {
-	if data, err := os.ReadFile(filepath.Join(dir, overrideFilename)); err == nil {
+	if data, truncated, err := paths.ReadRegularFile(filepath.Join(dir, overrideFilename), maxManagedFileBytes); err == nil && !truncated {
 		if m := composeFileMarkerRE.FindSubmatch(data); m != nil {
 			name := string(m[1])
 			p := filepath.Join(dir, name)
@@ -917,8 +920,16 @@ func requireManagedFiles(dest, service string) error {
 	}
 	inputs := append([]string{overrideFilename, ".env"}, scaletail.ComposeCandidates...)
 	for _, name := range inputs {
-		if p := filepath.Join(dest, name); paths.IsSymlink(p) {
+		p := filepath.Join(dest, name)
+		info, err := os.Lstat(p)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: deployment contains unsupported symlink: %s", ErrSymlink, p)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("deployment file is not a regular file: %s", p)
 		}
 	}
 	if !scaletail.HasComposeFile(dest) {
@@ -1006,8 +1017,8 @@ func (m *Manager) log(format string, args ...any) {
 // comment), not a substring match of "tailarr.managed".
 func IsManaged(dir string) bool {
 	p := filepath.Join(dir, overrideFilename)
-	data, err := os.ReadFile(p)
-	if err != nil {
+	data, truncated, err := paths.ReadRegularFile(p, maxManagedFileBytes)
+	if err != nil || truncated {
 		return false
 	}
 	s := string(data)

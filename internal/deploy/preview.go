@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"unicode"
 
 	"github.com/jackspiering/tailarr/internal/scaletail"
@@ -288,22 +286,11 @@ func previewNewEnvKeys(templateDir, dest string) (keys []string, warn string) {
 // blocking, so a symlink or FIFO planted in the deployment fails instead of
 // redirecting the read or hanging Apply. truncated reports a larger file.
 func readPreviewFile(path string) (data []byte, truncated bool, err error) {
-	f, err := paths.OpenFileNoFollow(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	data, truncated, err = paths.ReadRegularFile(path, previewReadLimit)
 	if err != nil {
 		return nil, false, symlinkHint(err, path)
 	}
-	defer func() { _ = f.Close() }()
-	if err := requireRegular(f, path); err != nil {
-		return nil, false, err
-	}
-	data, err = io.ReadAll(io.LimitReader(f, previewReadLimit+1))
-	if err != nil {
-		return nil, false, err
-	}
-	if len(data) > previewReadLimit {
-		return data[:previewReadLimit], true, nil
-	}
-	return data, false, nil
+	return data, truncated, nil
 }
 
 // previewComposeDiff returns the printed diff of the compose file rel, from
