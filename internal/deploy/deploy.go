@@ -484,23 +484,6 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	}
 
 	merged := scaletail.MergeEnv(templateMap, localMap, keys)
-	// A template key that the deployed .env has only as a commented-out line
-	// was turned off by the operator. Do not add it again.
-	if raw, _, err := paths.ReadRegularFile(localEnv, 1<<20); err == nil {
-		off := scaletail.CommentedKeys(raw)
-		kept := keys[:0:0]
-		for _, k := range keys {
-			if off[k] {
-				delete(merged, k)
-				continue
-			}
-			kept = append(kept, k)
-		}
-		for k := range off {
-			delete(merged, k)
-		}
-		keys = kept
-	}
 
 	// A shared batch key only fills a TS_AUTHKEY the service declares, so it
 	// is never written into a .env that has no use for it.

@@ -115,7 +115,7 @@ func (m *Manager) previewLines(service, dest string) []string {
 		out = append(out, capLines(list, previewListMaxLines, "variables")...)
 	}
 	if len(gone) > 0 {
-		out = append(out, "Variables in the deployed .env that the catalog .env no longer has (Apply keeps them, names only):")
+		out = append(out, "Variables in the deployed .env that the catalog .env does not have (Apply keeps them, names only):")
 		list := make([]string, len(gone))
 		for i, k := range gone {
 			list[i] = "  " + k
@@ -275,9 +275,7 @@ func previewActiveCompose(dest string) string {
 
 // previewNewEnvKeys returns the names of variables that the template .env has
 // and the deployed .env lacks, in template order, and the names that the
-// deployed .env has and the template lacks, sorted. A template key that the
-// deployed .env has only as a commented-out line is in neither list, because
-// Apply does not add it. It never returns a value.
+// deployed .env has and the template lacks, sorted. It never returns a value.
 func previewNewEnvKeys(templateDir, dest string) (keys, gone []string, warn string) {
 	tplData, _, err := readPreviewFile(filepath.Join(templateDir, ".env"))
 	if err != nil {
@@ -291,7 +289,6 @@ func previewNewEnvKeys(templateDir, dest string) (keys, gone []string, warn stri
 		return nil, nil, fmt.Sprintf("Warning: cannot parse the template .env: %v", err)
 	}
 	have := map[string]bool{}
-	off := map[string]bool{}
 	haveData, _, err := readPreviewFile(filepath.Join(dest, ".env"))
 	switch {
 	case err == nil:
@@ -305,13 +302,12 @@ func previewNewEnvKeys(templateDir, dest string) (keys, gone []string, warn stri
 				gone = append(gone, k)
 			}
 		}
-		off = scaletail.CommentedKeys(haveData)
 	case errors.Is(err, os.ErrNotExist):
 	default:
 		return nil, nil, fmt.Sprintf("Warning: cannot read the deployed .env: %v", err)
 	}
 	for _, k := range tplKeys {
-		if !have[k] && !off[k] {
+		if !have[k] {
 			keys = append(keys, k)
 		}
 	}
@@ -368,7 +364,7 @@ func previewPlannedCompose(p composePlan, dest, target string) (files []previewF
 	case planReplace:
 		change.kind = "replaced"
 		if p.settingsDiffer {
-			change.note = "no record of the deployed catalog version, so your edits are not kept; the old file goes to the backup"
+			change.note = "no record of the deployed catalog version; if you edited this file, copy your edits back from the backup"
 		} else {
 			change.note = "only comments or spacing differ"
 		}

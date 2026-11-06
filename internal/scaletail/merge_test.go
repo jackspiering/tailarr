@@ -65,17 +65,6 @@ func TestKeyCommentsReturnsTheBlockAboveEachKey(t *testing.T) {
 	}
 }
 
-func TestCommentedKeysSkipsKeysThatAreSet(t *testing.T) {
-	data := []byte("# OFF=1\n#  SPACED = 2\nON=1\n# ON=old\n# Not a key: x=1\n")
-	got := CommentedKeys(data)
-	if !got["OFF"] || !got["SPACED"] {
-		t.Errorf("CommentedKeys = %v, want OFF and SPACED", got)
-	}
-	if got["ON"] || len(got) != 2 {
-		t.Errorf("CommentedKeys = %v, want only OFF and SPACED", got)
-	}
-}
-
 func TestWriteEnvFileWithNotesAddsCommentsForNewKeysOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(path, []byte("# Mine\nOLD=1\n"), 0o600); err != nil {

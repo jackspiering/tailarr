@@ -362,27 +362,3 @@ func KeyComments(data []byte) map[string][]string {
 	}
 	return out
 }
-
-// CommentedKeys returns the keys that the env text data has only as a
-// commented-out line, such as "# KEY=value". The operator turned these off,
-// so Apply must not add them again.
-func CommentedKeys(data []byte) map[string]bool {
-	out := make(map[string]bool)
-	set := make(map[string]bool)
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimRight(line, "\r"), "\ufeff"))
-		if rest, ok := strings.CutPrefix(trimmed, "#"); ok {
-			if key, _, ok := strings.Cut(strings.TrimSpace(rest), "="); ok && validEnvKey(strings.TrimSpace(key)) {
-				out[strings.TrimSpace(key)] = true
-			}
-			continue
-		}
-		if key, _, skip, err := parseEnvLine(line); err == nil && !skip {
-			set[key] = true
-		}
-	}
-	for k := range set {
-		delete(out, k)
-	}
-	return out
-}

@@ -201,7 +201,7 @@ func TestApplyWithoutBaseReplacesComposeAndSaysWhere(t *testing.T) {
 		t.Fatalf("base = %q, want the catalog file", got)
 	}
 	out := f.ui.text()
-	mustContain(t, out, "replaced", "Your previous file is in "+filepath.Join(f.root, config.BackupDirName))
+	mustContain(t, out, "replaced", "your previous version is in "+filepath.Join(f.root, config.BackupDirName))
 }
 
 func TestApplyWithoutBaseSaysWhenOnlyCommentsDiffer(t *testing.T) {
@@ -212,23 +212,36 @@ func TestApplyWithoutBaseSaysWhenOnlyCommentsDiffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustContain(t, f.ui.text(), "only comments or spacing differ")
-	mustNotContain(t, f.ui.text(), "Your previous file is in")
+	mustNotContain(t, f.ui.text(), "your previous version is in")
 }
 
-func TestApplyDoesNotAddEnvKeyTheOperatorCommentedOut(t *testing.T) {
+func TestApplyAddsNewEnvKeysWithTheirTemplateComments(t *testing.T) {
 	f := newMergeFixture(t, "", mergeCatalogV1, mergeCatalogV1)
-	writePreviewFile(t, filepath.Join(f.tpl, ".env"), "HOSTNAME=x\n# The optional feature.\nFEATURE=on\n# What NEW does.\nNEW=1\n")
-	writePreviewFile(t, filepath.Join(f.dest, ".env"), "HOSTNAME=x\n# FEATURE=on\n")
+	writePreviewFile(t, filepath.Join(f.tpl, ".env"), "HOSTNAME=x\n# What NEW does.\nNEW=1\n")
+	writePreviewFile(t, filepath.Join(f.dest, ".env"), "HOSTNAME=x\n")
 	withFakeCompose(t, func(string, ...string) error { return nil })
 	if err := f.m.Apply("web", DeployOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.read(t, ".env"); got != "HOSTNAME=x\n# FEATURE=on\n\n# What NEW does.\nNEW=1\n" {
+	if got := f.read(t, ".env"); got != "HOSTNAME=x\n\n# What NEW does.\nNEW=1\n" {
 		t.Fatalf(".env = %q", got)
 	}
-	out := f.ui.text()
-	mustContain(t, out, "  NEW")
-	mustNotContain(t, out, "  FEATURE")
+	mustContain(t, f.ui.text(), "  NEW")
+}
+
+// The catalog ships optional keys commented out. When a later catalog turns
+// one on, Apply must add it even though the deployed copy has it commented.
+func TestApplyAddsKeyThatTheCatalogShippedCommentedOut(t *testing.T) {
+	f := newMergeFixture(t, "", mergeCatalogV1, mergeCatalogV1)
+	writePreviewFile(t, filepath.Join(f.tpl, ".env"), "HOSTNAME=x\nPUID=1000\n")
+	writePreviewFile(t, filepath.Join(f.dest, ".env"), "HOSTNAME=x\n# PUID=1000\n")
+	withFakeCompose(t, func(string, ...string) error { return nil })
+	if err := f.m.Apply("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.read(t, ".env"); !strings.Contains(got, "\nPUID=1000\n") {
+		t.Fatalf(".env = %q, want PUID added", got)
+	}
 }
 
 func TestApplyKeepsDeployedServiceWhenCatalogRenamesIt(t *testing.T) {
@@ -248,7 +261,7 @@ func TestPreviewListsEnvKeysTheCatalogNoLongerHas(t *testing.T) {
 	p := newPreviewEnv(t)
 	writePreviewFile(t, filepath.Join(p.dest, ".env"), "HOSTNAME=x\nOLD_SECRET=hunter2\n")
 	out := p.decline(t)
-	mustContain(t, out, "no longer has", "  OLD_SECRET")
+	mustContain(t, out, "does not have", "  OLD_SECRET")
 	mustNotContain(t, out, "hunter2")
 }
 

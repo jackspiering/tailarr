@@ -209,8 +209,8 @@ func (m *Manager) reportComposePlan(service string, p composePlan, backupDir str
 			msg = fmt.Sprintf("%s: replaced with the catalog version (only comments or spacing differed).", p.file)
 			break
 		}
-		msg = fmt.Sprintf("%s: replaced with the catalog version. Tailarr has no record of the version you deployed, "+
-			"so it cannot keep your edits this time. Your previous file is in %s. Copy your edits back once, and later Applies keep them.",
+		msg = fmt.Sprintf("%s: replaced with the catalog version, because Tailarr has no record of the version you deployed. "+
+			"If you edited this file, your previous version is in %s. Copy your edits back once, and later Applies keep them.",
 			p.file, backupDir)
 	default:
 		return

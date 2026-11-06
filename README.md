@@ -187,7 +187,7 @@ It then pulls images and starts the containers.
 Before it asks you to confirm, Apply shows a preview in the output panel.
 The preview lists the files that Apply creates or changes.
 It shows a diff of the compose file, with the lines that Apply removes marked `-`.
-It names the `.env` keys that the template adds, and the keys that the template no longer has.
+It names the `.env` keys that the template adds, and the deployed keys that the template does not have.
 It never shows `.env` values.
 It shows the `Upgrading` section of the template `README.md` when a file changes.
 Scroll the preview with PgUp and PgDn.
@@ -198,11 +198,10 @@ When your edit and the catalog change the same lines, Apply stops and changes no
 Undo your edit in those lines and run Apply again.
 Or delete `.tailarr.compose.base.yaml` to take the catalog file as it is.
 A service directory without that file comes from an older Tailarr.
-Its first Apply replaces the compose file, and the output says where the backup of your file is.
+Its first Apply replaces the compose file, and the output says where the backup of the old file is.
 Copy your edits back once, and later Apply runs keep them.
 Apply keeps your `.env` values and adds the keys that the template adds, with the comments above them.
 It also keeps the comments in that file.
-It does not add a key that you commented out, such as `# KEY=value`.
 It keeps files that exist only in that directory.
 Only **Deploy** creates a new service directory.
 
