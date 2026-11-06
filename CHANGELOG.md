@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change, shows a line diff of the compose file with the deployed lines marked `-`, names the `.env` variables that the template adds, and
   prints the `## Upgrading` section of the template `README.md` when a file changes. It never shows `.env` values, and it reads
   deployment files without following symlinks or waiting on FIFOs. A read problem becomes a warning and never stops Apply.
+- Apply keeps your edits to the compose file. Deploy and Apply save the catalog compose file as `.tailarr.compose.base.yaml`, and the next
+  Apply merges the catalog changes into your file with `git merge-file`. When your edit and the catalog change the same lines, Apply stops
+  and changes nothing. The first Apply of an older deployment replaces the file and names the backup that holds your copy. The preview
+  shows the merged result. This follows the stack update script proposed in ScaleTail pull request 404.
+- Apply adds new `.env` keys with the comment lines above them in the template. The preview names the deployed keys that the template does not have.
 
 ### Changed
 

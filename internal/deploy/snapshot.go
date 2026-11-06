@@ -17,7 +17,7 @@ import (
 const applySnapshotDirName = "apply-snapshots"
 
 // applySnapshot records the files Apply may change: template paths, .env,
-// and the managed override. Container data is never copied or moved, so a
+// the managed override, and the compose base. Container data is never copied or moved, so a
 // failed Apply cannot pull a bind-mounted directory out from under a
 // running container.
 type applySnapshot struct {
@@ -83,7 +83,7 @@ func snapshotManaged(deployPath, service, templateDir, dest string) (*applySnaps
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	files = append(files, ".env", overrideFilename)
+	files = append(files, ".env", overrideFilename, composeBaseFilename)
 	for _, rel := range files {
 		if err := s.save(rel); err != nil {
 			_ = os.RemoveAll(dir)
