@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -75,8 +76,18 @@ func (m *Manager) previewLines(service, dest string) []string {
 	}
 
 	var out []string
-	files, warns, composeDiff, composeNote := previewTemplateFiles(templateDir, dest)
-	keys, envWarn := previewNewEnvKeys(templateDir, dest)
+	var plan *composePlan
+	var planWarn string
+	if p, err := planCompose(templateDir, dest); err != nil {
+		planWarn = fmt.Sprintf("Warning: cannot plan the compose file update: %v", err)
+	} else {
+		plan = &p
+	}
+	files, warns, composeDiff, composeNote := previewTemplateFiles(templateDir, dest, plan)
+	if planWarn != "" {
+		warns = append(warns, planWarn)
+	}
+	keys, gone, envWarn := previewNewEnvKeys(templateDir, dest)
 	if envWarn != "" {
 		warns = append(warns, envWarn)
 	}
@@ -99,6 +110,14 @@ func (m *Manager) previewLines(service, dest string) []string {
 		out = append(out, "New .env variables that Apply adds (names only, values are never shown):")
 		list := make([]string, len(keys))
 		for i, k := range keys {
+			list[i] = "  " + k
+		}
+		out = append(out, capLines(list, previewListMaxLines, "variables")...)
+	}
+	if len(gone) > 0 {
+		out = append(out, "Variables in the deployed .env that the catalog .env no longer has (Apply keeps them, names only):")
+		list := make([]string, len(gone))
+		for i, k := range gone {
 			list[i] = "  " + k
 		}
 		out = append(out, capLines(list, previewListMaxLines, "variables")...)
@@ -127,7 +146,9 @@ func previewFileLines(files []previewFileChange) []string {
 // compares each file with the deployed one. It returns the files Apply would
 // create or change, warnings for paths Apply would refuse or the preview
 // could not read, and the compose diff lines and note.
-func previewTemplateFiles(templateDir, dest string) (files []previewFileChange, warns, composeDiff []string, composeNote string) {
+// When plan is not nil, the compose file is reported as plan says Apply
+// changes it, so the diff shows the merged result and not the catalog file.
+func previewTemplateFiles(templateDir, dest string, plan *composePlan) (files []previewFileChange, warns, composeDiff []string, composeNote string) {
 	tplCompose := composeBaseName(templateDir)
 	active := previewActiveCompose(dest)
 	renamed := active != tplCompose
@@ -185,6 +206,14 @@ func previewTemplateFiles(templateDir, dest string) (files []previewFileChange, 
 			return nil
 		}
 
+		if plan != nil && rel == plan.file && !renamed {
+			f, w, d, n := previewPlannedCompose(*plan, dest, target)
+			files, warns, composeDiff = append(files, f...), append(warns, w...), d
+			if n != "" {
+				composeNote = n
+			}
+			return nil
+		}
 		want, wantTrunc, err := readPreviewFile(path)
 		if err != nil {
 			warns = append(warns, fmt.Sprintf("Warning: cannot read template %s: %v", rel, err))
@@ -245,40 +274,49 @@ func previewActiveCompose(dest string) string {
 }
 
 // previewNewEnvKeys returns the names of variables that the template .env has
-// and the deployed .env lacks, in template order. It never returns a value.
-func previewNewEnvKeys(templateDir, dest string) (keys []string, warn string) {
+// and the deployed .env lacks, in template order, and the names that the
+// deployed .env has and the template lacks, sorted. A template key that the
+// deployed .env has only as a commented-out line is in neither list, because
+// Apply does not add it. It never returns a value.
+func previewNewEnvKeys(templateDir, dest string) (keys, gone []string, warn string) {
 	tplData, _, err := readPreviewFile(filepath.Join(templateDir, ".env"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, ""
+			return nil, nil, ""
 		}
-		return nil, fmt.Sprintf("Warning: cannot read the template .env: %v", err)
+		return nil, nil, fmt.Sprintf("Warning: cannot read the template .env: %v", err)
 	}
-	_, tplKeys, err := scaletail.ParseEnv(bytes.NewReader(tplData))
+	tplMap, tplKeys, err := scaletail.ParseEnv(bytes.NewReader(tplData))
 	if err != nil {
-		return nil, fmt.Sprintf("Warning: cannot parse the template .env: %v", err)
+		return nil, nil, fmt.Sprintf("Warning: cannot parse the template .env: %v", err)
 	}
 	have := map[string]bool{}
+	off := map[string]bool{}
 	haveData, _, err := readPreviewFile(filepath.Join(dest, ".env"))
 	switch {
 	case err == nil:
 		haveMap, _, perr := scaletail.ParseEnv(bytes.NewReader(haveData))
 		if perr != nil {
-			return nil, fmt.Sprintf("Warning: cannot parse the deployed .env: %v", perr)
+			return nil, nil, fmt.Sprintf("Warning: cannot parse the deployed .env: %v", perr)
 		}
 		for k := range haveMap {
 			have[k] = true
+			if _, ok := tplMap[k]; !ok {
+				gone = append(gone, k)
+			}
 		}
+		off = scaletail.CommentedKeys(haveData)
 	case errors.Is(err, os.ErrNotExist):
 	default:
-		return nil, fmt.Sprintf("Warning: cannot read the deployed .env: %v", err)
+		return nil, nil, fmt.Sprintf("Warning: cannot read the deployed .env: %v", err)
 	}
 	for _, k := range tplKeys {
-		if !have[k] {
+		if !have[k] && !off[k] {
 			keys = append(keys, k)
 		}
 	}
-	return keys, ""
+	sort.Strings(gone)
+	return keys, gone, ""
 }
 
 // readPreviewFile reads up to previewReadLimit bytes of the regular file at
@@ -293,6 +331,51 @@ func readPreviewFile(path string) (data []byte, truncated bool, err error) {
 	return data, truncated, nil
 }
 
+// previewPlannedCompose reports the compose file as plan p changes it: the
+// file list entry, warnings, the diff from the deployed text to the text
+// Apply writes, and a note.
+func previewPlannedCompose(p composePlan, dest, target string) (files []previewFileChange, warns, diff []string, note string) {
+	switch p.kind {
+	case planKeep:
+		if p.modeOnly() {
+			files = []previewFileChange{{rel: p.file, kind: "mode", note: fmt.Sprintf("%04o to %04o", p.deployedMode, p.mode)}}
+			return files, nil, nil, ""
+		}
+		if p.edited {
+			note = fmt.Sprintf("Your edits to %s stay. The catalog changes nothing in it that you have not changed.", p.file)
+		}
+		return nil, nil, nil, note
+	case planConflict:
+		files = []previewFileChange{{rel: p.file, kind: "conflict"}}
+		return files, []string{"Warning: Apply will refuse and change nothing. " + p.conflictError(dest).Error()}, nil, ""
+	}
+	have, haveTrunc, err := readPreviewFile(target)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("Warning: cannot read deployed %s: %v", p.file, err)}, nil, ""
+	}
+	change := previewFileChange{rel: p.file, kind: "changed"}
+	head := []string{
+		fmt.Sprintf("Compose file %s, deployed (-) compared with catalog (+):", p.file),
+		"Apply overwrites the deployed file. Lines marked - are removed and lines marked + are added.",
+	}
+	switch p.kind {
+	case planMerge:
+		change.kind, change.note = "merged", "your edits stay"
+		head = []string{
+			fmt.Sprintf("Compose file %s, deployed (-) compared with the merged result (+):", p.file),
+			"Apply keeps your edits and adds the catalog changes. Lines marked - are removed and lines marked + are added.",
+		}
+	case planReplace:
+		change.kind = "replaced"
+		if p.settingsDiffer {
+			change.note = "no record of the deployed catalog version, so your edits are not kept; the old file goes to the backup"
+		} else {
+			change.note = "only comments or spacing differ"
+		}
+	}
+	return []previewFileChange{change}, nil, previewComposeDiffWith(head, have, p.data, haveTrunc), ""
+}
+
 // previewComposeDiff returns the printed diff of the compose file rel, from
 // the deployed text have to the catalog text want.
 func previewComposeDiff(rel string, have, want []byte, truncated bool) []string {
@@ -300,6 +383,11 @@ func previewComposeDiff(rel string, have, want []byte, truncated bool) []string 
 		fmt.Sprintf("Compose file %s, deployed (-) compared with catalog (+):", rel),
 		"Apply overwrites the deployed file. Lines marked - are removed and lines marked + are added.",
 	}
+	return previewComposeDiffWith(head, have, want, truncated)
+}
+
+// previewComposeDiffWith returns head and then the diff from have to want.
+func previewComposeDiffWith(head []string, have, want []byte, truncated bool) []string {
 	if truncated {
 		return append(head, "  The file is larger than 1 MiB, so it is too large to diff.")
 	}

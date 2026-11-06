@@ -140,6 +140,14 @@ func (m *Manager) Deploy(service string, opts DeployOpts) error {
 // runs once the template is copied.
 func (m *Manager) finishDeploy(service, templateDir, dest string, tplEnv []byte, opts DeployOpts, afterCopy func()) (started bool, err error) {
 	err = copyTemplate(templateDir, dest)
+	if err == nil {
+		// Record the catalog compose file, so a later Apply can tell the
+		// operator's edits from catalog changes.
+		var catalog []byte
+		if catalog, err = readManaged(filepath.Join(templateDir, composeBaseName(templateDir))); err == nil {
+			err = writeComposeBase(dest, catalog)
+		}
+	}
 	afterCopy()
 	if err != nil {
 		return false, err
@@ -215,6 +223,13 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 	if err != nil {
 		return err
 	}
+	plan, err := planCompose(templateDir, dest)
+	if err != nil {
+		return err
+	}
+	if plan.kind == planConflict {
+		return plan.conflictError(dest)
+	}
 
 	snap, err := snapshotManaged(m.Cfg.DeployPath, service, templateDir, dest)
 	if err != nil {
@@ -248,10 +263,14 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		}
 	}()
 
-	if err := syncTemplateFiles(templateDir, dest); err != nil {
+	if err := syncTemplateFiles(templateDir, dest, plan.file); err != nil {
 		return err
 	}
-	composeFile := composeBaseName(templateDir)
+	if err := plan.write(dest); err != nil {
+		return err
+	}
+	m.reportComposePlan(service, plan, snap.dir)
+	composeFile := plan.file
 	// The catalog is not read again; free it before env prompts and compose.
 	_ = repoLock.Release()
 	if err := m.mergeAndWriteEnv(tplEnv, dest, opts); err != nil {
@@ -343,8 +362,9 @@ func readTemplateEnv(templateDir string) ([]byte, error) {
 }
 
 // syncTemplateFiles copies template files onto dest without deleting dest-only
-// paths and without overwriting dest .env. A file/directory type mismatch fails closed.
-func syncTemplateFiles(templateDir, dest string) error {
+// paths and without overwriting dest .env or the compose file named skip,
+// which Apply merges instead. A file/directory type mismatch fails closed.
+func syncTemplateFiles(templateDir, dest, skip string) error {
 	destClean := filepath.Clean(dest)
 	return filepath.Walk(templateDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -357,7 +377,7 @@ func syncTemplateFiles(templateDir, dest string) error {
 		if rel == "." {
 			return nil
 		}
-		if rel == ".env" {
+		if rel == ".env" || (skip != "" && rel == skip) {
 			return nil
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -464,6 +484,23 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 	}
 
 	merged := scaletail.MergeEnv(templateMap, localMap, keys)
+	// A template key that the deployed .env has only as a commented-out line
+	// was turned off by the operator. Do not add it again.
+	if raw, _, err := paths.ReadRegularFile(localEnv, 1<<20); err == nil {
+		off := scaletail.CommentedKeys(raw)
+		kept := keys[:0:0]
+		for _, k := range keys {
+			if off[k] {
+				delete(merged, k)
+				continue
+			}
+			kept = append(kept, k)
+		}
+		for k := range off {
+			delete(merged, k)
+		}
+		keys = kept
+	}
 
 	// A shared batch key only fills a TS_AUTHKEY the service declares, so it
 	// is never written into a .env that has no use for it.
@@ -488,7 +525,7 @@ func (m *Manager) mergeAndWriteEnv(tplEnv []byte, dest string, opts DeployOpts) 
 			return ErrEmptyAuthkey
 		}
 	}
-	return scaletail.WriteEnvFile(localEnv, merged, keys)
+	return scaletail.WriteEnvFileWithNotes(localEnv, merged, keys, scaletail.KeyComments(tplEnv))
 }
 
 // offerStoreAuthkey offers to keep a pasted auth key in the store. Storing is

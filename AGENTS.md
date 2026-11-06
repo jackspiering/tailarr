@@ -73,8 +73,10 @@ Deployment flow end to end:
    `Remove`): validates the name (`security/names.ValidateServiceName`), takes
    the service pid+flock lock (`deploy.AcquireLock`, 30 s default) and, while it
    reads the template, the catalog lock. It merges template `.env` with stored
-   values (`ValidateMergedTSAuthkey`), writes env mode 0600 atomically, writes
-   managed override `.tailarr.compose.yaml`, then execs `docker compose`
+   values (`ValidateMergedTSAuthkey`), writes env mode 0600 atomically,
+   merges operator compose edits with the catalog change against the base
+   `.tailarr.compose.base.yaml` (`git merge-file`; a conflict refuses Apply
+   before any write), writes managed override `.tailarr.compose.yaml`, then execs `docker compose`
    (package var `composeFn`) with filtered env and redacted stdio. Apply first
    saves only the files it writes (template paths, `.env`, override) to
    `.tailarr_backups` (keep 2); failure restores them in place and re-runs `up`.
@@ -156,7 +158,7 @@ Error handling:
 
 - Sentinels per domain: `deploy.{ErrAlreadyDeployed, ErrNotDeployed,
   ErrNotManaged, ErrNoCompose, ErrEmptyAuthkey, ErrComposeFailed,
-  ErrInterrupted, ErrSymlink}`, `prompt.ErrCanceled`, `upgrade.ErrUpToDate`.
+  ErrInterrupted, ErrSymlink, ErrComposeConflict}`, `prompt.ErrCanceled`, `upgrade.ErrUpToDate`.
 - Wrap with `fmt.Errorf("context: %w", err)`; pair sentinel with detail as `fmt.Errorf("%w: refusing symlink: %s", ErrSymlink, path)`. Match with `errors.Is`.
 - `main` prints errors to stderr and exits 1. Logger failures stay silent by design; startup validates separately.
 
@@ -232,6 +234,7 @@ Git workflow:
 |`internal/deploy/lock.go`|pid+flock acquisition and reclaim|
 |`internal/deploy/backup.go`|Full-tree Remove backups, prune|
 |`internal/deploy/snapshot.go`|Apply snapshot of managed files, in-place restore|
+|`internal/deploy/composemerge.go`|Compose plan for Apply: keep, update, 3-way merge, replace, or conflict; base file|
 |`internal/deploy/preview.go`|Read-only pre-Apply preview: file list, compose diff, new `.env` keys, Upgrading notes|
 |`internal/deploy/errors.go`|Lifecycle sentinel errors|
 |`internal/config/config.go`|Config defaults, load/save, env precedence|

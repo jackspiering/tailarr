@@ -255,6 +255,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err := requireRegular(in, src); err != nil {
 		return err
 	}
+	return writeInPlace(dst, in, mode)
+}
+
+// writeInPlace writes everything from r to dst with the given mode, the way
+// copyFile writes its destination: no final symlink is followed, a FIFO does
+// not block, and an existing dst keeps its inode.
+func writeInPlace(dst string, r io.Reader, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -270,7 +277,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		_ = out.Close()
 		return err
 	}
-	if _, err = io.Copy(out, in); err != nil {
+	if _, err = io.Copy(out, r); err != nil {
 		_ = out.Close()
 		return err
 	}

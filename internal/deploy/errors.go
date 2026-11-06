@@ -23,6 +23,9 @@ var (
 	// ErrProjectCollision is returned when Deploy would share a Compose
 	// project with another deployment, for example Web and web.
 	ErrProjectCollision = errors.New("compose project name collision")
+	// ErrComposeConflict is returned when Apply cannot merge the operator's
+	// compose edits with the catalog change because both touch the same lines.
+	ErrComposeConflict = errors.New("compose file conflict")
 	// ErrSymlink is returned when a path is or contains a symlink that is refused.
 	ErrSymlink = errors.New("symlink refused")
 )

@@ -277,6 +277,13 @@ func ValidateMergedTSAuthkey(merged EnvMap) error {
 // lines in the current file stay in place, and new keys follow them. Values
 // are written as stored; quote user input with QuoteEnvValue first.
 func WriteEnvFile(path string, merged EnvMap, keyOrder []string) error {
+	return WriteEnvFileWithNotes(path, merged, keyOrder, nil)
+}
+
+// WriteEnvFileWithNotes is WriteEnvFile, and it also writes notes[key], the
+// comment lines that the template has above a key, before each key it adds to
+// the file. A key the file already has keeps its own comments.
+func WriteEnvFileWithNotes(path string, merged EnvMap, keyOrder []string, notes map[string][]string) error {
 	current, truncated, err := paths.ReadRegularFile(path, maxEnvFileBytes)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -304,6 +311,14 @@ func WriteEnvFile(path string, merged EnvMap, keyOrder []string) error {
 	}
 	for _, k := range keyOrder {
 		if v, ok := merged[k]; ok && !written[k] {
+			if note := notes[k]; len(note) > 0 && len(current) > 0 {
+				if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+					b.WriteString("\n")
+				}
+				for _, l := range note {
+					b.WriteString(l + "\n")
+				}
+			}
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 			written[k] = true
 		}
@@ -320,4 +335,54 @@ func WriteEnvFile(path string, merged EnvMap, keyOrder []string) error {
 		fmt.Fprintf(&b, "%s=%s\n", k, merged[k])
 	}
 	return atomic.WriteFileString(path, b.String(), 0o600)
+}
+
+// KeyComments returns, for each key in the env text data, the comment lines
+// directly above it. A blank line or another key ends a comment block. A
+// commented-out KEY=value line counts as a comment.
+func KeyComments(data []byte) map[string][]string {
+	out := make(map[string][]string)
+	var block []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
+		switch {
+		case trimmed == "":
+			block = nil
+		case strings.HasPrefix(trimmed, "#"):
+			block = append(block, trimmed)
+		default:
+			if key, _, skip, err := parseEnvLine(line); err == nil && !skip && len(block) > 0 {
+				if _, seen := out[key]; !seen {
+					out[key] = block
+				}
+			}
+			block = nil
+		}
+	}
+	return out
+}
+
+// CommentedKeys returns the keys that the env text data has only as a
+// commented-out line, such as "# KEY=value". The operator turned these off,
+// so Apply must not add them again.
+func CommentedKeys(data []byte) map[string]bool {
+	out := make(map[string]bool)
+	set := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimRight(line, "\r"), "\ufeff"))
+		if rest, ok := strings.CutPrefix(trimmed, "#"); ok {
+			if key, _, ok := strings.Cut(strings.TrimSpace(rest), "="); ok && validEnvKey(strings.TrimSpace(key)) {
+				out[strings.TrimSpace(key)] = true
+			}
+			continue
+		}
+		if key, _, skip, err := parseEnvLine(line); err == nil && !skip {
+			set[key] = true
+		}
+	}
+	for k := range set {
+		delete(out, k)
+	}
+	return out
 }
