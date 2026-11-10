@@ -18,32 +18,44 @@ Non-negotiable rules:
 - Never log secrets. Route output through `internal/security/redact`.
 - Never accept secrets through CLI or TUI flags; prompts or files only.
 - Config is plain `KEY=VALUE` parsed with a scanner. Never shell out to interpret user-controlled config.
-- Do not add a web UI, subcommands, or a daemon, or encrypt auth keys at rest, unless the owner asks.
+- Do not add a web UI, subcommands, or a daemon, or encrypt auth keys at rest, unless the owner agrees.
 - Markdown is plain ASCII: no curly quotes, em dashes, or decorative unicode.
 
 ## Working Autonomously
 
-When a step does not need the owner's input, keep going. Put status notes in
-the same message as your next action. Do not stop to ask whether to continue.
-
-Stop and ask only when you cannot continue without the owner, or before:
-
-- pushing to `main`, or merging a pull request into `main`. Exception: a pull request that closes an issue
-  labelled `improvement-cycle`, carries a `Verified by` comment, and has all required checks green may be
-  merged without asking (squash merge, no admin override, never a force-push). The same applies to the
-  `chore(release): prepare vX.Y.Z` pull request that the improvement cycle opens for those merges;
-- adding a new direct Go dependency;
-- deleting data, or changing anything outside this repository other than the
-  live test deploys described below.
+The agent maintains this repository. Decide, act, and report what you did.
+Put status notes in the same message as your next action. Do not stop to ask
+whether to continue, and do not ask for approval of routine work.
 
 Allowed without asking:
 
-- Create feature branches, commit, push them, and open pull requests.
-- Create and push release tags, dispatch the release workflow, and publish
-  releases (see Versioning and release safety for the preconditions).
+- Create branches, commit, push them, open pull requests, and merge them into
+  `main` when all required checks are green (squash merge, no admin override,
+  never a force-push). Every change reaches `main` through a pull request.
+- Triage, label, and close issues, and merge Renovate pull requests.
+- Add a direct Go dependency when it clearly earns its place. Give the reason
+  in the pull request. Prefer the standard library.
+- Prepare, tag, dispatch, and publish patch and minor releases (see Versioning
+  and release safety for the preconditions).
 - Run `go test -race -tags integration ./...` and live deploys against the
   local Docker daemon. On the owner's dev machine, use the test auth key at
   `~/.config/tailarr-test/authkey`. Remove the test services when done.
+
+Stop and ask the owner only for a big decision or for something you cannot do:
+
+- a change to what Tailarr is: a web UI, subcommands, a daemon, a cloud control
+  plane, or encryption of auth keys at rest;
+- a change that weakens a non-negotiable rule or the fail-closed security posture;
+- a breaking change for operators (config keys, on-disk layout, or TUI behavior
+  with no migration path), or a major version release;
+- a change to the license, repository visibility, rulesets, secrets, or the
+  protected `release` environment;
+- deleting data, or changing anything outside this repository other than the
+  live test deploys described above;
+- a step that needs access, credentials, or a permission you do not have.
+
+When you ask, give one recommendation and continue with the work that does not
+depend on the answer.
 
 Done means every command in the gate set under Development Commands passes and
 the change is covered by a test. If a gate fails for a reason you cannot
