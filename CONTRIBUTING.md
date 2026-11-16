@@ -81,10 +81,10 @@ reachable from `main`.
 
 The release workflow (`.github/workflows/release.yml`) runs the CI gates
 again, builds and checks the linux and darwin binaries for amd64 and arm64,
-writes `SHA256SUMS`, and extracts the release notes from `CHANGELOG.md`. After
-the protected `release` environment approves the publish job, it attests the
-assets and creates a draft GitHub release. The owner or an agent reviews the
-draft assets, notes, checksums, and attestations, then publishes the draft.
+writes `SHA256SUMS`, and extracts the release notes from `CHANGELOG.md`. The
+publish job then attests the assets and creates a draft GitHub release. The
+owner or an agent reviews the draft assets, notes, checksums, and
+attestations, then publishes the draft.
 Never publish a draft whose workflow run failed. AI coding agents may tag,
 dispatch, and publish once the release pull request is merged; see
 [AGENTS.md](AGENTS.md).
@@ -94,10 +94,9 @@ installer every day against the latest release and against `DEFAULT_VERSION`.
 It fails while a merged release is still an unpublished draft, so publish
 the draft soon after the merge.
 
-The `release` environment and its required reviewers are repository settings:
-an owner creates `release` in Settings > Environments and adds reviewers
-there. Naming an environment in workflow YAML does not create reviewers or
-protection rules.
+The `release` environment is a repository setting. It has no required
+reviewers, so a release can finish without a person. Naming an environment
+in workflow YAML does not create protection rules.
 
 ## Documentation
 
