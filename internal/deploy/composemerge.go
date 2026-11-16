@@ -154,6 +154,11 @@ func (p composePlan) write(dest string) error {
 		if err := writeInPlace(path, bytes.NewReader(p.data), p.mode); err != nil {
 			return err
 		}
+		if p.kind == planAdd {
+			if err := chownLike(path, dest); err != nil {
+				return err
+			}
+		}
 	case p.modeOnly():
 		if err := paths.ChmodNoFollow(path, p.mode); err != nil {
 			return err
@@ -173,7 +178,11 @@ func writeComposeBase(dest string, catalog []byte) error {
 	if paths.IsSymlink(path) {
 		return fmt.Errorf("%w: deployment file is a symlink: %s", ErrSymlink, path)
 	}
-	return atomic.WriteFile(path, catalog, 0o644)
+	if err := atomic.WriteFile(path, catalog, 0o644); err != nil {
+		return err
+	}
+	// A root run gives a base it creates to the owner of the deployment.
+	return chownLike(path, dest)
 }
 
 // readManaged reads a regular file of at most maxManagedFileBytes without
