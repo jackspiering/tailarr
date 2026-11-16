@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-16
+
 ### Added
 
 - Apply now shows a read-only preview before it asks for confirmation. The preview lists the template files that Apply would create or
@@ -423,7 +425,8 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
 
-[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jackspiering/tailarr/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jackspiering/tailarr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jackspiering/tailarr/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jackspiering/tailarr/compare/v0.5.1...v0.6.0
