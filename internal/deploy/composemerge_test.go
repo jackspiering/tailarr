@@ -171,6 +171,54 @@ func TestApplyFailureRollsBackComposeBase(t *testing.T) {
 	}
 }
 
+func TestApplyRefusesMergedComposeThatComposeRejects(t *testing.T) {
+	requireGitBinary(t)
+	edited := strings.Replace(mergeCatalogV1, "restart: always", "restart: unless-stopped", 1)
+	f := newMergeFixture(t, mergeCatalogV1, edited, mergeCatalogV2)
+	var verbs []string
+	withFakeCompose(t, func(_ string, args ...string) error {
+		verb := composeVerb(args)
+		verbs = append(verbs, verb)
+		if strings.HasPrefix(verb, "config") {
+			return fmt.Errorf("%w: mapping key \"environment\" already defined", ErrComposeFailed)
+		}
+		return nil
+	})
+	err := f.m.Apply("web", DeployOpts{})
+	if !errors.Is(err, ErrComposeConflict) {
+		t.Fatalf("Apply = %v, want ErrComposeConflict", err)
+	}
+	if !strings.Contains(err.Error(), composeBaseFilename) {
+		t.Errorf("error does not say how to get past the invalid merge: %v", err)
+	}
+	if len(verbs) != 1 || verbs[0] != "config --quiet" {
+		t.Errorf("compose calls = %q, want only config --quiet", verbs)
+	}
+	if got := f.read(t, "compose.yaml"); got != edited {
+		t.Errorf("compose.yaml = %q, want the edited file back", got)
+	}
+	if got := f.read(t, composeBaseFilename); got != mergeCatalogV1 {
+		t.Errorf("base = %q, want the old catalog file back", got)
+	}
+}
+
+func TestApplyChecksOnlyAMergedComposeFile(t *testing.T) {
+	f := newMergeFixture(t, mergeCatalogV1, mergeCatalogV1, mergeCatalogV2)
+	var verbs []string
+	withFakeCompose(t, func(_ string, args ...string) error {
+		verbs = append(verbs, composeVerb(args))
+		return nil
+	})
+	if err := f.m.Apply("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range verbs {
+		if strings.HasPrefix(v, "config") {
+			t.Fatalf("compose calls = %q, want no config check without a merge", verbs)
+		}
+	}
+}
+
 func TestApplyFailureRemovesComposeBaseItCreated(t *testing.T) {
 	f := newMergeFixture(t, "", mergeCatalogV1, mergeCatalogV2)
 	withFakeCompose(t, func(_ string, args ...string) error {
@@ -211,8 +259,7 @@ func TestApplyWithoutBaseSaysWhenOnlyCommentsDiffer(t *testing.T) {
 	if err := f.m.Apply("web", DeployOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, f.ui.text(), "only comments or spacing differ")
-	mustNotContain(t, f.ui.text(), "your previous version is in")
+	mustContain(t, f.ui.text(), "only comments or spacing differ", "Your previous version is in "+filepath.Join(f.root, config.BackupDirName))
 }
 
 func TestApplyAddsNewEnvKeysWithTheirTemplateComments(t *testing.T) {

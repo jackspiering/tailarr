@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Apply merges the catalog changes into your file with `git merge-file`. When your edit and the catalog change the same lines, Apply stops
   and changes nothing. The first Apply of an older deployment replaces the file and names the backup that holds your copy. The preview
   shows the merged result. This follows the stack update script proposed in ScaleTail pull request 404.
+- Apply checks a merged compose file with `docker compose config` before it pulls images. When Compose rejects the file, Apply puts your
+  file back and says how to continue. The output always names the backup when Apply replaces a compose file.
 - Apply adds new `.env` keys with the comment lines above them in the template. The preview names the deployed keys that the template does not have.
 
 ### Changed

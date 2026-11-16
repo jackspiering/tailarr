@@ -128,6 +128,15 @@ func (p composePlan) conflictError(dest string) error {
 		ErrComposeConflict, filepath.Join(dest, p.file), filepath.Join(dest, composeBaseFilename))
 }
 
+// invalidMergeError explains a merged compose file that compose rejects, and
+// how to get past it. Apply has put the operator's file back by the time the
+// operator reads it.
+func (p composePlan) invalidMergeError(dest string, cause error) error {
+	return fmt.Errorf("%w: your edits to %s and the catalog changes merge into a file that compose rejects (%w); "+
+		"Apply put your file back. Delete %s and run Apply again to take the catalog file as is (Apply saves your file in its backup first), then add your edits again",
+		ErrComposeConflict, filepath.Join(dest, p.file), cause, filepath.Join(dest, composeBaseFilename))
+}
+
 // modeOnly reports whether the plan keeps the catalog text of the deployed
 // file and only its mode differs from the template.
 func (p composePlan) modeOnly() bool {
@@ -206,7 +215,7 @@ func (m *Manager) reportComposePlan(service string, p composePlan, backupDir str
 		msg = fmt.Sprintf("%s: merged the catalog changes into your edits.", p.file)
 	case planReplace:
 		if !p.settingsDiffer {
-			msg = fmt.Sprintf("%s: replaced with the catalog version (only comments or spacing differed).", p.file)
+			msg = fmt.Sprintf("%s: replaced with the catalog version (only comments or spacing differed). Your previous version is in %s.", p.file, backupDir)
 			break
 		}
 		msg = fmt.Sprintf("%s: replaced with the catalog version, because Tailarr has no record of the version you deployed. "+
