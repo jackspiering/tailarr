@@ -420,6 +420,7 @@ First public Go release of Tailarr (`github.com/jackspiering/tailarr`).
 - Log rotation runs on every event (not once per process).
 - Service locks live under `deployPath/.tailarr_locks` (consistent with backups).
 - Git commit SHA pins clone/checkout without invalid `--branch` usage; detached HEAD can rejoin default branch for unpinned pull.
+
 [Unreleased]: https://github.com/jackspiering/tailarr/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/jackspiering/tailarr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jackspiering/tailarr/compare/v0.6.0...v0.7.0
