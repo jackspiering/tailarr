@@ -10,7 +10,7 @@ name: Tag release
 # never has the workflows permission), so the tag cannot go on an older
 # commit. A tag created with GITHUB_TOKEN also does not start other
 # workflows, so this job dispatches the release workflow itself. The
-# protected release environment still gates publication. Run it by hand
+# release stays a draft until someone publishes it. Run it by hand
 # (workflow_dispatch) to tag a version that is already on main.
 
 on:

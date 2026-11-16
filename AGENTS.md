@@ -49,7 +49,7 @@ Stop and ask the owner only for a big decision or for something you cannot do:
 - a breaking change for operators (config keys, on-disk layout, or TUI behavior
   with no migration path), or a major version release;
 - a change to the license, repository visibility, rulesets, secrets, or the
-  protected `release` environment;
+  `release` environment;
 - deleting data, or changing anything outside this repository other than the
   live test deploys described above;
 - a step that needs access, credentials, or a permission you do not have.
@@ -90,8 +90,9 @@ Deployment flow end to end:
    `.tailarr.compose.base.yaml` (`git merge-file`; a conflict refuses Apply
    before any write), writes managed override `.tailarr.compose.yaml`, then execs `docker compose`
    (package var `composeFn`) with filtered env and redacted stdio. Apply first
-   saves only the files it writes (template paths, `.env`, override) to
-   `.tailarr_backups` (keep 2); failure restores them in place and re-runs `up`.
+   saves only the files it writes (template paths, `.env`, override, compose
+   base) to `.tailarr_backups/apply-snapshots` (keep 2); failure restores them
+   in place and re-runs `up`.
    Container data is never moved, because running containers bind-mount it.
    Remove copies the whole tree first (modes, mtimes, owners as root; sockets
    and FIFOs skipped). Compose runs in its own process group; cancel sends the
@@ -222,8 +223,9 @@ Versioning and release safety:
   request; never bump `version.go` in any other change.
 - The release workflow verifies metadata, cross-compiles linux/darwin x
   amd64/arm64, uploads SHA256SUMS, attests provenance, then creates a draft
-  release behind a protected `release` environment. Agents may tag, dispatch,
-  and publish once the release metadata pull request is merged into `main`.
+  release through the `release` environment. The draft is the gate: nothing
+  reaches users until it is published. Agents may tag, dispatch, and publish
+  once the release metadata pull request is merged into `main`.
   Never publish a draft whose workflow run failed.
 
 Git workflow:
