@@ -280,6 +280,18 @@ func (m *Manager) Apply(service string, opts DeployOpts) (retErr error) {
 		return err
 	}
 
+	// A line merge can be clean and still not be a valid compose file, for
+	// example when both sides add the same key in two places. Check a merged
+	// file before the pull, so the error says how to get past it.
+	if plan.kind == planMerge {
+		if err := Compose(dest, m.projectArgs(service, "-f", composeFile, "-f", overrideFilename, "config", "--quiet")...); err != nil {
+			if errors.Is(err, ErrInterrupted) {
+				return err
+			}
+			return plan.invalidMergeError(dest, err)
+		}
+	}
+
 	if err := Compose(dest, m.projectArgs(service, "-f", composeFile, "pull")...); err != nil {
 		return err
 	}

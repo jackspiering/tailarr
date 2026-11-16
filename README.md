@@ -197,6 +197,8 @@ The next Apply merges the catalog changes into your file with `git merge-file`.
 When your edit and the catalog change the same lines, Apply stops and changes nothing.
 Undo your edit in those lines and run Apply again.
 Or delete `.tailarr.compose.base.yaml` to take the catalog file as it is.
+Apply also stops when Compose rejects the merged file, for example when your edit and the catalog add the same key in two places.
+It puts your file back. Delete `.tailarr.compose.base.yaml`, run Apply again, and add your edits again.
 A service directory without that file comes from an older Tailarr.
 Its first Apply replaces the compose file, and the output says where the backup of the old file is.
 Copy your edits back once, and later Apply runs keep them.
