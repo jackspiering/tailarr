@@ -222,3 +222,19 @@ func healthRank(h Health) int {
 		return 3
 	}
 }
+
+// serviceStoppedFn reports whether service is stopped. Tests replace it.
+var serviceStoppedFn = serviceStopped
+
+// serviceStopped reports whether service has containers and none of them
+// runs. It reports false when docker ps fails or the service has no
+// containers, so a caller that must decide whether to start the service
+// again starts it when the state is not known.
+func serviceStopped(service string) bool {
+	rows, err := dockerPS()
+	if err != nil {
+		return false
+	}
+	containers, health := serviceContainers(rows, service)
+	return len(containers) > 0 && health == HealthStopped
+}

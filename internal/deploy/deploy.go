@@ -776,12 +776,19 @@ func (m *Manager) Remove(service string) error {
 		}
 	}
 
+	// Remember a service that is already stopped, so a failed backup does not
+	// start it.
+	wasStopped := serviceStoppedFn(service)
+
 	// Stop first, so the copy does not race a database that is still writing.
 	if err := Compose(dest, m.projectArgs(service, "stop")...); err != nil {
 		return fmt.Errorf("compose stop failed; deployment directory left intact: %w", err)
 	}
 	backupPath, err := Backup(m.Cfg.DeployPath, service, dest)
 	if err != nil {
+		if wasStopped {
+			return fmt.Errorf("backup failed; %s stays stopped, as it was before Remove: %w", service, err)
+		}
 		// composeCleanup ignores an interrupt, so Ctrl+C during the copy still
 		// brings the service back.
 		if uerr := composeCleanup(dest, m.upArgs(service, activeComposeFile(dest))...); uerr != nil {
@@ -790,7 +797,7 @@ func (m *Manager) Remove(service string) error {
 		return fmt.Errorf("backup failed; %s is running again: %w", service, err)
 	}
 	if err := Compose(dest, m.projectArgs(service, "down", "--remove-orphans")...); err != nil {
-		return fmt.Errorf("compose down failed; deployment directory left intact: %w", err)
+		return fmt.Errorf("compose down failed; deployment directory left intact, and %s is stopped (use Restart to start it again): %w", service, err)
 	}
 	if leftover, err := removeDeployment(dest, m.Cfg.DeployPath, service); err != nil {
 		if leftover == "" {

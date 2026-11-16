@@ -386,6 +386,9 @@ func TestRemoveStopsBeforeBackup(t *testing.T) {
 
 func TestRemoveRestartsServiceWhenBackupFails(t *testing.T) {
 	_, deployRoot, dest := managedDeployment(t)
+	prevStopped := serviceStoppedFn
+	serviceStoppedFn = func(string) bool { return false }
+	t.Cleanup(func() { serviceStoppedFn = prevStopped })
 	// A regular file where the backup directory belongs makes Backup fail.
 	if err := os.WriteFile(filepath.Join(deployRoot, config.BackupDirName), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -417,6 +420,9 @@ func TestRemoveRestartsServiceWhenBackupFails(t *testing.T) {
 
 func TestRemoveReportsStoppedServiceWhenRestartFails(t *testing.T) {
 	_, deployRoot, _ := managedDeployment(t)
+	prevStopped := serviceStoppedFn
+	serviceStoppedFn = func(string) bool { return false }
+	t.Cleanup(func() { serviceStoppedFn = prevStopped })
 	if err := os.WriteFile(filepath.Join(deployRoot, config.BackupDirName), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -432,5 +438,33 @@ func TestRemoveReportsStoppedServiceWhenRestartFails(t *testing.T) {
 	err := m.Remove("web")
 	if err == nil || !strings.Contains(err.Error(), "stays stopped") {
 		t.Fatalf("error = %v, want one containing %q", err, "stays stopped")
+	}
+}
+
+func TestRemoveLeavesStoppedServiceStoppedWhenBackupFails(t *testing.T) {
+	_, deployRoot, dest := managedDeployment(t)
+	// A regular file where the backup directory belongs makes Backup fail.
+	if err := os.WriteFile(filepath.Join(deployRoot, config.BackupDirName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := serviceStoppedFn
+	serviceStoppedFn = func(string) bool { return true }
+	t.Cleanup(func() { serviceStoppedFn = prev })
+
+	var verbs []string
+	withFakeCompose(t, func(dir string, args ...string) error {
+		verbs = append(verbs, composeVerb(args))
+		return nil
+	})
+	m := &Manager{Cfg: &config.Config{RepoPath: t.TempDir(), DeployPath: deployRoot}}
+	err := m.Remove("web")
+	if err == nil || !strings.Contains(err.Error(), "as it was before Remove") {
+		t.Fatalf("error = %v, want one containing %q", err, "as it was before Remove")
+	}
+	if len(verbs) != 1 || !strings.HasPrefix(verbs[0], "stop") {
+		t.Fatalf("calls = %q, want only stop", verbs)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatal("deployment directory must remain after failed remove")
 	}
 }
