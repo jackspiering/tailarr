@@ -468,3 +468,51 @@ func TestRemoveLeavesStoppedServiceStoppedWhenBackupFails(t *testing.T) {
 		t.Fatal("deployment directory must remain after failed remove")
 	}
 }
+
+func TestApplyGivesNewPathsTheDeploymentOwner(t *testing.T) {
+	repo, deployRoot, dest := managedDeployment(t)
+	tpl := filepath.Join(repo, "services", "web")
+	if err := os.MkdirAll(filepath.Join(tpl, "extra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, "extra", "new.conf"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type call struct{ path, ref string }
+	var calls []call
+	prev := chownLike
+	chownLike = func(path, ref string) error {
+		calls = append(calls, call{path, ref})
+		return nil
+	}
+	t.Cleanup(func() { chownLike = prev })
+	withFakeCompose(t, func(string, ...string) error { return nil })
+
+	m := &Manager{Cfg: &config.Config{RepoPath: repo, DeployPath: deployRoot}}
+	if err := m.Apply("web", DeployOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	has := func(path, ref string) bool {
+		for _, c := range calls {
+			if c.path == path && c.ref == ref {
+				return true
+			}
+		}
+		return false
+	}
+	for _, rel := range []string{"extra", filepath.Join("extra", "new.conf"), composeBaseFilename} {
+		if !has(filepath.Join(dest, rel), dest) {
+			t.Errorf("no chownLike call for %s with ref %s", rel, dest)
+		}
+	}
+	snapRoot := applySnapshotRoot(deployRoot)
+	snapDir := false
+	for _, c := range calls {
+		if filepath.Dir(c.path) == snapRoot && c.ref == deployRoot {
+			snapDir = true
+		}
+	}
+	if !snapDir {
+		t.Errorf("no chownLike call for the snapshot directory under %s; calls: %v", snapRoot, calls)
+	}
+}

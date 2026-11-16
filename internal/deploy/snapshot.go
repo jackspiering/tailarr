@@ -54,6 +54,12 @@ func snapshotManaged(deployPath, service, templateDir, dest string) (*applySnaps
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create backup: %w", err)
 	}
+	// A root run gives the snapshot to the owner of the deployment root, who
+	// may need the saved compose file.
+	if err := chownLike(dir, deployPath); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("create backup: %w", err)
+	}
 	s := &applySnapshot{dest: dest, dir: dir}
 
 	var files []string

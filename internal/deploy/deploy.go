@@ -408,9 +408,14 @@ func syncTemplateFiles(templateDir, dest, skip string) error {
 		destInfo, err := os.Lstat(target)
 		if os.IsNotExist(err) {
 			if info.IsDir() {
-				return os.MkdirAll(target, 0o755)
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					return err
+				}
+			} else if err := copyFile(path, target, info.Mode().Perm()); err != nil {
+				return err
 			}
-			return copyFile(path, target, info.Mode().Perm())
+			// A root run gives a path it creates to the owner of the deployment.
+			return chownLike(target, dest)
 		}
 		if err != nil {
 			return err
